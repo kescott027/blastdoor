@@ -1,0 +1,734 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import http from "node:http";
+import net from "node:net";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { once } from "node:events";
+import { authenticator } from "otplib";
+import { createServer } from "../src/server.js";
+import { createPasswordHash } from "../src/security.js";
+
+class CookieJar {
+  constructor() {
+    this.cookies = new Map();
+  }
+
+  absorb(setCookieHeaders = []) {
+    for (const header of setCookieHeaders) {
+      const pair = header.split(";")[0];
+      const idx = pair.indexOf("=");
+      if (idx < 1) {
+        continue;
+      }
+
+      const key = pair.slice(0, idx).trim();
+      const value = pair.slice(idx + 1).trim();
+      if (!value) {
+        this.cookies.delete(key);
+        continue;
+      }
+
+      this.cookies.set(key, value);
+    }
+  }
+
+  header() {
+    if (this.cookies.size === 0) {
+      return "";
+    }
+
+    return Array.from(this.cookies.entries())
+      .map(([key, value]) => `${key}=${value}`)
+      .join("; ");
+  }
+}
+
+function parseCsrf(html) {
+  const match = html.match(/name="csrf" value="([^"]+)"/);
+  assert.ok(match, "csrf token should be present in login HTML");
+  return match[1];
+}
+
+function parseSetCookie(headers) {
+  const value = headers["set-cookie"];
+  if (!value) {
+    return [];
+  }
+
+  return Array.isArray(value) ? value : [value];
+}
+
+function request(port, { method = "GET", path = "/", headers = {}, body = "" }, jar) {
+  return new Promise((resolve, reject) => {
+    const mergedHeaders = { ...headers };
+    const cookie = jar?.header();
+    if (cookie) {
+      mergedHeaders.cookie = cookie;
+    }
+
+    if (body && mergedHeaders["content-length"] === undefined) {
+      mergedHeaders["content-length"] = Buffer.byteLength(body);
+    }
+
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port,
+        method,
+        path,
+        headers: mergedHeaders,
+      },
+      (res) => {
+        let payload = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          payload += chunk;
+        });
+        res.on("end", () => {
+          jar?.absorb(parseSetCookie(res.headers));
+          resolve({ status: res.statusCode, headers: res.headers, body: payload });
+        });
+      },
+    );
+
+    req.on("error", reject);
+    if (body) {
+      req.write(body);
+    }
+    req.end();
+  });
+}
+
+async function closeServer(server) {
+  if (!server.listening) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
+async function startTargetServer() {
+  const requests = [];
+
+  const server = http.createServer((req, res) => {
+    requests.push({ method: req.method, path: req.url, headers: req.headers });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, path: req.url, method: req.method }));
+  });
+
+  server.on("upgrade", (req, socket) => {
+    const key = req.headers["sec-websocket-key"];
+    if (!key) {
+      socket.destroy();
+      return;
+    }
+
+    const accept = crypto
+      .createHash("sha1")
+      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+
+    socket.write(
+      [
+        "HTTP/1.1 101 Switching Protocols",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Accept: ${accept}`,
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    socket.end();
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+
+  const address = server.address();
+  return {
+    server,
+    requests,
+    targetUrl: `http://127.0.0.1:${address.port}`,
+  };
+}
+
+async function startGateway({
+  foundryTarget,
+  requireTotp = false,
+  totpSecret = "",
+  loginRateLimitMax = 8,
+  loginRateLimitWindowMs = 15 * 60 * 1000,
+  passwordStoreMode = "env",
+  passwordStoreFile = "",
+  allowedOrigins = "",
+  allowNullOrigin = false,
+}) {
+  const password = "Correct Horse Battery Staple 123!";
+  const authUsername = "gm";
+  const authPasswordHash = createPasswordHash(password);
+
+  const server = createServer(
+    {
+      host: "127.0.0.1",
+      port: 0,
+      foundryTarget,
+      authUsername,
+      authPasswordHash,
+      requireTotp,
+      totpSecret,
+      sessionSecret: "x".repeat(48),
+      sessionMaxAgeHours: 12,
+      cookieSecure: false,
+      trustProxy: false,
+      proxyTlsVerify: true,
+      loginRateLimitWindowMs,
+      loginRateLimitMax,
+      passwordStoreMode,
+      passwordStoreFile,
+      allowedOrigins,
+      allowNullOrigin,
+    },
+    { silent: true },
+  );
+
+  if (!server.listening) {
+    await once(server, "listening");
+  }
+
+  const address = server.address();
+  return { server, port: address.port, username: authUsername, password, authPasswordHash };
+}
+
+async function withTempDir(callback) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "blastdoor-server-test-"));
+  try {
+    await callback(tempDir);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+function wsHandshake(port, path = "/socket", cookie = "") {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("timeout waiting for websocket handshake"));
+    }, 3000);
+
+    const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
+      const key = crypto.randomBytes(16).toString("base64");
+      const lines = [
+        `GET ${path} HTTP/1.1`,
+        `Host: 127.0.0.1:${port}`,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        `Sec-WebSocket-Key: ${key}`,
+      ];
+
+      if (cookie) {
+        lines.push(`Cookie: ${cookie}`);
+      }
+
+      lines.push("", "");
+      socket.write(lines.join("\r\n"));
+    });
+
+    let data = "";
+    socket.on("data", (chunk) => {
+      data += chunk.toString("utf8");
+      if (!data.includes("\r\n\r\n")) {
+        return;
+      }
+
+      clearTimeout(timeout);
+      const [head] = data.split("\r\n\r\n");
+      const [statusLine] = head.split("\r\n");
+      socket.destroy();
+      resolve({ statusLine, head });
+    });
+
+    socket.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+  });
+}
+
+async function getLoginCsrf(port, jar, next = "/") {
+  const response = await request(
+    port,
+    {
+      method: "GET",
+      path: `/login?next=${encodeURIComponent(next)}`,
+      headers: { accept: "text/html" },
+    },
+    jar,
+  );
+
+  assert.equal(response.status, 200);
+  return parseCsrf(response.body);
+}
+
+async function postLogin(port, jar, { csrf, username, password, totp = "", next = "/" }, originOverride = "") {
+  const body = new URLSearchParams({ csrf, username, password, totp, next }).toString();
+  return request(
+    port,
+    {
+      method: "POST",
+      path: "/login",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "text/html",
+        origin: originOverride || `http://127.0.0.1:${port}`,
+      },
+      body,
+    },
+    jar,
+  );
+}
+
+test("gateway behavior without TOTP", async (t) => {
+  const target = await startTargetServer();
+  const gateway = await startGateway({
+    foundryTarget: target.targetUrl,
+    requireTotp: false,
+    loginRateLimitMax: 100,
+    loginRateLimitWindowMs: 60_000,
+  });
+
+  t.after(async () => {
+    await closeServer(gateway.server);
+    await closeServer(target.server);
+  });
+
+  await t.test("health + public assets are reachable", async () => {
+    const health = await request(gateway.port, { path: "/healthz" });
+    assert.equal(health.status, 200);
+    assert.deepEqual(JSON.parse(health.body), { ok: true });
+
+    const css = await request(gateway.port, { path: "/assets/theme.css" });
+    assert.equal(css.status, 200);
+    assert.match(css.body, /--bg-deep/);
+  });
+
+  await t.test("auth guard redirects HTML and returns JSON 401 for API-style requests", async () => {
+    const html = await request(gateway.port, {
+      path: "/campaign",
+      headers: { accept: "text/html" },
+    });
+    assert.equal(html.status, 302);
+    assert.equal(html.headers.location, "/login?next=%2Fcampaign");
+
+    const json = await request(gateway.port, {
+      path: "/campaign",
+      headers: { accept: "application/json" },
+    });
+    assert.equal(json.status, 401);
+    assert.deepEqual(JSON.parse(json.body), { error: "Authentication required" });
+  });
+
+  await t.test("login page renders without TOTP field", async () => {
+    const jar = new CookieJar();
+    const response = await request(
+      gateway.port,
+      { path: "/login", headers: { accept: "text/html" } },
+      jar,
+    );
+
+    assert.equal(response.status, 200);
+    assert.match(response.body, /Blastdoor/);
+    assert.doesNotMatch(response.body, /Authenticator Code/);
+    assert.ok(parseCsrf(response.body));
+  });
+
+  await t.test("login rejects wrong origin and bad csrf", async () => {
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+
+    const wrongOrigin = await postLogin(
+      gateway.port,
+      jar,
+      {
+        csrf,
+        username: gateway.username,
+        password: gateway.password,
+        next: "/",
+      },
+      "http://evil.example",
+    );
+
+    assert.equal(wrongOrigin.status, 403);
+    assert.match(wrongOrigin.body, /Forbidden/);
+
+    const badCsrf = await postLogin(gateway.port, jar, {
+      csrf: "bad-token",
+      username: gateway.username,
+      password: gateway.password,
+      next: "/",
+    });
+
+    assert.equal(badCsrf.status, 403);
+    assert.match(badCsrf.body, /Invalid CSRF token/);
+  });
+
+  await t.test("login rejects literal null origin when not enabled", async () => {
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+    const response = await postLogin(
+      gateway.port,
+      jar,
+      {
+        csrf,
+        username: gateway.username,
+        password: gateway.password,
+        next: "/",
+      },
+      "null",
+    );
+
+    assert.equal(response.status, 403);
+  });
+
+  await t.test("login accepts localhost origin while accessed on 127.0.0.1", async () => {
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+    const response = await postLogin(
+      gateway.port,
+      jar,
+      {
+        csrf,
+        username: gateway.username,
+        password: gateway.password,
+        next: "/",
+      },
+      `http://localhost:${gateway.port}`,
+    );
+
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.location, "/");
+  });
+
+  await t.test("login accepts configured allowed origin override", async () => {
+    const targetOverride = await startTargetServer();
+    const gatewayOverride = await startGateway({
+      foundryTarget: targetOverride.targetUrl,
+      requireTotp: false,
+      allowedOrigins: "https://portal.example.test",
+    });
+
+    try {
+      const jar = new CookieJar();
+      const csrf = await getLoginCsrf(gatewayOverride.port, jar, "/");
+      const response = await postLogin(
+        gatewayOverride.port,
+        jar,
+        {
+          csrf,
+          username: gatewayOverride.username,
+          password: gatewayOverride.password,
+          next: "/",
+        },
+        "https://portal.example.test",
+      );
+
+      assert.equal(response.status, 302);
+    } finally {
+      await closeServer(gatewayOverride.server);
+      await closeServer(targetOverride.server);
+    }
+  });
+
+  await t.test("login accepts literal null origin when enabled", async () => {
+    const targetOverride = await startTargetServer();
+    const gatewayOverride = await startGateway({
+      foundryTarget: targetOverride.targetUrl,
+      requireTotp: false,
+      allowNullOrigin: true,
+    });
+
+    try {
+      const jar = new CookieJar();
+      const csrf = await getLoginCsrf(gatewayOverride.port, jar, "/");
+      const response = await postLogin(
+        gatewayOverride.port,
+        jar,
+        {
+          csrf,
+          username: gatewayOverride.username,
+          password: gatewayOverride.password,
+          next: "/",
+        },
+        "null",
+      );
+
+      assert.equal(response.status, 302);
+    } finally {
+      await closeServer(gatewayOverride.server);
+      await closeServer(targetOverride.server);
+    }
+  });
+
+  await t.test("login rejects invalid credentials", async () => {
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+
+    const response = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: "wrong-password",
+      next: "/",
+    });
+
+    assert.equal(response.status, 401);
+    assert.match(response.body, /Access denied/);
+  });
+
+  await t.test("successful login proxies requests and supports safe next fallback", async () => {
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "//evil.example");
+
+    const login = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: gateway.password,
+      next: "//evil.example",
+    });
+
+    assert.equal(login.status, 302);
+    assert.equal(login.headers.location, "/");
+
+    const proxied = await request(
+      gateway.port,
+      { path: "/my-world", headers: { accept: "application/json" } },
+      jar,
+    );
+
+    assert.equal(proxied.status, 200);
+    const parsed = JSON.parse(proxied.body);
+    assert.equal(parsed.path, "/my-world");
+
+    assert.equal(target.requests.at(-1).path, "/my-world");
+  });
+
+  await t.test("logout clears session", async () => {
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+
+    const login = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: gateway.password,
+      next: "/",
+    });
+    assert.equal(login.status, 302);
+
+    const logout = await request(gateway.port, { method: "POST", path: "/logout" }, jar);
+    assert.equal(logout.status, 302);
+    assert.equal(logout.headers.location, "/login");
+
+    const after = await request(
+      gateway.port,
+      { path: "/after-logout", headers: { accept: "application/json" } },
+      jar,
+    );
+    assert.equal(after.status, 401);
+  });
+
+  await t.test("websocket upgrades require auth", async () => {
+    const unauth = await wsHandshake(gateway.port, "/socket");
+    assert.match(unauth.statusLine, /^HTTP\/1\.1 401/);
+
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+    const login = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: gateway.password,
+      next: "/",
+    });
+    assert.equal(login.status, 302);
+
+    const auth = await wsHandshake(gateway.port, "/socket", jar.header());
+    assert.match(auth.statusLine, /^HTTP\/1\.1 101/);
+  });
+
+});
+
+test("gateway behavior with TOTP enabled", async (t) => {
+  const target = await startTargetServer();
+  const totpSecret = authenticator.generateSecret();
+  const gateway = await startGateway({
+    foundryTarget: target.targetUrl,
+    requireTotp: true,
+    totpSecret,
+    loginRateLimitMax: 10,
+  });
+
+  t.after(async () => {
+    await closeServer(gateway.server);
+    await closeServer(target.server);
+  });
+
+  const jar = new CookieJar();
+  const loginPage = await request(gateway.port, { path: "/login", headers: { accept: "text/html" } }, jar);
+  assert.equal(loginPage.status, 200);
+  assert.match(loginPage.body, /Authenticator Code/);
+
+  const badTokenCsrf = parseCsrf(loginPage.body);
+  const badToken = await postLogin(gateway.port, jar, {
+    csrf: badTokenCsrf,
+    username: gateway.username,
+    password: gateway.password,
+    next: "/",
+    totp: "000000",
+  });
+
+  assert.equal(badToken.status, 401);
+
+  const csrf = await getLoginCsrf(gateway.port, jar, "/session");
+  const goodToken = authenticator.generate(totpSecret);
+  const login = await postLogin(gateway.port, jar, {
+    csrf,
+    username: gateway.username,
+    password: gateway.password,
+    next: "/session",
+    totp: goodToken,
+  });
+
+  assert.equal(login.status, 302);
+  assert.equal(login.headers.location, "/session");
+
+  const proxied = await request(gateway.port, { path: "/session", headers: { accept: "application/json" } }, jar);
+  assert.equal(proxied.status, 200);
+});
+
+test("gateway authenticates using file password store", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const password = "Correct Horse Battery Staple 123!";
+    const authPasswordHash = createPasswordHash(password);
+    const storeFile = path.join(tempDir, "password-store.json");
+    await fs.writeFile(
+      storeFile,
+      JSON.stringify({
+        users: [{ username: "gm", passwordHash: authPasswordHash }],
+      }),
+      "utf8",
+    );
+
+    const gateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      passwordStoreMode: "file",
+      passwordStoreFile: storeFile,
+    });
+
+    t.after(async () => {
+      await closeServer(gateway.server);
+      await closeServer(target.server);
+    });
+
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/file-mode");
+    const login = await postLogin(gateway.port, jar, {
+      csrf,
+      username: "gm",
+      password,
+      next: "/file-mode",
+    });
+
+    assert.equal(login.status, 302);
+    assert.equal(login.headers.location, "/file-mode");
+
+    const proxied = await request(
+      gateway.port,
+      { path: "/file-mode", headers: { accept: "application/json" } },
+      jar,
+    );
+    assert.equal(proxied.status, 200);
+  });
+});
+
+test("proxy returns 502 when target is unreachable", async (t) => {
+  const deadTarget = http.createServer();
+  deadTarget.listen(0, "127.0.0.1");
+  await once(deadTarget, "listening");
+  const deadPort = deadTarget.address().port;
+  await closeServer(deadTarget);
+
+  const gateway = await startGateway({
+    foundryTarget: `http://127.0.0.1:${deadPort}`,
+    requireTotp: false,
+  });
+
+  t.after(async () => {
+    await closeServer(gateway.server);
+  });
+
+  const jar = new CookieJar();
+  const csrf = await getLoginCsrf(gateway.port, jar, "/");
+  const login = await postLogin(gateway.port, jar, {
+    csrf,
+    username: gateway.username,
+    password: gateway.password,
+    next: "/",
+  });
+
+  assert.equal(login.status, 302);
+
+  const proxied = await request(gateway.port, { path: "/world", headers: { accept: "application/json" } }, jar);
+  assert.ok([502, 504].includes(proxied.status));
+  assert.match(proxied.body, /Gateway error|Error occurred while trying to proxy/i);
+});
+
+test("login rate limiting blocks excessive attempts", async (t) => {
+  const target = await startTargetServer();
+  const gateway = await startGateway({
+    foundryTarget: target.targetUrl,
+    requireTotp: false,
+    loginRateLimitMax: 2,
+    loginRateLimitWindowMs: 60_000,
+  });
+
+  t.after(async () => {
+    await closeServer(gateway.server);
+    await closeServer(target.server);
+  });
+
+  const jar = new CookieJar();
+
+  for (let i = 0; i < 2; i += 1) {
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+    const response = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: "not-the-password",
+      next: "/",
+    });
+    assert.equal(response.status, 401);
+  }
+
+  const csrf = await getLoginCsrf(gateway.port, jar, "/");
+  const blocked = await postLogin(gateway.port, jar, {
+    csrf,
+    username: gateway.username,
+    password: "not-the-password",
+    next: "/",
+  });
+
+  assert.equal(blocked.status, 429);
+  assert.match(blocked.body, /Too many login attempts/);
+});
