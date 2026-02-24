@@ -21,6 +21,8 @@ Secure front-end authentication gateway for a self-hosted Foundry VTT instance.
 
 ## Quick start
 
+Node.js 22+ is required.
+
 1. Install dependencies:
 
 ```bash
@@ -41,6 +43,11 @@ make setup-env
 ```
 
 `make setup-env` walks every setting with defaults, asks for a password, and hashes it automatically.
+It now offers:
+- Option A: SQLite (local file)
+- Option B: PostgreSQL
+
+If DB-backed modes are enabled, setup also initializes credentials and config records in the selected database.
 
 4. If you prefer manual setup, copy `.env.example` to `.env` and fill:
 
@@ -52,6 +59,26 @@ Password store options:
 
 - `PASSWORD_STORE_MODE=env` uses `AUTH_USERNAME` + `AUTH_PASSWORD_HASH`
 - `PASSWORD_STORE_MODE=file` uses `PASSWORD_STORE_FILE`
+- `PASSWORD_STORE_MODE=sqlite` uses the `users` table in `DATABASE_FILE`
+- `PASSWORD_STORE_MODE=postgres` uses the `users` table in PostgreSQL (`POSTGRES_URL`)
+
+Config store options:
+
+- `CONFIG_STORE_MODE=env` keeps config only in environment/.env
+- `CONFIG_STORE_MODE=sqlite` stores config values and config files in `DATABASE_FILE`
+- `CONFIG_STORE_MODE=postgres` stores config values and config files in PostgreSQL
+
+When either mode uses sqlite, set:
+
+- `DATABASE_FILE` (example: `data/blastdoor.sqlite`)
+
+When either mode uses postgres, set:
+
+- `POSTGRES_URL` (example: `postgres://blastdoor:blastdoor@127.0.0.1:5432/blastdoor`)
+- `POSTGRES_SSL` (`true`/`false`)
+
+When `CONFIG_STORE_MODE=sqlite` or `CONFIG_STORE_MODE=postgres`, Blastdoor snapshots `.env` and `.env.example` into the database at startup.
+This provides persistence across application restarts when using PostgreSQL.
 
 Optional tuning values:
 
@@ -80,6 +107,14 @@ Password-store interface is implemented in `src/password-store.js` with:
 - `PasswordStore` base interface (`getUserByUsername`)
 - `EnvPasswordStore`
 - `FilePasswordStore` (mock backend for local testing)
+- `SqlitePasswordStore`
+- `PostgresPasswordStore`
+
+Database schema/helpers are implemented in `src/database-store.js` for both SQLite and PostgreSQL:
+
+- `users` table for auth users and password hashes
+- `app_config` table for key/value configuration settings
+- `config_files` table for file snapshots like `.env`
 
 5. Start Blastdoor:
 

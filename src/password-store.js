@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { safeEqual } from "./security.js";
+import { BlastdoorDatabase, BlastdoorPostgresDatabase } from "./database-store.js";
 
 function noopLogger() {
   return {
@@ -168,12 +169,92 @@ export class FilePasswordStore extends PasswordStore {
   }
 }
 
+export class SqlitePasswordStore extends PasswordStore {
+  constructor({ databaseFile, logger }) {
+    super();
+    this.logger = logger || noopLogger();
+    this.database = new BlastdoorDatabase({ filePath: databaseFile });
+  }
+
+  async getUserByUsername(username) {
+    if (typeof username !== "string" || username.length === 0) {
+      return null;
+    }
+
+    const user = this.database.getUser(username);
+    if (!user) {
+      return null;
+    }
+
+    if (user.disabled) {
+      this.logger.warn("password_store.user_disabled");
+      return null;
+    }
+
+    return user;
+  }
+
+  close() {
+    this.database.close();
+  }
+}
+
+export class PostgresPasswordStore extends PasswordStore {
+  constructor({ postgresUrl, postgresSsl = false, poolFactory, logger }) {
+    super();
+    this.logger = logger || noopLogger();
+    this.database = new BlastdoorPostgresDatabase({
+      connectionString: postgresUrl,
+      ssl: postgresSsl === true,
+      poolFactory,
+    });
+  }
+
+  async getUserByUsername(username) {
+    if (typeof username !== "string" || username.length === 0) {
+      return null;
+    }
+
+    const user = await this.database.getUser(username);
+    if (!user) {
+      return null;
+    }
+
+    if (user.disabled) {
+      this.logger.warn("password_store.user_disabled");
+      return null;
+    }
+
+    return user;
+  }
+
+  async close() {
+    await this.database.close();
+  }
+}
+
 export function createPasswordStore(config, options = {}) {
   const mode = String(config.passwordStoreMode || "env").toLowerCase();
+
+  if (mode === "sqlite") {
+    return new SqlitePasswordStore({
+      databaseFile: config.databaseFile,
+      logger: options.logger,
+    });
+  }
 
   if (mode === "file") {
     return new FilePasswordStore({
       filePath: config.passwordStoreFile,
+      logger: options.logger,
+    });
+  }
+
+  if (mode === "postgres") {
+    return new PostgresPasswordStore({
+      postgresUrl: config.postgresUrl,
+      postgresSsl: config.postgresSsl,
+      poolFactory: options.postgresPoolFactory,
       logger: options.logger,
     });
   }

@@ -9,7 +9,9 @@ import path from "node:path";
 import { once } from "node:events";
 import { authenticator } from "otplib";
 import { createServer } from "../src/server.js";
+import { BlastdoorDatabase, BlastdoorPostgresDatabase } from "../src/database-store.js";
 import { createPasswordHash } from "../src/security.js";
+import { createMockPostgresPoolFactory } from "./helpers/mock-postgres.js";
 
 class CookieJar {
   constructor() {
@@ -172,6 +174,11 @@ async function startGateway({
   loginRateLimitWindowMs = 15 * 60 * 1000,
   passwordStoreMode = "env",
   passwordStoreFile = "",
+  configStoreMode = "env",
+  databaseFile = "",
+  postgresUrl = "",
+  postgresSsl = false,
+  postgresPoolFactory = null,
   allowedOrigins = "",
   allowNullOrigin = false,
 }) {
@@ -197,10 +204,14 @@ async function startGateway({
       loginRateLimitMax,
       passwordStoreMode,
       passwordStoreFile,
+      configStoreMode,
+      databaseFile,
+      postgresUrl,
+      postgresSsl,
       allowedOrigins,
       allowNullOrigin,
     },
-    { silent: true },
+    { silent: true, postgresPoolFactory },
   );
 
   if (!server.listening) {
@@ -218,6 +229,19 @@ async function withTempDir(callback) {
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+}
+
+async function waitForCondition(predicate, timeoutMs = 2000, intervalMs = 25) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error("Timed out waiting for condition");
 }
 
 function wsHandshake(port, path = "/socket", cookie = "") {
@@ -660,6 +684,152 @@ test("gateway authenticates using file password store", async (t) => {
     );
     assert.equal(proxied.status, 200);
   });
+});
+
+test("gateway authenticates using sqlite password store", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const password = "Correct Horse Battery Staple 123!";
+    const authPasswordHash = createPasswordHash(password);
+    const databaseFile = path.join(tempDir, "blastdoor.sqlite");
+    const sqliteGateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      passwordStoreMode: "sqlite",
+      databaseFile,
+    });
+
+    const database = new BlastdoorDatabase({ filePath: databaseFile });
+    database.upsertUser({
+      username: "gm",
+      passwordHash: authPasswordHash,
+      disabled: false,
+    });
+    database.close();
+
+    t.after(async () => {
+      await closeServer(sqliteGateway.server);
+      await closeServer(target.server);
+    });
+
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(sqliteGateway.port, jar, "/sqlite-mode");
+    const login = await postLogin(sqliteGateway.port, jar, {
+      csrf,
+      username: "gm",
+      password,
+      next: "/sqlite-mode",
+    });
+
+    assert.equal(login.status, 302);
+    assert.equal(login.headers.location, "/sqlite-mode");
+
+    const proxied = await request(
+      sqliteGateway.port,
+      { path: "/sqlite-mode", headers: { accept: "application/json" } },
+      jar,
+    );
+    assert.equal(proxied.status, 200);
+  });
+});
+
+test("gateway authenticates using postgres password store", async (t) => {
+  const { factory, state } = createMockPostgresPoolFactory();
+  const target = await startTargetServer();
+  const password = "Correct Horse Battery Staple 123!";
+  const authPasswordHash = createPasswordHash(password);
+
+  const seededDb = new BlastdoorPostgresDatabase({
+    connectionString: "postgres://blastdoor:test@localhost:5432/blastdoor",
+    poolFactory: factory,
+  });
+  await seededDb.upsertUser({
+    username: "gm",
+    passwordHash: authPasswordHash,
+    disabled: false,
+  });
+  await seededDb.close();
+
+  const { factory: gatewayFactory } = createMockPostgresPoolFactory(state);
+  const gateway = await startGateway({
+    foundryTarget: target.targetUrl,
+    requireTotp: false,
+    passwordStoreMode: "postgres",
+    postgresUrl: "postgres://blastdoor:test@localhost:5432/blastdoor",
+    postgresSsl: false,
+    postgresPoolFactory: gatewayFactory,
+  });
+
+  t.after(async () => {
+    await closeServer(gateway.server);
+    await closeServer(target.server);
+  });
+
+  const jar = new CookieJar();
+  const csrf = await getLoginCsrf(gateway.port, jar, "/postgres-mode");
+  const login = await postLogin(gateway.port, jar, {
+    csrf,
+    username: "gm",
+    password,
+    next: "/postgres-mode",
+  });
+
+  assert.equal(login.status, 302);
+  assert.equal(login.headers.location, "/postgres-mode");
+
+  const proxied = await request(
+    gateway.port,
+    { path: "/postgres-mode", headers: { accept: "application/json" } },
+    jar,
+  );
+  assert.equal(proxied.status, 200);
+});
+
+test("postgres config snapshot persists across gateway restarts", async (t) => {
+  const { factory, state } = createMockPostgresPoolFactory();
+  const target = await startTargetServer();
+
+  const gatewayOne = await startGateway({
+    foundryTarget: target.targetUrl,
+    requireTotp: false,
+    configStoreMode: "postgres",
+    postgresUrl: "postgres://blastdoor:test@localhost:5432/blastdoor",
+    postgresSsl: false,
+    postgresPoolFactory: factory,
+  });
+
+  const { factory: verifyFactory } = createMockPostgresPoolFactory(state);
+  const verifyDb = new BlastdoorPostgresDatabase({
+    connectionString: "postgres://blastdoor:test@localhost:5432/blastdoor",
+    poolFactory: verifyFactory,
+  });
+  await waitForCondition(async () => Boolean(await verifyDb.getConfigValue("FOUNDRY_TARGET")));
+  assert.equal(await verifyDb.getConfigValue("FOUNDRY_TARGET"), target.targetUrl);
+  await verifyDb.close();
+  await closeServer(gatewayOne.server);
+
+  const { factory: gatewayTwoFactory } = createMockPostgresPoolFactory(state);
+  const gatewayTwo = await startGateway({
+    foundryTarget: target.targetUrl,
+    requireTotp: false,
+    configStoreMode: "postgres",
+    postgresUrl: "postgres://blastdoor:test@localhost:5432/blastdoor",
+    postgresSsl: false,
+    postgresPoolFactory: gatewayTwoFactory,
+  });
+
+  t.after(async () => {
+    await closeServer(gatewayTwo.server);
+    await closeServer(target.server);
+  });
+
+  const { factory: verifyAfterRestartFactory } = createMockPostgresPoolFactory(state);
+  const verifyAfterRestart = new BlastdoorPostgresDatabase({
+    connectionString: "postgres://blastdoor:test@localhost:5432/blastdoor",
+    poolFactory: verifyAfterRestartFactory,
+  });
+  assert.equal(await verifyAfterRestart.getConfigValue("FOUNDRY_TARGET"), target.targetUrl);
+  await verifyAfterRestart.close();
 });
 
 test("proxy returns 502 when target is unreachable", async (t) => {

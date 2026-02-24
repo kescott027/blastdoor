@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { authenticator } from "otplib";
 import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -17,6 +18,7 @@ import {
   verifyPassword,
 } from "./security.js";
 import { createLogger } from "./logger.js";
+import { createConfigStore } from "./config-store.js";
 import { createPasswordStore } from "./password-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -79,6 +81,10 @@ export function loadConfigFromEnv(env = process.env) {
     debugLogFile: env.DEBUG_LOG_FILE || "logs/blastdoor-debug.log",
     allowedOrigins: env.ALLOWED_ORIGINS || "",
     allowNullOrigin: parseBoolean(env.ALLOW_NULL_ORIGIN, false),
+    configStoreMode: String(env.CONFIG_STORE_MODE || "env").toLowerCase(),
+    databaseFile: env.DATABASE_FILE || "data/blastdoor.sqlite",
+    postgresUrl: env.POSTGRES_URL || "",
+    postgresSsl: parseBoolean(env.POSTGRES_SSL, false),
     passwordStoreMode,
     passwordStoreFile: env.PASSWORD_STORE_FILE || "mock/password-store.json",
   };
@@ -86,16 +92,29 @@ export function loadConfigFromEnv(env = process.env) {
 
 export function validateConfig(config) {
   const passwordStoreMode = String(config.passwordStoreMode || "env").toLowerCase();
-  if (!["env", "file"].includes(passwordStoreMode)) {
-    throw new Error("PASSWORD_STORE_MODE must be either 'env' or 'file'.");
+  if (!["env", "file", "sqlite", "postgres"].includes(passwordStoreMode)) {
+    throw new Error("PASSWORD_STORE_MODE must be one of: env, file, sqlite, postgres.");
+  }
+
+  const configStoreMode = String(config.configStoreMode || "env").toLowerCase();
+  if (!["env", "sqlite", "postgres"].includes(configStoreMode)) {
+    throw new Error("CONFIG_STORE_MODE must be one of: env, sqlite, postgres.");
   }
 
   if (passwordStoreMode === "env") {
     if (!config.authUsername || !config.authPasswordHash) {
       throw new Error("AUTH_USERNAME and AUTH_PASSWORD_HASH are required when PASSWORD_STORE_MODE=env.");
     }
-  } else if (!config.passwordStoreFile) {
+  } else if (passwordStoreMode === "file" && !config.passwordStoreFile) {
     throw new Error("PASSWORD_STORE_FILE is required when PASSWORD_STORE_MODE=file.");
+  }
+
+  if ((passwordStoreMode === "sqlite" || configStoreMode === "sqlite") && !config.databaseFile) {
+    throw new Error("DATABASE_FILE is required when SQLite-backed stores are enabled.");
+  }
+
+  if ((passwordStoreMode === "postgres" || configStoreMode === "postgres") && !config.postgresUrl) {
+    throw new Error("POSTGRES_URL is required when PostgreSQL-backed stores are enabled.");
   }
 
   if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) {
@@ -114,8 +133,8 @@ export function validateConfig(config) {
     throw new Error("LOGIN_RATE_LIMIT_MAX must be a positive integer.");
   }
 
-  if (config.requireTotp && !config.totpSecret && passwordStoreMode !== "file") {
-    throw new Error("TOTP_SECRET is required when REQUIRE_TOTP=true.");
+  if (config.requireTotp && !config.totpSecret && passwordStoreMode === "env") {
+    throw new Error("TOTP_SECRET is required when REQUIRE_TOTP=true and PASSWORD_STORE_MODE=env.");
   }
 
   try {
@@ -208,7 +227,7 @@ function collectRequestContext(req) {
 export function createApp(config, options = {}) {
   validateConfig(config);
   const logger = options.logger || createNoopLogger();
-  const passwordStore = options.passwordStore || createPasswordStore(config, { logger });
+  const passwordStore = options.passwordStore || createPasswordStore(config, { ...options, logger });
 
   if (config.requireTotp) {
     authenticator.options = { window: 1, step: 30 };
@@ -582,7 +601,10 @@ export function createServer(config, options = {}) {
     logFile: config.debugLogFile || "logs/blastdoor-debug.log",
   });
 
-  const { app, proxy, sessionMiddleware } = createApp(config, { ...options, logger });
+  const { app, proxy, sessionMiddleware, passwordStore } = createApp(config, { ...options, logger });
+  const configStore = options.configStore || createConfigStore(config, options);
+
+  void persistConfigSnapshot(config, configStore, logger);
   const server = app.listen(config.port, config.host, () => {
     if (options.silent) {
       return;
@@ -594,6 +616,15 @@ export function createServer(config, options = {}) {
       foundryTarget: config.foundryTarget,
       passwordStoreMode: config.passwordStoreMode,
       passwordStoreFile: config.passwordStoreMode === "file" ? config.passwordStoreFile : null,
+      configStoreMode: config.configStoreMode,
+      databaseFile:
+        config.passwordStoreMode === "sqlite" || config.configStoreMode === "sqlite"
+          ? config.databaseFile
+          : null,
+      postgresConfigured:
+        config.passwordStoreMode === "postgres" || config.configStoreMode === "postgres"
+          ? Boolean(config.postgresUrl)
+          : false,
       allowNullOrigin: Boolean(config.allowNullOrigin),
       debugMode: Boolean(config.debugMode),
       debugLogFile: config.debugLogFile || null,
@@ -601,8 +632,85 @@ export function createServer(config, options = {}) {
   });
 
   attachWebsocketAuth(server, sessionMiddleware, proxy, logger);
-  server.on("close", () => logger.close());
+  server.on("close", () => {
+    if (typeof passwordStore?.close === "function") {
+      Promise.resolve(passwordStore.close()).catch((error) => {
+        logger.warn("password_store.close_failed", {
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      });
+    }
+    if (typeof configStore?.close === "function") {
+      Promise.resolve(configStore.close()).catch((error) => {
+        logger.warn("config_store.close_failed", {
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      });
+    }
+    logger.close();
+  });
   return server;
+}
+
+async function persistConfigSnapshot(config, configStore, logger) {
+  const mode = String(config.configStoreMode || "env").toLowerCase();
+  if (!["sqlite", "postgres"].includes(mode)) {
+    return;
+  }
+
+  const values = {
+    HOST: String(config.host),
+    PORT: String(config.port),
+    FOUNDRY_TARGET: String(config.foundryTarget),
+    PASSWORD_STORE_MODE: String(config.passwordStoreMode),
+    PASSWORD_STORE_FILE: String(config.passwordStoreFile || ""),
+    CONFIG_STORE_MODE: String(config.configStoreMode || "env"),
+    DATABASE_FILE: String(config.databaseFile || ""),
+    POSTGRES_URL: String(config.postgresUrl || ""),
+    POSTGRES_SSL: String(Boolean(config.postgresSsl)),
+    AUTH_USERNAME: String(config.authUsername || ""),
+    COOKIE_SECURE: String(Boolean(config.cookieSecure)),
+    TRUST_PROXY: String(config.trustProxy),
+    SESSION_MAX_AGE_HOURS: String(config.sessionMaxAgeHours),
+    LOGIN_RATE_LIMIT_WINDOW_MS: String(config.loginRateLimitWindowMs),
+    LOGIN_RATE_LIMIT_MAX: String(config.loginRateLimitMax),
+    REQUIRE_TOTP: String(Boolean(config.requireTotp)),
+    PROXY_TLS_VERIFY: String(Boolean(config.proxyTlsVerify)),
+    ALLOWED_ORIGINS: String(config.allowedOrigins || ""),
+    ALLOW_NULL_ORIGIN: String(Boolean(config.allowNullOrigin)),
+    DEBUG_MODE: String(Boolean(config.debugMode)),
+    DEBUG_LOG_FILE: String(config.debugLogFile || ""),
+  };
+
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      await configStore.setValue(key, value);
+    }
+
+    const envPath = path.resolve(process.cwd(), ".env");
+    const envExamplePath = path.resolve(process.cwd(), ".env.example");
+    const envContent = await fs.readFile(envPath, "utf8");
+    await configStore.putFile(".env", envContent);
+
+    try {
+      const envExampleContent = await fs.readFile(envExamplePath, "utf8");
+      await configStore.putFile(".env.example", envExampleContent);
+    } catch (error) {
+      if (error && error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  } catch (error) {
+    logger.warn("config_store.persist_failed", {
+      error: {
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  }
 }
 
 function isEntrypoint() {

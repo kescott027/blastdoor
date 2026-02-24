@@ -6,6 +6,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { authenticator } from "otplib";
 import { createPasswordHash } from "../src/security.js";
+import { BlastdoorDatabase, BlastdoorPostgresDatabase } from "../src/database-store.js";
 
 const ENV_PATH = path.resolve(process.cwd(), ".env");
 
@@ -13,8 +14,12 @@ const defaults = {
   HOST: "0.0.0.0",
   PORT: "8080",
   FOUNDRY_TARGET: "http://127.0.0.1:30000",
-  PASSWORD_STORE_MODE: "env",
+  PASSWORD_STORE_MODE: "sqlite",
   PASSWORD_STORE_FILE: "mock/password-store.json",
+  CONFIG_STORE_MODE: "sqlite",
+  DATABASE_FILE: "data/blastdoor.sqlite",
+  POSTGRES_URL: "postgres://blastdoor:blastdoor@127.0.0.1:5432/blastdoor",
+  POSTGRES_SSL: "false",
   AUTH_USERNAME: "gm",
   COOKIE_SECURE: "true",
   TRUST_PROXY: "1",
@@ -173,6 +178,79 @@ async function writeFilePasswordStore(filePath, username, passwordHash, totpSecr
   await fs.writeFile(`${absolutePath}`, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
+async function writeSqliteData(databaseFile, config, envContent) {
+  const database = new BlastdoorDatabase({ filePath: databaseFile });
+  try {
+    if (config.PASSWORD_STORE_MODE === "sqlite") {
+      database.upsertUser({
+        username: config.AUTH_USERNAME,
+        passwordHash: config.AUTH_PASSWORD_HASH,
+        totpSecret: config.REQUIRE_TOTP === "true" ? config.TOTP_SECRET : null,
+        disabled: false,
+      });
+    }
+
+    if (config.CONFIG_STORE_MODE === "sqlite") {
+      database.upsertConfigFile(".env", envContent);
+      const examplePath = path.resolve(process.cwd(), ".env.example");
+      try {
+        const envExample = await fs.readFile(examplePath, "utf8");
+        database.upsertConfigFile(".env.example", envExample);
+      } catch {
+        // Ignore missing .env.example
+      }
+
+      for (const [key, value] of Object.entries(config)) {
+        if (key === "AUTH_PASSWORD_HASH") {
+          continue;
+        }
+
+        database.setConfigValue(key, String(value));
+      }
+    }
+  } finally {
+    database.close();
+  }
+}
+
+async function writePostgresData(connectionString, ssl, config, envContent) {
+  const database = new BlastdoorPostgresDatabase({
+    connectionString,
+    ssl: ssl === "true",
+  });
+  try {
+    if (config.PASSWORD_STORE_MODE === "postgres") {
+      await database.upsertUser({
+        username: config.AUTH_USERNAME,
+        passwordHash: config.AUTH_PASSWORD_HASH,
+        totpSecret: config.REQUIRE_TOTP === "true" ? config.TOTP_SECRET : null,
+        disabled: false,
+      });
+    }
+
+    if (config.CONFIG_STORE_MODE === "postgres") {
+      await database.upsertConfigFile(".env", envContent);
+      const examplePath = path.resolve(process.cwd(), ".env.example");
+      try {
+        const envExample = await fs.readFile(examplePath, "utf8");
+        await database.upsertConfigFile(".env.example", envExample);
+      } catch {
+        // Ignore missing .env.example
+      }
+
+      for (const [key, value] of Object.entries(config)) {
+        if (key === "AUTH_PASSWORD_HASH") {
+          continue;
+        }
+
+        await database.setConfigValue(key, String(value));
+      }
+    }
+  } finally {
+    await database.close();
+  }
+}
+
 async function main() {
   const rl = readline.createInterface({ input, output });
 
@@ -184,12 +262,48 @@ async function main() {
     config.HOST = await prompt(rl, "HOST", defaults.HOST);
     config.PORT = await prompt(rl, "PORT", defaults.PORT);
     config.FOUNDRY_TARGET = await prompt(rl, "FOUNDRY_TARGET", defaults.FOUNDRY_TARGET);
-    config.PASSWORD_STORE_MODE = await prompt(rl, "PASSWORD_STORE_MODE (env|file)", defaults.PASSWORD_STORE_MODE);
-    if (!["env", "file"].includes(config.PASSWORD_STORE_MODE)) {
-      config.PASSWORD_STORE_MODE = defaults.PASSWORD_STORE_MODE;
+    output.write("\nDatabase backend options:\n");
+    output.write("  A) sqlite   (local file database)\n");
+    output.write("  B) postgres (PostgreSQL server)\n\n");
+    const dbBackend = (await prompt(rl, "DB_BACKEND (sqlite|postgres|none)", "sqlite")).toLowerCase();
+    let passwordModeDefault = defaults.PASSWORD_STORE_MODE;
+    let configModeDefault = defaults.CONFIG_STORE_MODE;
+    if (dbBackend === "postgres") {
+      passwordModeDefault = "postgres";
+      configModeDefault = "postgres";
+    } else if (dbBackend === "none") {
+      passwordModeDefault = "env";
+      configModeDefault = "env";
+    }
+
+    config.PASSWORD_STORE_MODE = await prompt(
+      rl,
+      "PASSWORD_STORE_MODE (env|file|sqlite|postgres)",
+      passwordModeDefault,
+    );
+    if (!["env", "file", "sqlite", "postgres"].includes(config.PASSWORD_STORE_MODE)) {
+      config.PASSWORD_STORE_MODE = passwordModeDefault;
     }
 
     config.PASSWORD_STORE_FILE = await prompt(rl, "PASSWORD_STORE_FILE", defaults.PASSWORD_STORE_FILE);
+    config.CONFIG_STORE_MODE = await prompt(rl, "CONFIG_STORE_MODE (env|sqlite|postgres)", configModeDefault);
+    if (!["env", "sqlite", "postgres"].includes(config.CONFIG_STORE_MODE)) {
+      config.CONFIG_STORE_MODE = configModeDefault;
+    }
+
+    if (config.PASSWORD_STORE_MODE === "sqlite" || config.CONFIG_STORE_MODE === "sqlite") {
+      config.DATABASE_FILE = await prompt(rl, "DATABASE_FILE", defaults.DATABASE_FILE);
+    } else {
+      config.DATABASE_FILE = defaults.DATABASE_FILE;
+    }
+
+    if (config.PASSWORD_STORE_MODE === "postgres" || config.CONFIG_STORE_MODE === "postgres") {
+      config.POSTGRES_URL = await promptRequired(rl, "POSTGRES_URL", defaults.POSTGRES_URL);
+      config.POSTGRES_SSL = normalizeBoolean(await prompt(rl, "POSTGRES_SSL", defaults.POSTGRES_SSL), defaults.POSTGRES_SSL);
+    } else {
+      config.POSTGRES_URL = "";
+      config.POSTGRES_SSL = defaults.POSTGRES_SSL;
+    }
 
     const authUsername = await promptRequired(rl, "AUTH_USERNAME", defaults.AUTH_USERNAME);
     const password = await promptPassword(rl, "AUTH_PASSWORD");
@@ -233,16 +347,6 @@ async function main() {
     config.DEBUG_MODE = normalizeBoolean(await prompt(rl, "DEBUG_MODE", defaults.DEBUG_MODE), defaults.DEBUG_MODE);
     config.DEBUG_LOG_FILE = await prompt(rl, "DEBUG_LOG_FILE", defaults.DEBUG_LOG_FILE);
 
-    if (config.PASSWORD_STORE_MODE === "file") {
-      await writeFilePasswordStore(
-        config.PASSWORD_STORE_FILE,
-        config.AUTH_USERNAME,
-        config.AUTH_PASSWORD_HASH,
-        config.REQUIRE_TOTP === "true" ? config.TOTP_SECRET : "",
-      );
-      output.write(`\nPassword store file updated: ${path.resolve(config.PASSWORD_STORE_FILE)}\n`);
-    }
-
     const envContent = [
       `HOST=${formatEnvValue(config.HOST)}`,
       `PORT=${formatEnvValue(config.PORT)}`,
@@ -251,6 +355,10 @@ async function main() {
       "",
       `PASSWORD_STORE_MODE=${formatEnvValue(config.PASSWORD_STORE_MODE)}`,
       `PASSWORD_STORE_FILE=${formatEnvValue(config.PASSWORD_STORE_FILE)}`,
+      `CONFIG_STORE_MODE=${formatEnvValue(config.CONFIG_STORE_MODE)}`,
+      `DATABASE_FILE=${formatEnvValue(config.DATABASE_FILE)}`,
+      `POSTGRES_URL=${formatEnvValue(config.POSTGRES_URL)}`,
+      `POSTGRES_SSL=${formatEnvValue(config.POSTGRES_SSL)}`,
       "",
       `AUTH_USERNAME=${formatEnvValue(config.AUTH_USERNAME)}`,
       `AUTH_PASSWORD_HASH=${formatEnvValue(config.AUTH_PASSWORD_HASH)}`,
@@ -276,6 +384,27 @@ async function main() {
     ].join("\n");
 
     await fs.writeFile(ENV_PATH, envContent, "utf8");
+
+    if (config.PASSWORD_STORE_MODE === "file") {
+      await writeFilePasswordStore(
+        config.PASSWORD_STORE_FILE,
+        config.AUTH_USERNAME,
+        config.AUTH_PASSWORD_HASH,
+        config.REQUIRE_TOTP === "true" ? config.TOTP_SECRET : "",
+      );
+      output.write(`\nPassword store file updated: ${path.resolve(config.PASSWORD_STORE_FILE)}\n`);
+    }
+
+    if (config.PASSWORD_STORE_MODE === "sqlite" || config.CONFIG_STORE_MODE === "sqlite") {
+      await writeSqliteData(config.DATABASE_FILE, config, envContent);
+      output.write(`SQLite database updated: ${path.resolve(config.DATABASE_FILE)}\n`);
+    }
+
+    if (config.PASSWORD_STORE_MODE === "postgres" || config.CONFIG_STORE_MODE === "postgres") {
+      await writePostgresData(config.POSTGRES_URL, config.POSTGRES_SSL, config, envContent);
+      output.write("PostgreSQL database updated.\n");
+    }
+
     output.write(`\nCreated ${ENV_PATH}\n`);
     output.write("Setup complete. Launching Blastdoor now.\n\n");
   } finally {
