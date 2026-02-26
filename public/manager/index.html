@@ -66,6 +66,23 @@
         </form>
       </section>
 
+      <section class="panel diagnostics-panel">
+        <h2>Diagnostics</h2>
+        <p class="panel-note">
+          Generates a sanitized report for troubleshooting. Secrets are automatically redacted.
+        </p>
+        <div class="button-row">
+          <button id="diagGenerateBtn" type="button">Generate Diagnostics</button>
+          <button id="diagCopySummaryBtn" type="button">Copy Summary</button>
+          <button id="diagCopyJsonBtn" type="button">Copy JSON</button>
+        </div>
+        <p class="status-message" id="diagStatusMessage"></p>
+        <h3>Summary</h3>
+        <pre id="diagSummary" class="log-box"></pre>
+        <h3>JSON</h3>
+        <pre id="diagJson" class="log-box"></pre>
+      </section>
+
       <section class="panel">
         <h2>Runtime Logs</h2>
         <pre id="runtimeLogs" class="log-box"></pre>

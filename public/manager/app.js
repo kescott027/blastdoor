@@ -1,9 +1,19 @@
 const statusMessage = document.getElementById("statusMessage");
 const form = document.getElementById("configForm");
+const diagStatusMessage = document.getElementById("diagStatusMessage");
+const diagSummary = document.getElementById("diagSummary");
+const diagJson = document.getElementById("diagJson");
+
+let latestDiagnostics = null;
 
 function setMessage(text, isError = false) {
   statusMessage.textContent = text;
   statusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setDiagMessage(text, isError = false) {
+  diagStatusMessage.textContent = text;
+  diagStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
 function toSecondsLabel(seconds) {
@@ -76,6 +86,33 @@ async function api(method, url, body) {
   return payload;
 }
 
+async function copyToClipboard(text) {
+  if (!text) {
+    throw new Error("No diagnostics generated yet.");
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const fallback = document.createElement("textarea");
+  fallback.value = text;
+  fallback.setAttribute("readonly", "readonly");
+  fallback.style.position = "absolute";
+  fallback.style.left = "-9999px";
+  document.body.appendChild(fallback);
+  fallback.select();
+  document.execCommand("copy");
+  document.body.removeChild(fallback);
+}
+
+function renderDiagnostics(payload) {
+  latestDiagnostics = payload;
+  diagSummary.textContent = payload.summary || "";
+  diagJson.textContent = JSON.stringify(payload.report || {}, null, 2);
+}
+
 async function refreshAll() {
   try {
     const [configResult, monitorResult] = await Promise.all([api("GET", "/api/config"), api("GET", "/api/monitor")]);
@@ -136,6 +173,34 @@ document.getElementById("restartBtn").addEventListener("click", async () => {
 document.getElementById("refreshBtn").addEventListener("click", async () => {
   await refreshAll();
   setMessage("Status refreshed.");
+});
+
+document.getElementById("diagGenerateBtn").addEventListener("click", async () => {
+  try {
+    const payload = await api("GET", "/api/diagnostics");
+    renderDiagnostics(payload);
+    setDiagMessage("Diagnostics generated.");
+  } catch (error) {
+    setDiagMessage(error.message || String(error), true);
+  }
+});
+
+document.getElementById("diagCopySummaryBtn").addEventListener("click", async () => {
+  try {
+    await copyToClipboard(latestDiagnostics?.summary || "");
+    setDiagMessage("Summary copied.");
+  } catch (error) {
+    setDiagMessage(error.message || String(error), true);
+  }
+});
+
+document.getElementById("diagCopyJsonBtn").addEventListener("click", async () => {
+  try {
+    await copyToClipboard(latestDiagnostics ? JSON.stringify(latestDiagnostics.report || {}, null, 2) : "");
+    setDiagMessage("JSON copied.");
+  } catch (error) {
+    setDiagMessage(error.message || String(error), true);
+  }
 });
 
 refreshAll();

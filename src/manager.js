@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -69,6 +70,9 @@ const CONFIG_DEFAULTS = {
   DEBUG_LOG_FILE: "logs/blastdoor-debug.log",
 };
 
+const SENSITIVE_CONFIG_KEYS = new Set(["AUTH_PASSWORD_HASH", "SESSION_SECRET", "TOTP_SECRET"]);
+const REDACTED_MARKER = "[REDACTED]";
+
 function formatEnvValue(value) {
   if (value === "") {
     return "";
@@ -110,6 +114,102 @@ function scrubConfigForClient(config) {
     TOTP_SECRET: config.TOTP_SECRET ? "********" : "",
     hasAuthPasswordHash: Boolean(config.AUTH_PASSWORD_HASH),
   };
+}
+
+function sanitizePostgresUrl(urlValue) {
+  const value = normalizeString(urlValue, "");
+  if (!value) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "postgresql:" || parsed.protocol === "postgres:") {
+      if (parsed.username) {
+        parsed.username = "REDACTED";
+      }
+      if (parsed.password) {
+        parsed.password = "REDACTED";
+      }
+      return parsed.toString();
+    }
+  } catch {
+    // Fall through to best-effort masking for non-standard connection strings.
+  }
+
+  return value.replace(/\/\/([^:/@]+)(?::[^@]*)?@/, "//REDACTED:REDACTED@");
+}
+
+function sanitizeConfigForDiagnostics(config) {
+  const sanitized = {};
+
+  for (const key of CONFIG_FIELDS) {
+    if (key === "AUTH_PASSWORD_HASH") {
+      sanitized.AUTH_PASSWORD_HASH = config.AUTH_PASSWORD_HASH ? REDACTED_MARKER : "";
+      continue;
+    }
+
+    if (key === "POSTGRES_URL") {
+      sanitized.POSTGRES_URL = sanitizePostgresUrl(config.POSTGRES_URL);
+      continue;
+    }
+
+    if (SENSITIVE_CONFIG_KEYS.has(key)) {
+      sanitized[key] = config[key] ? REDACTED_MARKER : "";
+      continue;
+    }
+
+    sanitized[key] = normalizeString(config[key], "");
+  }
+
+  sanitized.AUTH_PASSWORD_HASH_PRESENT = Boolean(config.AUTH_PASSWORD_HASH);
+  return sanitized;
+}
+
+function detectEnvironmentInfo({ workspaceDir, envPath }) {
+  return {
+    nodeVersion: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    hostname: os.hostname(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown",
+    managerHost: process.env.MANAGER_HOST || DEFAULT_MANAGER_HOST,
+    managerPort: Number.parseInt(process.env.MANAGER_PORT || String(DEFAULT_MANAGER_PORT), 10),
+    workspaceDir,
+    envPath,
+    isWsl: Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP),
+    wslDistro: normalizeString(process.env.WSL_DISTRO_NAME, ""),
+  };
+}
+
+function createDiagnosticsSummary(report) {
+  const config = report.config;
+  const status = report.serviceStatus || {};
+  const health = report.health || {};
+  const env = report.environment || {};
+  const usesPostgres = config.PASSWORD_STORE_MODE === "postgres" || config.CONFIG_STORE_MODE === "postgres";
+  const usesSqlite = config.PASSWORD_STORE_MODE === "sqlite" || config.CONFIG_STORE_MODE === "sqlite";
+  const backend = usesPostgres ? "postgres" : usesSqlite ? "sqlite" : "env/file";
+
+  const lines = [
+    `Generated: ${report.generatedAt}`,
+    `Gateway Bind: ${config.HOST || "unset"}:${config.PORT || "unset"}`,
+    `Foundry Target: ${config.FOUNDRY_TARGET || "unset"}`,
+    `Service Running: ${status.running ? "yes" : "no"} (pid: ${status.pid || "n/a"})`,
+    `Health Check: ${health.ok ? "healthy" : "unhealthy"}${health.statusCode ? ` (${health.statusCode})` : ""}`,
+    `Auth Username: ${config.AUTH_USERNAME || "unset"}`,
+    `Require TOTP: ${config.REQUIRE_TOTP || "false"}`,
+    `Password Store Mode: ${config.PASSWORD_STORE_MODE || "unset"}`,
+    `Config Store Mode: ${config.CONFIG_STORE_MODE || "unset"}`,
+    `Database Backend: ${backend}`,
+    `Postgres URL: ${config.POSTGRES_URL || "n/a"}`,
+    `Debug Mode: ${config.DEBUG_MODE || "false"} (log: ${config.DEBUG_LOG_FILE || "unset"})`,
+    `Manager UI: http://${env.managerHost || DEFAULT_MANAGER_HOST}:${env.managerPort || DEFAULT_MANAGER_PORT}/manager/`,
+    `Runtime: ${env.platform || "unknown"} ${env.arch || "unknown"}, Node ${env.nodeVersion || "unknown"}${env.isWsl ? `, WSL (${env.wslDistro || "unknown"})` : ""}`,
+    "Redactions: AUTH_PASSWORD_HASH, SESSION_SECRET, TOTP_SECRET, POSTGRES_URL credentials",
+  ];
+
+  return lines.join("\n");
 }
 
 async function readEnvConfig(envPath) {
@@ -408,6 +508,34 @@ export function createManagerApp(options = {}) {
         health,
         debugLogLines,
         runtimeLogLines,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.get("/api/diagnostics", async (_req, res) => {
+    try {
+      const config = await readEnvConfig(envPath);
+      const serviceStatus = processState.getStatus();
+      const health = await checkBlastdoorHealth(config);
+      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+      const diagnosticsConfig = sanitizeConfigForDiagnostics(config);
+
+      const report = {
+        generatedAt: new Date().toISOString(),
+        serviceStatus,
+        health,
+        environment,
+        config: diagnosticsConfig,
+      };
+
+      res.json({
+        ok: true,
+        report,
+        summary: createDiagnosticsSummary(report),
       });
     } catch (error) {
       res.status(500).json({

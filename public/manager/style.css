@@ -72,9 +72,30 @@ body {
   grid-column: span 8;
 }
 
-.panel:nth-child(3),
-.panel:nth-child(4) {
+.panel:nth-child(3) {
+  grid-column: span 12;
+}
+
+.panel:nth-child(4),
+.panel:nth-child(5) {
   grid-column: span 6;
+}
+
+.diagnostics-panel .log-box {
+  min-height: 120px;
+  max-height: 240px;
+}
+
+.panel-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.panel h3 {
+  margin: 0.4rem 0 0.5rem;
+  font-size: 0.9rem;
+  color: var(--muted);
 }
 
 .panel h2 {
@@ -177,7 +198,8 @@ input:focus {
   .panel:nth-child(1),
   .panel:nth-child(2),
   .panel:nth-child(3),
-  .panel:nth-child(4) {
+  .panel:nth-child(4),
+  .panel:nth-child(5) {
     grid-column: span 12;
   }
 

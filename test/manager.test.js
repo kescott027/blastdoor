@@ -198,3 +198,56 @@ test("manager can start stop and monitor gateway process", async () => {
     }
   });
 });
+
+test("manager diagnostics endpoint returns sanitized report", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=0.0.0.0",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=postgres",
+        "CONFIG_STORE_MODE=postgres",
+        "POSTGRES_URL=postgres://blastdoor:super-secret@127.0.0.1:5432/blastdoor",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$param$hashvalue",
+        "SESSION_SECRET=super-session-secret",
+        "REQUIRE_TOTP=true",
+        "TOTP_SECRET=totp-shared-secret",
+        "DEBUG_MODE=true",
+        "DEBUG_LOG_FILE=logs/blastdoor-debug.log",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, { pathname: "/api/diagnostics" });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+
+      const config = response.body.report.config;
+      assert.equal(config.AUTH_PASSWORD_HASH, "[REDACTED]");
+      assert.equal(config.AUTH_PASSWORD_HASH_PRESENT, true);
+      assert.equal(config.SESSION_SECRET, "[REDACTED]");
+      assert.equal(config.TOTP_SECRET, "[REDACTED]");
+      assert.match(config.POSTGRES_URL, /postgres:\/\/REDACTED:REDACTED@127\.0\.0\.1:5432\/blastdoor/);
+
+      assert.doesNotMatch(response.body.summary, /super-session-secret/);
+      assert.doesNotMatch(response.body.summary, /super-secret/);
+      assert.match(response.body.summary, /Redactions:/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
