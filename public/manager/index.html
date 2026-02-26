@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blastdoor Control Console</title>
+    <link rel="stylesheet" href="/manager/style.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero-glow"></div>
+      <h1>Blastdoor Control Console</h1>
+      <p>Configure, launch, and monitor your Foundry gateway.</p>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <h2>Service Control</h2>
+        <div class="button-row">
+          <button id="startBtn" type="button">Start</button>
+          <button id="stopBtn" type="button">Stop</button>
+          <button id="restartBtn" type="button">Restart</button>
+          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
+        <dl class="stats">
+          <div><dt>Running</dt><dd id="runningValue">No</dd></div>
+          <div><dt>PID</dt><dd id="pidValue">-</dd></div>
+          <div><dt>Uptime</dt><dd id="uptimeValue">0s</dd></div>
+          <div><dt>Health</dt><dd id="healthValue">Unknown</dd></div>
+        </dl>
+        <p class="status-message" id="statusMessage"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Configuration</h2>
+        <form id="configForm">
+          <div class="grid">
+            <label>HOST <input name="HOST" required /></label>
+            <label>PORT <input name="PORT" required /></label>
+            <label>FOUNDRY_TARGET <input name="FOUNDRY_TARGET" required /></label>
+            <label>PASSWORD_STORE_MODE <input name="PASSWORD_STORE_MODE" required /></label>
+            <label>PASSWORD_STORE_FILE <input name="PASSWORD_STORE_FILE" /></label>
+            <label>CONFIG_STORE_MODE <input name="CONFIG_STORE_MODE" required /></label>
+            <label>DATABASE_FILE <input name="DATABASE_FILE" /></label>
+            <label>POSTGRES_URL <input name="POSTGRES_URL" /></label>
+            <label>POSTGRES_SSL <input name="POSTGRES_SSL" /></label>
+            <label>AUTH_USERNAME <input name="AUTH_USERNAME" required /></label>
+            <label>AUTH_PASSWORD (leave blank to keep) <input name="AUTH_PASSWORD" type="password" /></label>
+            <label>SESSION_SECRET <input name="SESSION_SECRET" /></label>
+            <label>COOKIE_SECURE <input name="COOKIE_SECURE" /></label>
+            <label>TRUST_PROXY <input name="TRUST_PROXY" /></label>
+            <label>SESSION_MAX_AGE_HOURS <input name="SESSION_MAX_AGE_HOURS" /></label>
+            <label>LOGIN_RATE_LIMIT_WINDOW_MS <input name="LOGIN_RATE_LIMIT_WINDOW_MS" /></label>
+            <label>LOGIN_RATE_LIMIT_MAX <input name="LOGIN_RATE_LIMIT_MAX" /></label>
+            <label>REQUIRE_TOTP <input name="REQUIRE_TOTP" /></label>
+            <label>TOTP_SECRET <input name="TOTP_SECRET" /></label>
+            <label>PROXY_TLS_VERIFY <input name="PROXY_TLS_VERIFY" /></label>
+            <label>ALLOWED_ORIGINS <input name="ALLOWED_ORIGINS" /></label>
+            <label>ALLOW_NULL_ORIGIN <input name="ALLOW_NULL_ORIGIN" /></label>
+            <label>DEBUG_MODE <input name="DEBUG_MODE" /></label>
+            <label>DEBUG_LOG_FILE <input name="DEBUG_LOG_FILE" /></label>
+          </div>
+          <div class="button-row">
+            <button type="submit">Save Config</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Runtime Logs</h2>
+        <pre id="runtimeLogs" class="log-box"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Debug Log Tail</h2>
+        <pre id="debugLogs" class="log-box"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="/manager/app.js"></script>
+  </body>
+</html>

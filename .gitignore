@@ -39,6 +39,9 @@ build/Release
 
 # Dependency directories
 node_modules/
+
+# Husky runtime internals (generated locally by npm run prepare)
+.husky/_/
 jspm_packages/
 
 # Snowpack dependency directory (https://snowpack.dev/)
