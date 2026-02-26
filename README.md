@@ -31,6 +31,7 @@ make setup-env
 
 `make setup-env` now auto-checks dependencies and runs `npm install` when `node_modules` (or required packages like `otplib`/`pg`) are missing.
 It then launches the interactive setup wizard.
+For `DB_BACKEND`, you can type `A` for SQLite or `B` for PostgreSQL.
 
 2. Generate secrets and password hash manually (optional helper path):
 
@@ -42,6 +43,15 @@ npm run hash-password -- 'replace-with-long-random-password'
 3. During setup, Blastdoor offers:
 - Option A: SQLite (local file)
 - Option B: PostgreSQL
+
+If PostgreSQL is selected, setup will:
+- Probe connectivity to `POSTGRES_URL`
+- If not reachable, offer:
+- `1` specify a different `POSTGRES_URL`
+- `2` install PostgreSQL
+- On install path, detect Docker and offer:
+- `1` Docker container install (`postgres:16`) with persistence (`blastdoor-postgres-data` volume + restart policy)
+- `2` local Linux/WSL install (apt + service start + bootstrap user/db)
 
 If DB-backed modes are enabled, setup also initializes credentials and config records in the selected database.
 
@@ -176,6 +186,13 @@ If you see `ERR_MODULE_NOT_FOUND` for packages like `otplib` on WSL/Linux:
 ```bash
 rm -rf node_modules
 npm install
+make setup-env
+```
+
+If setup fails with `ECONNREFUSED 127.0.0.1:5432`, PostgreSQL is not reachable at the configured URL.
+Start PostgreSQL, verify `POSTGRES_URL`, then rerun:
+
+```bash
 make setup-env
 ```
 

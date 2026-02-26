@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { fileURLToPath } from "node:url";
 import { authenticator } from "otplib";
 import { createPasswordHash } from "../src/security.js";
 import { BlastdoorDatabase, BlastdoorPostgresDatabase } from "../src/database-store.js";
 
+const __filename = fileURLToPath(import.meta.url);
 const ENV_PATH = path.resolve(process.cwd(), ".env");
+const DEFAULT_POSTGRES_CONTAINER = "blastdoor-postgres";
+const DEFAULT_POSTGRES_IMAGE = "postgres:16";
+const DEFAULT_POSTGRES_VOLUME = "blastdoor-postgres-data";
 
 const defaults = {
   HOST: "0.0.0.0",
@@ -69,6 +75,74 @@ function formatEnvValue(value) {
   }
 
   return JSON.stringify(value);
+}
+
+export function normalizeDbBackendChoice(value, fallback = "sqlite") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (["a", "sqlite", "sqlite3", "sql-lite", "sql_lite"].includes(normalized)) {
+    return "sqlite";
+  }
+
+  if (["b", "postgres", "postgresql", "pg"].includes(normalized)) {
+    return "postgres";
+  }
+
+  if (["none", "env"].includes(normalized)) {
+    return "none";
+  }
+
+  return fallback;
+}
+
+export function normalizePostgresRecoveryChoice(value, fallback = "1") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["1", "url", "u", "specify", "specify-url"].includes(normalized)) {
+    return "1";
+  }
+
+  if (["2", "install", "i"].includes(normalized)) {
+    return "2";
+  }
+
+  return fallback;
+}
+
+export function normalizePostgresInstallChoice(value, fallback = "1") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["1", "docker", "d"].includes(normalized)) {
+    return "1";
+  }
+
+  if (["2", "local", "l", "apt"].includes(normalized)) {
+    return "2";
+  }
+
+  return fallback;
+}
+
+export function formatPostgresSetupError(error, postgresUrl) {
+  const code = error && typeof error === "object" ? error.code : null;
+  const message = error instanceof Error ? error.message : String(error);
+  if (code === "ECONNREFUSED") {
+    return [
+      `Unable to connect to PostgreSQL at ${postgresUrl}.`,
+      "Connection was refused by the server (ECONNREFUSED).",
+      "Start PostgreSQL and verify host/port/database/user in POSTGRES_URL, then run 'make setup-env' again.",
+    ].join(" ");
+  }
+
+  return `PostgreSQL initialization failed for ${postgresUrl}: ${message}`;
+}
+
+function isEntrypoint() {
+  if (!process.argv[1]) {
+    return false;
+  }
+
+  return path.resolve(process.argv[1]) === __filename;
 }
 
 async function prompt(rl, label, fallback) {
@@ -251,6 +325,200 @@ async function writePostgresData(connectionString, ssl, config, envContent) {
   }
 }
 
+function runShellCommand(command, { inherit = false } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      shell: true,
+      stdio: inherit ? "inherit" : "pipe",
+      env: process.env,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    if (!inherit) {
+      child.stdout?.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+    }
+
+    child.on("error", (error) => {
+      resolve({ ok: false, code: -1, stdout, stderr, error });
+    });
+
+    child.on("close", (code) => {
+      resolve({ ok: code === 0, code: typeof code === "number" ? code : -1, stdout, stderr });
+    });
+  });
+}
+
+async function commandExists(command) {
+  const result = await runShellCommand(`command -v ${command}`);
+  return result.ok;
+}
+
+async function probePostgresConnection(postgresUrl, postgresSsl) {
+  const database = new BlastdoorPostgresDatabase({
+    connectionString: postgresUrl,
+    ssl: postgresSsl === "true",
+  });
+
+  try {
+    await database.ensureReady();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error };
+  } finally {
+    await database.close().catch(() => {});
+  }
+}
+
+export function buildDockerPostgresRunCommand() {
+  return [
+    "docker run -d",
+    "--restart unless-stopped",
+    `--name ${DEFAULT_POSTGRES_CONTAINER}`,
+    `-v ${DEFAULT_POSTGRES_VOLUME}:/var/lib/postgresql/data`,
+    "-e POSTGRES_USER=blastdoor",
+    "-e POSTGRES_PASSWORD=blastdoor",
+    "-e POSTGRES_DB=blastdoor",
+    "-p 5432:5432",
+    DEFAULT_POSTGRES_IMAGE,
+  ].join(" ");
+}
+
+async function installPostgresWithDocker() {
+  const hasDocker = await commandExists("docker");
+  if (!hasDocker) {
+    return { ok: false, message: "Docker is not installed or not on PATH." };
+  }
+
+  const inspect = await runShellCommand(`docker container inspect ${DEFAULT_POSTGRES_CONTAINER} >/dev/null 2>&1`);
+  if (inspect.ok) {
+    const startResult = await runShellCommand(`docker start ${DEFAULT_POSTGRES_CONTAINER}`, { inherit: true });
+    if (!startResult.ok) {
+      return { ok: false, message: `Failed to start existing container '${DEFAULT_POSTGRES_CONTAINER}'.` };
+    }
+
+    return { ok: true, message: `Started Docker container '${DEFAULT_POSTGRES_CONTAINER}'.` };
+  }
+
+  const runCommand = buildDockerPostgresRunCommand();
+
+  const runResult = await runShellCommand(runCommand, { inherit: true });
+  if (!runResult.ok) {
+    return {
+      ok: false,
+      message: `Failed to start Docker PostgreSQL container '${DEFAULT_POSTGRES_CONTAINER}'.`,
+    };
+  }
+
+  return { ok: true, message: `Docker PostgreSQL container '${DEFAULT_POSTGRES_CONTAINER}' is running.` };
+}
+
+async function installPostgresLocally() {
+  if (process.platform !== "linux") {
+    return {
+      ok: false,
+      message: "Local automated PostgreSQL install is only supported for Linux/WSL in this setup script.",
+    };
+  }
+
+  const installResult = await runShellCommand("sudo apt-get update && sudo apt-get install -y postgresql", {
+    inherit: true,
+  });
+  if (!installResult.ok) {
+    return { ok: false, message: "Failed to install PostgreSQL packages via apt-get." };
+  }
+
+  const startResult = await runShellCommand("sudo service postgresql start || sudo systemctl start postgresql", {
+    inherit: true,
+  });
+  if (!startResult.ok) {
+    return { ok: false, message: "Failed to start PostgreSQL service." };
+  }
+
+  const createUser = [
+    "sudo -u postgres psql -tc \"SELECT 1 FROM pg_roles WHERE rolname='blastdoor'\" | grep -q 1",
+    "|| sudo -u postgres psql -c \"CREATE USER blastdoor WITH PASSWORD 'blastdoor';\"",
+  ].join(" ");
+  const userResult = await runShellCommand(createUser, { inherit: true });
+  if (!userResult.ok) {
+    return { ok: false, message: "Failed to create/update PostgreSQL role 'blastdoor'." };
+  }
+
+  const createDatabase = [
+    "sudo -u postgres psql -tc \"SELECT 1 FROM pg_database WHERE datname='blastdoor'\" | grep -q 1",
+    "|| sudo -u postgres psql -c \"CREATE DATABASE blastdoor OWNER blastdoor;\"",
+  ].join(" ");
+  const dbResult = await runShellCommand(createDatabase, { inherit: true });
+  if (!dbResult.ok) {
+    return { ok: false, message: "Failed to create/update PostgreSQL database 'blastdoor'." };
+  }
+
+  return { ok: true, message: "PostgreSQL installed locally and initialized with blastdoor user/database." };
+}
+
+async function promptForPostgresRecovery(rl, config) {
+  while (true) {
+    const probe = await probePostgresConnection(config.POSTGRES_URL, config.POSTGRES_SSL);
+    if (probe.ok) {
+      output.write(`PostgreSQL detected at ${config.POSTGRES_URL}.\n`);
+      return;
+    }
+
+    output.write(`\n${formatPostgresSetupError(probe.error, config.POSTGRES_URL)}\n`);
+    output.write("Choose how to proceed:\n");
+    output.write("  1) Specify a different POSTGRES_URL\n");
+    output.write("  2) Install PostgreSQL\n");
+
+    const recoveryChoice = normalizePostgresRecoveryChoice(
+      await prompt(rl, "POSTGRES_RECOVERY (1=specify-url, 2=install)", "1"),
+      "1",
+    );
+
+    if (recoveryChoice === "1") {
+      config.POSTGRES_URL = await promptRequired(rl, "POSTGRES_URL", config.POSTGRES_URL);
+      config.POSTGRES_SSL = normalizeBoolean(
+        await prompt(rl, "POSTGRES_SSL", config.POSTGRES_SSL),
+        config.POSTGRES_SSL,
+      );
+      continue;
+    }
+
+    const dockerAvailable = await commandExists("docker");
+    let installChoice = "2";
+    if (dockerAvailable) {
+      output.write("Docker detected.\n");
+      installChoice = normalizePostgresInstallChoice(
+        await prompt(rl, "POSTGRES_INSTALL (1=docker, 2=local)", "1"),
+        "1",
+      );
+    } else {
+      output.write("Docker was not detected. Trying local install path.\n");
+    }
+
+    let installResult;
+    if (installChoice === "1") {
+      installResult = await installPostgresWithDocker();
+      if (installResult.ok) {
+        config.POSTGRES_URL = defaults.POSTGRES_URL;
+        config.POSTGRES_SSL = "false";
+      }
+    } else {
+      installResult = await installPostgresLocally();
+      if (installResult.ok) {
+        config.POSTGRES_URL = defaults.POSTGRES_URL;
+        config.POSTGRES_SSL = "false";
+      }
+    }
+
+    output.write(`${installResult.message}\n`);
+  }
+}
+
 async function main() {
   const rl = readline.createInterface({ input, output });
 
@@ -265,7 +533,10 @@ async function main() {
     output.write("\nDatabase backend options:\n");
     output.write("  A) sqlite   (local file database)\n");
     output.write("  B) postgres (PostgreSQL server)\n\n");
-    const dbBackend = (await prompt(rl, "DB_BACKEND (sqlite|postgres|none)", "sqlite")).toLowerCase();
+    const dbBackend = normalizeDbBackendChoice(
+      await prompt(rl, "DB_BACKEND (A=sqlite, B=postgres, none)", "sqlite"),
+      "sqlite",
+    );
     let passwordModeDefault = defaults.PASSWORD_STORE_MODE;
     let configModeDefault = defaults.CONFIG_STORE_MODE;
     if (dbBackend === "postgres") {
@@ -300,6 +571,7 @@ async function main() {
     if (config.PASSWORD_STORE_MODE === "postgres" || config.CONFIG_STORE_MODE === "postgres") {
       config.POSTGRES_URL = await promptRequired(rl, "POSTGRES_URL", defaults.POSTGRES_URL);
       config.POSTGRES_SSL = normalizeBoolean(await prompt(rl, "POSTGRES_SSL", defaults.POSTGRES_SSL), defaults.POSTGRES_SSL);
+      await promptForPostgresRecovery(rl, config);
     } else {
       config.POSTGRES_URL = "";
       config.POSTGRES_SSL = defaults.POSTGRES_SSL;
@@ -401,8 +673,12 @@ async function main() {
     }
 
     if (config.PASSWORD_STORE_MODE === "postgres" || config.CONFIG_STORE_MODE === "postgres") {
-      await writePostgresData(config.POSTGRES_URL, config.POSTGRES_SSL, config, envContent);
-      output.write("PostgreSQL database updated.\n");
+      try {
+        await writePostgresData(config.POSTGRES_URL, config.POSTGRES_SSL, config, envContent);
+        output.write("PostgreSQL database updated.\n");
+      } catch (error) {
+        throw new Error(formatPostgresSetupError(error, config.POSTGRES_URL));
+      }
     }
 
     output.write(`\nCreated ${ENV_PATH}\n`);
@@ -412,7 +688,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`Setup failed: ${error.message}`);
-  process.exit(1);
-});
+if (isEntrypoint()) {
+  main().catch((error) => {
+    console.error(`Setup failed: ${error.message}`);
+    process.exit(1);
+  });
+}
