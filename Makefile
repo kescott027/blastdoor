@@ -12,7 +12,7 @@ DEBUG_FORCED_USERNAME ?= gm
 DEBUG_FORCED_PASSWORD ?= R@ndomPa55w0rd!
 ALLOW_NULL_ORIGIN ?= false
 
-.PHONY: help install test setup-env launch mock-vtt test-launch debug-launch
+.PHONY: help install ensure-deps test setup-env launch mock-vtt test-launch debug-launch
 
 help:
 	@echo "Targets:"
@@ -27,23 +27,29 @@ help:
 install:
 	npm install
 
-test:
+ensure-deps:
+	@if [ ! -d node_modules ] || [ ! -f node_modules/otplib/package.json ] || [ ! -f node_modules/pg/package.json ]; then \
+		echo "Installing Node dependencies..."; \
+		npm install; \
+	fi
+
+test: ensure-deps
 	npm test
 
-setup-env:
+setup-env: ensure-deps
 	node scripts/setup-env.js
 
-launch:
+launch: ensure-deps
 	@if [ ! -f .env ]; then \
 		echo "No .env found. Starting interactive setup..."; \
 		node scripts/setup-env.js; \
 	fi
 	npm start
 
-mock-vtt:
+mock-vtt: ensure-deps
 	MOCK_VTT_HOST=127.0.0.1 MOCK_VTT_PORT=$(MOCK_VTT_PORT) node scripts/mock-vtt.js
 
-test-launch:
+test-launch: ensure-deps
 	@echo "Starting mock VTT on http://127.0.0.1:$(MOCK_VTT_PORT)"
 	@echo "Starting Blastdoor on http://127.0.0.1:$(GATEWAY_PORT)"
 	@echo "Test login credentials loaded from $(PASSWORD_STORE_FILE)"
@@ -69,7 +75,7 @@ test-launch:
 	DEBUG_LOG_FILE='$(DEBUG_LOG_FILE)' \
 	node src/server.js
 
-debug-launch:
+debug-launch: ensure-deps
 	@echo "Starting mock VTT on http://127.0.0.1:$(MOCK_VTT_PORT)"
 	@echo "Starting Blastdoor on http://127.0.0.1:$(GATEWAY_PORT) in DEBUG mode"
 	@echo "Auth is forced to a fixed debug password configured by DEBUG_FORCED_PASSWORD."

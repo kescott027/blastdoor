@@ -23,33 +23,29 @@ Secure front-end authentication gateway for a self-hosted Foundry VTT instance.
 
 Node.js 22+ is required.
 
-1. Install dependencies:
+1. Create and configure your env file:
 
 ```bash
-npm install
+make setup-env
 ```
 
-2. Generate secrets and password hash:
+`make setup-env` now auto-checks dependencies and runs `npm install` when `node_modules` (or required packages like `otplib`/`pg`) are missing.
+It then launches the interactive setup wizard.
+
+2. Generate secrets and password hash manually (optional helper path):
 
 ```bash
 npm run gen-secret
 npm run hash-password -- 'replace-with-long-random-password'
 ```
 
-3. Create and configure your env file:
-
-```bash
-make setup-env
-```
-
-`make setup-env` walks every setting with defaults, asks for a password, and hashes it automatically.
-It now offers:
+3. During setup, Blastdoor offers:
 - Option A: SQLite (local file)
 - Option B: PostgreSQL
 
 If DB-backed modes are enabled, setup also initializes credentials and config records in the selected database.
 
-4. If you prefer manual setup, copy `.env.example` to `.env` and fill:
+4. If you prefer bypassing the wizard, copy `.env.example` to `.env` and fill:
 
 - `FOUNDRY_TARGET` (example: `http://127.0.0.1:30000`)
 - `SESSION_SECRET`
@@ -138,12 +134,14 @@ make launch
 
 Launches Blastdoor using `.env`.
 If `.env` does not exist, it launches the interactive setup wizard first.
+It also auto-installs dependencies if needed.
 
 ```bash
 make test-launch
 ```
 
 Starts a local mock VTT backend and launches Blastdoor against it.  
+Also auto-installs dependencies if needed.
 Default URLs:
 
 - Gateway: `http://127.0.0.1:8080`
@@ -156,6 +154,7 @@ Debug launch with forced password authentication:
 make debug-launch
 ```
 
+Also auto-installs dependencies if needed.
 This runs with `DEBUG_MODE=true` and forces auth to:
 
 - Username: `gm` (or `DEBUG_FORCED_USERNAME`)
@@ -169,6 +168,16 @@ make test-launch DEBUG_MODE=true DEBUG_LOG_FILE=logs/test-launch-debug.log
 
 Debug logs never include plaintext passwords and only include hashed user fingerprints.
 Each HTTP response includes `x-request-id` so you can match browser failures to logfile entries.
+
+## Troubleshooting install issues
+
+If you see `ERR_MODULE_NOT_FOUND` for packages like `otplib` on WSL/Linux:
+
+```bash
+rm -rf node_modules
+npm install
+make setup-env
+```
 
 ## Production hardening checklist
 
