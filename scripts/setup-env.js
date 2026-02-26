@@ -134,6 +134,14 @@ export function formatPostgresSetupError(error, postgresUrl) {
     ].join(" ");
   }
 
+  if (message.includes("Connection terminated unexpectedly")) {
+    return [
+      `Unable to connect to PostgreSQL at ${postgresUrl}.`,
+      "Connection was terminated unexpectedly; PostgreSQL may still be starting.",
+      "Wait a few seconds and retry, or rerun setup.",
+    ].join(" ");
+  }
+
   return `PostgreSQL initialization failed for ${postgresUrl}: ${message}`;
 }
 
@@ -375,6 +383,30 @@ async function probePostgresConnection(postgresUrl, postgresSsl) {
   }
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPostgresReady(postgresUrl, postgresSsl, options = {}) {
+  const attempts = Number.isInteger(options.attempts) ? options.attempts : 30;
+  const delayMs = Number.isInteger(options.delayMs) ? options.delayMs : 1000;
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const probe = await probePostgresConnection(postgresUrl, postgresSsl);
+    if (probe.ok) {
+      return { ok: true };
+    }
+
+    lastError = probe.error;
+    if (attempt < attempts) {
+      await delay(delayMs);
+    }
+  }
+
+  return { ok: false, error: lastError };
+}
+
 export function buildDockerPostgresRunCommand() {
   return [
     "docker run -d",
@@ -516,6 +548,19 @@ async function promptForPostgresRecovery(rl, config) {
     }
 
     output.write(`${installResult.message}\n`);
+    if (installResult.ok) {
+      output.write("Waiting for PostgreSQL readiness...\n");
+      const readiness = await waitForPostgresReady(config.POSTGRES_URL, config.POSTGRES_SSL, {
+        attempts: 40,
+        delayMs: 1000,
+      });
+      if (readiness.ok) {
+        output.write(`PostgreSQL detected at ${config.POSTGRES_URL}.\n`);
+        return;
+      }
+
+      output.write(`${formatPostgresSetupError(readiness.error, config.POSTGRES_URL)}\n`);
+    }
   }
 }
 

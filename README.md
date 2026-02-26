@@ -52,6 +52,7 @@ If PostgreSQL is selected, setup will:
 - On install path, detect Docker and offer:
 - `1` Docker container install (`postgres:16`) with persistence (`blastdoor-postgres-data` volume + restart policy)
 - `2` local Linux/WSL install (apt + service start + bootstrap user/db)
+- After install, wait and retry until PostgreSQL is actually ready before continuing.
 
 If DB-backed modes are enabled, setup also initializes credentials and config records in the selected database.
 

@@ -41,6 +41,12 @@ test("formatPostgresSetupError includes actionable ECONNREFUSED guidance", () =>
   assert.match(message, /verify host\/port\/database\/user/);
 });
 
+test("formatPostgresSetupError handles startup termination message", () => {
+  const error = new Error("Connection terminated unexpectedly");
+  const message = formatPostgresSetupError(error, "postgres://blastdoor:blastdoor@127.0.0.1:5432/blastdoor");
+  assert.match(message, /may still be starting/i);
+});
+
 test("buildDockerPostgresRunCommand configures persistent storage", () => {
   const command = buildDockerPostgresRunCommand();
   assert.match(command, /--restart unless-stopped/);
