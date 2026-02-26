@@ -11,6 +11,7 @@ Secure front-end authentication gateway for a self-hosted Foundry VTT instance.
 - Login rate limiting and CSRF protection
 - Reverse proxy to Foundry (including websocket traffic)
 - Fantasy/sci-fi themed responsive frontend
+- Local GUI management console for setup/config, launch control, and monitoring
 
 ## Architecture
 
@@ -129,6 +130,19 @@ Database schema/helpers are implemented in `src/database-store.js` for both SQLi
 npm start
 ```
 
+Launch the local management console:
+
+```bash
+make manager-launch
+```
+
+Default manager URL: `http://127.0.0.1:8090/manager/`
+
+Manager host/port can be overridden with:
+
+- `MANAGER_HOST` (default `127.0.0.1`)
+- `MANAGER_PORT` (default `8090`)
+
 ## Testing
 
 Run the full test suite:
@@ -136,6 +150,55 @@ Run the full test suite:
 ```bash
 npm test
 ```
+
+Run lint checks:
+
+```bash
+npm run lint
+```
+
+## Local Pre-Commit Hooks
+
+Blastdoor includes a local pre-commit toolchain (Husky) that runs:
+
+- `npm run lint`
+- `npm test`
+
+Install hooks locally:
+
+```bash
+make precommit-install
+```
+
+or:
+
+```bash
+npm run prepare
+```
+
+## GitHub CI and Security
+
+This repo now includes a comprehensive GitHub Actions pipeline:
+
+- `CI` (`.github/workflows/ci.yml`)
+- Runs on push + PR
+- Node matrix: `22.x`, `24.x`
+- Performs syntax checks + full test suite
+
+- `Dependency Review` (`.github/workflows/dependency-review.yml`)
+- Runs on PRs
+- Fails PR if dependency changes introduce `high`/`critical` risk
+
+- `Security Scans` (`.github/workflows/security.yml`)
+- Runs on PRs, pushes to `main`, weekly schedule, and manual dispatch
+- `npm audit` for production deps (`high`+)
+- Trivy filesystem vulnerability scan with SARIF upload to Security tab
+- Optional CodeQL:
+- Auto-enabled for public repos
+- For private repos, set repository variable `ENABLE_CODEQL=true` to enable
+
+- Dependabot (`.github/dependabot.yml`)
+- Weekly dependency update PRs for npm and GitHub Actions
 
 ## Makefile shortcuts
 
@@ -146,6 +209,24 @@ make launch
 Launches Blastdoor using `.env`.
 If `.env` does not exist, it launches the interactive setup wizard first.
 It also auto-installs dependencies if needed.
+
+```bash
+make manager-launch
+```
+
+Launches the GUI management console used to configure `.env`, start/stop/restart Blastdoor, and monitor runtime/debug logs.
+
+```bash
+make lint
+```
+
+Runs local ESLint checks (auto-installs dev dependencies if needed).
+
+```bash
+make precommit-install
+```
+
+Installs/refreshes local Husky git hooks.
 
 ```bash
 make test-launch

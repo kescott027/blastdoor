@@ -150,14 +150,14 @@ export class FilePasswordStore extends PasswordStore {
     try {
       raw = await fs.readFile(this.filePath, "utf8");
     } catch (error) {
-      throw new Error(`Failed to read password store file at ${this.filePath}: ${error.message}`);
+      throw new Error(`Failed to read password store file at ${this.filePath}: ${error.message}`, { cause: error });
     }
 
     let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch (error) {
-      throw new Error(`Password store file is not valid JSON: ${error.message}`);
+      throw new Error(`Password store file is not valid JSON: ${error.message}`, { cause: error });
     }
 
     const users = normalizeUsersFromFilePayload(parsed);

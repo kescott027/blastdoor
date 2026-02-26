@@ -12,14 +12,17 @@ DEBUG_FORCED_USERNAME ?= gm
 DEBUG_FORCED_PASSWORD ?= R@ndomPa55w0rd!
 ALLOW_NULL_ORIGIN ?= false
 
-.PHONY: help install ensure-deps test setup-env launch mock-vtt test-launch debug-launch
+.PHONY: help install ensure-deps ensure-dev-deps lint test precommit-install setup-env launch manager-launch mock-vtt test-launch debug-launch
 
 help:
 	@echo "Targets:"
 	@echo "  make install       Install Node dependencies"
+	@echo "  make lint          Run ESLint checks"
 	@echo "  make test          Run unit/integration tests"
+	@echo "  make precommit-install  Install local git hooks (husky)"
 	@echo "  make setup-env     Interactive .env setup wizard"
 	@echo "  make launch        Launch Blastdoor using .env"
+	@echo "  make manager-launch Launch local Blastdoor management UI"
 	@echo "  make mock-vtt      Launch standalone mock VTT backend"
 	@echo "  make test-launch   Launch Blastdoor against the mock VTT backend"
 	@echo "  make debug-launch  Launch in debug mode with forced password auth"
@@ -33,8 +36,20 @@ ensure-deps:
 		npm install; \
 	fi
 
+ensure-dev-deps: ensure-deps
+	@if [ ! -f node_modules/eslint/package.json ] || [ ! -f node_modules/husky/package.json ]; then \
+		echo "Installing development dependencies..."; \
+		npm install; \
+	fi
+
+lint: ensure-dev-deps
+	npm run lint
+
 test: ensure-deps
 	npm test
+
+precommit-install: ensure-dev-deps
+	npm run prepare
 
 setup-env: ensure-deps
 	node scripts/setup-env.js
@@ -45,6 +60,9 @@ launch: ensure-deps
 		node scripts/setup-env.js; \
 	fi
 	npm start
+
+manager-launch: ensure-deps
+	npm run manager
 
 mock-vtt: ensure-deps
 	MOCK_VTT_HOST=127.0.0.1 MOCK_VTT_PORT=$(MOCK_VTT_PORT) node scripts/mock-vtt.js

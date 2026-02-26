@@ -722,7 +722,7 @@ async function main() {
         await writePostgresData(config.POSTGRES_URL, config.POSTGRES_SSL, config, envContent);
         output.write("PostgreSQL database updated.\n");
       } catch (error) {
-        throw new Error(formatPostgresSetupError(error, config.POSTGRES_URL));
+        throw new Error(formatPostgresSetupError(error, config.POSTGRES_URL), { cause: error });
       }
     }
 
