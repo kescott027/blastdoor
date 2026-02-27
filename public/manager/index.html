@@ -16,6 +16,16 @@
     <main class="layout">
       <section class="panel">
         <h2>Service Control</h2>
+        <div class="blastdoors-control">
+          <div>
+            <p class="panel-note">Close blast doors to hard-lock the gateway and block all routing.</p>
+            <p class="status-inline"><strong>State:</strong> <span id="blastDoorsState">Open</span></p>
+          </div>
+          <label class="switch" for="blastDoorsToggle" title="Close blast doors">
+            <input id="blastDoorsToggle" type="checkbox" />
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
         <div class="button-row">
           <button id="startBtn" type="button">Start</button>
           <button id="stopBtn" type="button">Stop</button>
@@ -34,6 +44,7 @@
       <section class="panel">
         <h2>Configuration</h2>
         <form id="configForm">
+          <input type="hidden" name="BLAST_DOORS_CLOSED" id="blastDoorsClosedField" />
           <div class="grid">
             <label>HOST <input name="HOST" required /></label>
             <label>PORT <input name="PORT" required /></label>
@@ -81,6 +92,29 @@
         <pre id="diagSummary" class="log-box"></pre>
         <h3>JSON</h3>
         <pre id="diagJson" class="log-box"></pre>
+      </section>
+
+      <section class="panel troubleshooting-panel">
+        <h2>Troubleshooting</h2>
+        <p class="panel-note">
+          Run read-only environment checks and view guided remediation steps. Potentially destructive fixes are never
+          executed automatically.
+        </p>
+        <div class="button-row">
+          <button id="tsAnalyzeBtn" type="button">Analyze System</button>
+          <button id="tsSnapshotBtn" type="button">Gather Snapshot</button>
+          <button id="tsGatewayBtn" type="button">Test Gateway Access</button>
+          <button id="tsPortproxyDetectBtn" type="button">Detect WSL Portproxy</button>
+          <button id="tsPortproxyScriptBtn" type="button">Show Portproxy Script</button>
+          <button id="tsCopyScriptBtn" type="button">Copy Script</button>
+        </div>
+        <p class="status-message" id="tsStatusMessage"></p>
+        <h3>Hints</h3>
+        <pre id="tsHints" class="log-box"></pre>
+        <h3>Action Output</h3>
+        <pre id="tsOutput" class="log-box"></pre>
+        <h3>Guided Script (Manual Review Required)</h3>
+        <pre id="tsScript" class="log-box"></pre>
       </section>
 
       <section class="panel">

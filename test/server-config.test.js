@@ -67,6 +67,27 @@ test("loadConfigFromEnv supports postgres store values", () => {
   assert.equal(config.postgresSsl, true);
 });
 
+test("loadConfigFromEnv parses BLAST_DOORS_CLOSED", () => {
+  const enabled = loadConfigFromEnv({
+    FOUNDRY_TARGET: "http://127.0.0.1:30000",
+    SESSION_SECRET: "x".repeat(48),
+    AUTH_USERNAME: "gm",
+    AUTH_PASSWORD_HASH: "scrypt$a$b",
+    REQUIRE_TOTP: "false",
+    BLAST_DOORS_CLOSED: "true",
+  });
+  assert.equal(enabled.blastDoorsClosed, true);
+
+  const disabled = loadConfigFromEnv({
+    FOUNDRY_TARGET: "http://127.0.0.1:30000",
+    SESSION_SECRET: "x".repeat(48),
+    AUTH_USERNAME: "gm",
+    AUTH_PASSWORD_HASH: "scrypt$a$b",
+    REQUIRE_TOTP: "false",
+  });
+  assert.equal(disabled.blastDoorsClosed, false);
+});
+
 test("validateConfig requires postgres url for postgres-backed stores", () => {
   assert.throws(
     () =>

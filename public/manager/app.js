@@ -5,10 +5,18 @@ const form = document.getElementById("configForm");
 const diagStatusMessage = document.getElementById("diagStatusMessage");
 const diagSummary = document.getElementById("diagSummary");
 const diagJson = document.getElementById("diagJson");
+const blastDoorsToggle = document.getElementById("blastDoorsToggle");
+const blastDoorsState = document.getElementById("blastDoorsState");
+const blastDoorsClosedField = document.getElementById("blastDoorsClosedField");
+const tsStatusMessage = document.getElementById("tsStatusMessage");
+const tsHints = document.getElementById("tsHints");
+const tsOutput = document.getElementById("tsOutput");
+const tsScript = document.getElementById("tsScript");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
 
 let latestDiagnostics = null;
+let latestTroubleshootReport = null;
 
 function setMessage(text, isError = false) {
   statusMessage.textContent = text;
@@ -18,6 +26,19 @@ function setMessage(text, isError = false) {
 function setDiagMessage(text, isError = false) {
   diagStatusMessage.textContent = text;
   diagStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setTsMessage(text, isError = false) {
+  tsStatusMessage.textContent = text;
+  tsStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function toBooleanString(value) {
+  return value ? "true" : "false";
+}
+
+function parseBooleanish(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
 }
 
 function toSecondsLabel(seconds) {
@@ -71,6 +92,32 @@ function fillForm(config) {
 
     field.value = config[field.name] || "";
   }
+
+  const blastDoorsClosed = parseBooleanish(config.BLAST_DOORS_CLOSED);
+  blastDoorsToggle.checked = blastDoorsClosed;
+  blastDoorsClosedField.value = toBooleanString(blastDoorsClosed);
+  blastDoorsState.textContent = blastDoorsClosed ? "Closed" : "Open";
+}
+
+function buildConfigPayloadFromForm() {
+  const payload = {};
+  const fields = form.querySelectorAll("input[name]");
+  for (const field of fields) {
+    if (field.type === "checkbox") {
+      payload[field.name] = toBooleanString(field.checked);
+      continue;
+    }
+
+    payload[field.name] = String(field.value || "");
+  }
+
+  return payload;
+}
+
+async function saveConfig(payload, successMessage) {
+  await api("POST", "/config", payload);
+  setMessage(successMessage);
+  await refreshAll();
 }
 
 async function api(method, routePath, body) {
@@ -156,6 +203,80 @@ function renderDiagnostics(payload) {
   diagJson.textContent = JSON.stringify(payload.report || {}, null, 2);
 }
 
+function formatCheckLine(check) {
+  const status = String(check?.status || "info").toUpperCase();
+  const detail = check?.detail || "";
+  const recommendation = check?.recommendation ? ` Recommendation: ${check.recommendation}` : "";
+  return `[${status}] ${check?.title || check?.id || "Check"}: ${detail}${recommendation}`;
+}
+
+function formatSafeActionLine(action) {
+  return `- ${action.title} (${action.id}): ${action.description}`;
+}
+
+function formatGuidedActionLine(action) {
+  return `- ${action.title} (${action.id}) [${action.riskLevel || "manual"}]: ${action.warning || action.description || ""}`;
+}
+
+function setPortproxyButtonState(report) {
+  const isWsl = Boolean(report?.environment?.isWsl);
+  const detectBtn = document.getElementById("tsPortproxyDetectBtn");
+  const scriptBtn = document.getElementById("tsPortproxyScriptBtn");
+  detectBtn.disabled = !isWsl;
+  scriptBtn.disabled = !isWsl;
+}
+
+function renderTroubleshootReport(report) {
+  latestTroubleshootReport = report;
+  setPortproxyButtonState(report);
+
+  const lines = [
+    `Generated: ${report.generatedAt || "unknown"}`,
+    `Runtime: ${report.environment?.platform || "unknown"} ${report.environment?.arch || "unknown"}${report.environment?.isWsl ? ` (WSL: ${report.environment?.wslDistro || "unknown"})` : ""}`,
+    "",
+    "Checks:",
+    ...(report.checks || []).map(formatCheckLine),
+    "",
+    "Safe Actions:",
+    ...(report.safeActions || []).map(formatSafeActionLine),
+    "",
+    "Guided Actions (manual review required):",
+    ...(report.guidedActions || []).map(formatGuidedActionLine),
+  ];
+
+  tsHints.textContent = lines.join("\n");
+
+  const defaultGuided = (report.guidedActions || []).find((entry) => entry.id === "guide.wsl2-portproxy-fix");
+  tsScript.textContent =
+    defaultGuided?.script ||
+    "No guided script is required for this environment. Use Analyze System after environment changes.";
+}
+
+function formatActionOutputEntry(entry) {
+  const status = entry.ok ? "OK" : "FAIL";
+  const parts = [
+    `[${status}] ${entry.label || entry.command || "Command"}`,
+    entry.command ? `Command: ${entry.command}` : "",
+    entry.statusCode ? `Status Code: ${entry.statusCode}` : "",
+    entry.exitCode !== undefined && entry.exitCode !== null ? `Exit Code: ${entry.exitCode}` : "",
+    entry.error ? `Error: ${entry.error}` : "",
+    entry.stdout ? `STDOUT:\n${entry.stdout}` : "",
+    entry.stderr ? `STDERR:\n${entry.stderr}` : "",
+  ];
+
+  return parts.filter(Boolean).join("\n");
+}
+
+function renderTroubleshootActionResult(result) {
+  const lines = [
+    `Action: ${result.title || result.actionId}`,
+    `Generated: ${result.generatedAt || "unknown"}`,
+    "",
+    ...(result.outputs || []).map(formatActionOutputEntry),
+  ];
+  tsOutput.textContent = lines.join("\n\n");
+}
+
 async function refreshAll() {
   try {
     const [configResult, monitorResult] = await Promise.all([api("GET", "/config"), api("GET", "/monitor")]);
@@ -168,18 +289,29 @@ async function refreshAll() {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const data = new FormData(form);
-  const payload = {};
-  for (const [key, value] of data.entries()) {
-    payload[key] = String(value);
-  }
+  const payload = buildConfigPayloadFromForm();
 
   try {
-    await api("POST", "/config", payload);
-    setMessage("Configuration saved.");
-    await refreshAll();
+    await saveConfig(payload, "Configuration saved.");
   } catch (error) {
     setMessage(error.message || String(error), true);
+  }
+});
+
+blastDoorsToggle.addEventListener("change", async () => {
+  const closed = blastDoorsToggle.checked;
+  blastDoorsClosedField.value = toBooleanString(closed);
+  blastDoorsState.textContent = closed ? "Closed" : "Open";
+
+  const payload = buildConfigPayloadFromForm();
+  try {
+    await saveConfig(
+      payload,
+      closed ? "Blast doors closed. All gateway routes are blocked." : "Blast doors opened. Gateway routing restored.",
+    );
+  } catch (error) {
+    setMessage(error.message || String(error), true);
+    await refreshAll();
   }
 });
 
@@ -243,6 +375,67 @@ document.getElementById("diagCopyJsonBtn").addEventListener("click", async () =>
     setDiagMessage("JSON copied.");
   } catch (error) {
     setDiagMessage(error.message || String(error), true);
+  }
+});
+
+document.getElementById("tsAnalyzeBtn").addEventListener("click", async () => {
+  try {
+    const payload = await api("GET", "/troubleshoot");
+    renderTroubleshootReport(payload.report || {});
+    setTsMessage("Troubleshooting analysis complete.");
+  } catch (error) {
+    setTsMessage(error.message || String(error), true);
+  }
+});
+
+async function runTroubleshootAction(actionId, successMessage) {
+  try {
+    const payload = await api("POST", "/troubleshoot/run", { actionId });
+    renderTroubleshootActionResult(payload.result || {});
+    setTsMessage(successMessage);
+  } catch (error) {
+    setTsMessage(error.message || String(error), true);
+  }
+}
+
+document.getElementById("tsSnapshotBtn").addEventListener("click", async () => {
+  await runTroubleshootAction("snapshot.network", "Network snapshot complete.");
+});
+
+document.getElementById("tsGatewayBtn").addEventListener("click", async () => {
+  await runTroubleshootAction("check.gateway-local", "Gateway access checks complete.");
+});
+
+document.getElementById("tsPortproxyDetectBtn").addEventListener("click", async () => {
+  await runTroubleshootAction("detect.wsl-portproxy", "WSL2 portproxy detection complete.");
+});
+
+document.getElementById("tsPortproxyScriptBtn").addEventListener("click", async () => {
+  try {
+    if (!latestTroubleshootReport) {
+      const payload = await api("GET", "/troubleshoot");
+      renderTroubleshootReport(payload.report || {});
+    }
+
+    const action = (latestTroubleshootReport?.guidedActions || []).find((entry) => entry.id === "guide.wsl2-portproxy-fix");
+    if (!action?.script) {
+      setTsMessage("No guided script is needed for this environment.");
+      return;
+    }
+
+    tsScript.textContent = action.script;
+    setTsMessage("Guided script loaded. Review carefully before applying.");
+  } catch (error) {
+    setTsMessage(error.message || String(error), true);
+  }
+});
+
+document.getElementById("tsCopyScriptBtn").addEventListener("click", async () => {
+  try {
+    await copyToClipboard(tsScript.textContent || "");
+    setTsMessage("Guided script copied.");
+  } catch (error) {
+    setTsMessage(error.message || String(error), true);
   }
 });
 

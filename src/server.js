@@ -87,6 +87,7 @@ export function loadConfigFromEnv(env = process.env) {
     postgresSsl: parseBoolean(env.POSTGRES_SSL, false),
     passwordStoreMode,
     passwordStoreFile: env.PASSWORD_STORE_FILE || "mock/password-store.json",
+    blastDoorsClosed: parseBoolean(env.BLAST_DOORS_CLOSED, false),
   };
 }
 
@@ -190,6 +191,75 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp }) {
 </html>`;
 }
 
+function renderBlastDoorsClosedPage() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blast Doors Closed</title>
+    <style>
+      :root {
+        --bg0: #07090f;
+        --bg1: #101521;
+        --line: #2b364f;
+        --text: #ebf1ff;
+        --muted: #a5b4d8;
+        --alert: #ff8d8d;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 12% 14%, rgba(255, 141, 141, 0.14), transparent 34%),
+          radial-gradient(circle at 86% 18%, rgba(166, 190, 255, 0.09), transparent 30%),
+          linear-gradient(180deg, var(--bg1), var(--bg0));
+      }
+
+      main {
+        width: min(760px, 92vw);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 1.8rem;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+      }
+
+      h1 {
+        margin: 0 0 0.7rem;
+        font-size: clamp(1.55rem, 3vw, 2.2rem);
+      }
+
+      p {
+        margin: 0.45rem 0;
+        color: var(--muted);
+      }
+
+      .alert {
+        color: var(--alert);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Blast Doors Are Closed</h1>
+      <p class="alert">Gateway lockout is active. External routing is disabled.</p>
+      <p>All requests are intentionally blocked while this security state is enabled.</p>
+      <p>If you manage this service, open the Blastdoor admin panel and toggle blast doors open.</p>
+    </main>
+  </body>
+</html>`;
+}
+
 function createNoopLogger() {
   return {
     debugEnabled: false,
@@ -273,6 +343,24 @@ export function createApp(config, options = {}) {
     });
 
     next();
+  });
+
+  app.use((req, res, next) => {
+    if (!config.blastDoorsClosed) {
+      next();
+      return;
+    }
+
+    if (logger.debugEnabled) {
+      logger.info("blastdoors.closed_block", collectRequestContext(req));
+    }
+
+    res.status(503);
+    res.set("cache-control", "no-store");
+    res.set("retry-after", "60");
+    res.set("x-blastdoors-state", "closed");
+    res.type("html");
+    res.send(renderBlastDoorsClosedPage());
   });
 
   const sessionMiddleware = session({
@@ -535,8 +623,28 @@ export function createApp(config, options = {}) {
   return { app, proxy, sessionMiddleware, passwordStore };
 }
 
-export function attachWebsocketAuth(server, sessionMiddleware, proxy, logger = createNoopLogger()) {
+export function attachWebsocketAuth(
+  server,
+  sessionMiddleware,
+  proxy,
+  logger = createNoopLogger(),
+  options = {},
+) {
   server.on("upgrade", (req, socket, head) => {
+    if (options.blastDoorsClosed) {
+      if (logger.debugEnabled) {
+        logger.warn("blastdoors.closed_websocket_block", {
+          path: req.url || "/",
+          host: req.headers.host || null,
+          origin: req.headers.origin || null,
+        });
+      }
+
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
     const url = req.url || "/";
     if (url.startsWith("/assets") || url.startsWith("/login") || url.startsWith("/healthz")) {
       socket.destroy();
@@ -626,12 +734,15 @@ export function createServer(config, options = {}) {
           ? Boolean(config.postgresUrl)
           : false,
       allowNullOrigin: Boolean(config.allowNullOrigin),
+      blastDoorsClosed: Boolean(config.blastDoorsClosed),
       debugMode: Boolean(config.debugMode),
       debugLogFile: config.debugLogFile || null,
     });
   });
 
-  attachWebsocketAuth(server, sessionMiddleware, proxy, logger);
+  attachWebsocketAuth(server, sessionMiddleware, proxy, logger, {
+    blastDoorsClosed: Boolean(config.blastDoorsClosed),
+  });
   server.on("close", () => {
     if (typeof passwordStore?.close === "function") {
       Promise.resolve(passwordStore.close()).catch((error) => {
@@ -682,6 +793,7 @@ async function persistConfigSnapshot(config, configStore, logger) {
     PROXY_TLS_VERIFY: String(Boolean(config.proxyTlsVerify)),
     ALLOWED_ORIGINS: String(config.allowedOrigins || ""),
     ALLOW_NULL_ORIGIN: String(Boolean(config.allowNullOrigin)),
+    BLAST_DOORS_CLOSED: String(Boolean(config.blastDoorsClosed)),
     DEBUG_MODE: String(Boolean(config.debugMode)),
     DEBUG_LOG_FILE: String(config.debugLogFile || ""),
   };

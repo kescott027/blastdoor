@@ -288,7 +288,11 @@ test("manager diagnostics preserves empty secret fields", async () => {
       "utf8",
     );
 
-    const { app } = createManagerApp({ workspaceDir, envPath });
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
     const server = app.listen(0, "127.0.0.1");
     await once(server, "listening");
     const port = server.address().port;
@@ -328,7 +332,11 @@ test("manager diagnostics masks postgres URL credentials with fallback parser", 
       "utf8",
     );
 
-    const { app } = createManagerApp({ workspaceDir, envPath });
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
     const server = app.listen(0, "127.0.0.1");
     await once(server, "listening");
     const port = server.address().port;
@@ -358,6 +366,204 @@ test("manager diagnostics returns JSON error when .env cannot be read", async ()
       assert.equal(response.status, 500);
       assert.equal(typeof response.body.error, "string");
       assert.match(response.body.error, /Failed to read config/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager troubleshooting report includes WSL guidance when running in WSL", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=0.0.0.0",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$x$y",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "COOKIE_SECURE=true",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const previousDistro = process.env.WSL_DISTRO_NAME;
+    process.env.WSL_DISTRO_NAME = "Ubuntu-24.04";
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, { pathname: "/api/troubleshoot" });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+
+      const report = response.body.report;
+      assert.equal(report.environment.isWsl, true);
+      assert.equal(Array.isArray(report.checks), true);
+      assert.ok(report.checks.find((check) => check.id === "network.wsl2-portproxy"));
+      assert.ok(report.safeActions.find((action) => action.id === "detect.wsl-portproxy"));
+
+      const guided = report.guidedActions.find((entry) => entry.id === "guide.wsl2-portproxy-fix");
+      assert.ok(guided);
+      assert.equal(guided.destructive, true);
+      assert.match(guided.script, /netsh interface portproxy add/);
+    } finally {
+      if (previousDistro === undefined) {
+        delete process.env.WSL_DISTRO_NAME;
+      } else {
+        process.env.WSL_DISTRO_NAME = previousDistro;
+      }
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager troubleshooting runs non-destructive action with injected runner", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=0.0.0.0",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$x$y",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const calls = [];
+    const commandRunner = async ({ command, args }) => {
+      calls.push({ command, args });
+      return {
+        ok: true,
+        command,
+        args,
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      };
+    };
+
+    const { app } = createManagerApp({ workspaceDir, envPath, commandRunner });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, {
+        method: "POST",
+        pathname: "/api/troubleshoot/run",
+        body: { actionId: "snapshot.network" },
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+      assert.equal(response.body.result.actionId, "snapshot.network");
+      assert.ok((response.body.result.outputs || []).length >= 4);
+      assert.ok(calls.find((entry) => entry.command === "ss"));
+      assert.ok(calls.find((entry) => entry.command === "ip"));
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager troubleshooting rejects guided potentially-destructive actions", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=0.0.0.0",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$x$y",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, {
+        method: "POST",
+        pathname: "/api/troubleshoot/run",
+        body: { actionId: "guide.wsl2-portproxy-fix" },
+      });
+      assert.equal(response.status, 400);
+      assert.match(response.body.error, /potentially destructive/i);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager remains accessible when blast doors are closed", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=0.0.0.0",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$x$y",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "BLAST_DOORS_CLOSED=true",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const ui = await request(port, { pathname: "/manager/" });
+      assert.equal(ui.status, 200);
+      assert.match(ui.body.raw || "", /Blastdoor Control Console/);
+
+      const config = await request(port, { pathname: "/api/config" });
+      assert.equal(config.status, 200);
+      assert.equal(config.body.config.BLAST_DOORS_CLOSED, "true");
+
+      const trouble = await request(port, { pathname: "/api/troubleshoot" });
+      assert.equal(trouble.status, 200);
+      assert.equal(trouble.body.ok, true);
     } finally {
       await closeServer(server);
     }

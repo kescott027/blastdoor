@@ -181,6 +181,7 @@ async function startGateway({
   postgresPoolFactory = null,
   allowedOrigins = "",
   allowNullOrigin = false,
+  blastDoorsClosed = false,
 }) {
   const password = "Correct Horse Battery Staple 123!";
   const authUsername = "gm";
@@ -210,6 +211,7 @@ async function startGateway({
       postgresSsl,
       allowedOrigins,
       allowNullOrigin,
+      blastDoorsClosed,
     },
     { silent: true, postgresPoolFactory },
   );
@@ -637,6 +639,49 @@ test("gateway behavior with TOTP enabled", async (t) => {
 
   const proxied = await request(gateway.port, { path: "/session", headers: { accept: "application/json" } }, jar);
   assert.equal(proxied.status, 200);
+});
+
+test("blast doors closed mode blocks all routes and websocket upgrades", async (t) => {
+  const target = await startTargetServer();
+  const gateway = await startGateway({
+    foundryTarget: target.targetUrl,
+    requireTotp: false,
+    blastDoorsClosed: true,
+  });
+
+  t.after(async () => {
+    await closeServer(gateway.server);
+    await closeServer(target.server);
+  });
+
+  const blockedPaths = ["/healthz", "/assets/theme.css", "/login", "/world", "/logout"];
+  for (const blockedPath of blockedPaths) {
+    const response = await request(gateway.port, {
+      path: blockedPath,
+      headers: { accept: "text/html" },
+    });
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers["x-blastdoors-state"], "closed");
+    assert.match(response.body, /Blast Doors Are Closed/);
+  }
+
+  const postLoginBlocked = await request(gateway.port, {
+    method: "POST",
+    path: "/login",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      accept: "text/html",
+    },
+    body: "username=gm&password=abc",
+  });
+  assert.equal(postLoginBlocked.status, 503);
+  assert.match(postLoginBlocked.body, /Gateway lockout is active/);
+
+  const websocketBlocked = await wsHandshake(gateway.port, "/socket");
+  assert.match(websocketBlocked.statusLine, /^HTTP\/1\.1 503/);
+
+  assert.equal(target.requests.length, 0);
 });
 
 test("gateway authenticates using file password store", async (t) => {

@@ -39,6 +39,7 @@ const CONFIG_FIELDS = [
   "PROXY_TLS_VERIFY",
   "ALLOWED_ORIGINS",
   "ALLOW_NULL_ORIGIN",
+  "BLAST_DOORS_CLOSED",
   "DEBUG_MODE",
   "DEBUG_LOG_FILE",
 ];
@@ -66,6 +67,7 @@ const CONFIG_DEFAULTS = {
   PROXY_TLS_VERIFY: "true",
   ALLOWED_ORIGINS: "",
   ALLOW_NULL_ORIGIN: "true",
+  BLAST_DOORS_CLOSED: "false",
   DEBUG_MODE: "true",
   DEBUG_LOG_FILE: "logs/blastdoor-debug.log",
 };
@@ -397,11 +399,380 @@ async function checkBlastdoorHealth(config) {
   }
 }
 
+function parseBooleanLike(value, fallback = false) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
+}
+
+function createTroubleshootChecks({ config, health, environment }) {
+  const checks = [];
+  const blastDoorsClosed = parseBooleanLike(config.BLAST_DOORS_CLOSED, false);
+
+  checks.push({
+    id: "gateway.blastdoors",
+    title: "Blast doors lockout state",
+    status: blastDoorsClosed ? "warn" : "ok",
+    detail: blastDoorsClosed
+      ? "Blast doors are CLOSED. All gateway routes are intentionally blocked."
+      : "Blast doors are OPEN. Normal authenticated gateway routing is available.",
+    recommendation: blastDoorsClosed ? "Open blast doors from the admin panel when maintenance is complete." : null,
+  });
+
+  checks.push({
+    id: "network.bind-address",
+    title: "Gateway bind address",
+    status: config.HOST === "0.0.0.0" ? "ok" : "warn",
+    detail:
+      config.HOST === "0.0.0.0"
+        ? "Gateway is listening on all interfaces."
+        : `Gateway is bound to ${config.HOST}. LAN access may fail unless HOST=0.0.0.0.`,
+    recommendation: config.HOST === "0.0.0.0" ? null : "Set HOST=0.0.0.0 and restart Blastdoor.",
+  });
+
+  checks.push({
+    id: "gateway.local-health",
+    title: "Local health check",
+    status: health.ok ? "ok" : "error",
+    detail: health.ok
+      ? `Gateway responded from ${health.url} with status ${health.statusCode}.`
+      : `Gateway health endpoint is unreachable at ${health.url}${health.error ? ` (${health.error})` : ""}.`,
+    recommendation: health.ok ? null : "Confirm service status and check Runtime/Debug logs.",
+  });
+
+  const cookieSecure = parseBooleanLike(config.COOKIE_SECURE, false);
+  checks.push({
+    id: "auth.cookie-secure",
+    title: "Cookie security over HTTP",
+    status: cookieSecure ? "warn" : "ok",
+    detail: cookieSecure
+      ? "COOKIE_SECURE=true. Authentication cookies are only sent over HTTPS."
+      : "COOKIE_SECURE=false. Local HTTP testing is allowed.",
+    recommendation: cookieSecure
+      ? "Use HTTPS for external access, or set COOKIE_SECURE=false for local HTTP testing only."
+      : "Enable COOKIE_SECURE=true when fronting Blastdoor with TLS.",
+  });
+
+  if (environment.isWsl) {
+    checks.push({
+      id: "network.wsl2-portproxy",
+      title: "WSL2 LAN routing",
+      status: "warn",
+      detail:
+        "WSL2 uses NAT. localhost works on the host machine, but LAN clients usually need Windows portproxy and firewall rules.",
+      recommendation:
+        "Run non-destructive detection first, then review and apply the generated Windows portproxy script if needed.",
+    });
+  }
+
+  return checks;
+}
+
+function buildWslPortproxyScript({ environment, config }) {
+  const distro = environment.wslDistro || "Ubuntu";
+  const port = Number.parseInt(config.PORT || CONFIG_DEFAULTS.PORT, 10);
+
+  return [
+    "# Run in Windows PowerShell as Administrator",
+    "# WARNING: this modifies Windows portproxy and firewall configuration.",
+    "# Review before running. Execute at your own risk.",
+    "Set-Service iphlpsvc -StartupType Automatic",
+    "Start-Service iphlpsvc",
+    `$wslIp = (wsl -d ${distro} sh -lc "ip -4 -o addr show eth0 | awk '{print \\$4}' | cut -d/ -f1").Trim()`,
+    `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${port}`,
+    `netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=${port} connectaddress=$wslIp connectport=${port}`,
+    `New-NetFirewallRule -DisplayName "Blastdoor ${port}" -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${port}`,
+    "netsh interface portproxy show all",
+  ].join("\n");
+}
+
+function buildGuidedActions({ environment, config }) {
+  if (!environment.isWsl) {
+    return [];
+  }
+
+  return [
+    {
+      id: "guide.wsl2-portproxy-fix",
+      title: "WSL2 portproxy update script",
+      destructive: true,
+      riskLevel: "potentially-destructive",
+      description:
+        "Generates a Windows PowerShell script to update portproxy and firewall rules for LAN access.",
+      script: buildWslPortproxyScript({ environment, config }),
+      warning:
+        "This changes Windows networking configuration. Review and run manually, and research commands independently before applying.",
+    },
+  ];
+}
+
+function buildSafeActions(environment) {
+  const actions = [
+    {
+      id: "snapshot.network",
+      title: "Gather network snapshot",
+      destructive: false,
+      description: "Collect read-only networking command outputs (ss, ip, route, hostname, ufw status).",
+    },
+    {
+      id: "check.gateway-local",
+      title: "Test gateway access",
+      destructive: false,
+      description: "Runs local health checks against configured Blastdoor endpoints.",
+    },
+  ];
+
+  if (environment.isWsl) {
+    actions.push({
+      id: "detect.wsl-portproxy",
+      title: "Detect Windows portproxy",
+      destructive: false,
+      description: "Runs read-only checks for Windows portproxy and firewall rule visibility from WSL.",
+    });
+  }
+
+  return actions;
+}
+
+async function runDiagnosticCommand({
+  command,
+  args = [],
+  cwd = process.cwd(),
+  timeoutMs = 6000,
+  maxOutputChars = 24000,
+}) {
+  return await new Promise((resolve) => {
+    const startedAt = Date.now();
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve({
+        ...result,
+        durationMs: Date.now() - startedAt,
+      });
+    };
+
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const timeout = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      finish({
+        ok: false,
+        command,
+        args,
+        exitCode: null,
+        error: `Command timed out after ${timeoutMs}ms`,
+        stdout,
+        stderr,
+      });
+    }, timeoutMs);
+
+    const appendChunk = (target, chunk) => {
+      const text = String(chunk);
+      const next = `${target}${text}`;
+      if (next.length <= maxOutputChars) {
+        return next;
+      }
+
+      return `${next.slice(0, maxOutputChars)}\n[output truncated]`;
+    };
+
+    child.stdout?.on("data", (chunk) => {
+      stdout = appendChunk(stdout, chunk);
+    });
+
+    child.stderr?.on("data", (chunk) => {
+      stderr = appendChunk(stderr, chunk);
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      finish({
+        ok: false,
+        command,
+        args,
+        exitCode: null,
+        error: error instanceof Error ? error.message : String(error),
+        stdout,
+        stderr,
+      });
+    });
+
+    child.on("close", (code, signal) => {
+      clearTimeout(timeout);
+      finish({
+        ok: code === 0,
+        command,
+        args,
+        exitCode: code,
+        signal: signal || null,
+        stdout,
+        stderr,
+      });
+    });
+  });
+}
+
+async function runCommandBatch(commandRunner, commands, workspaceDir) {
+  const outputs = [];
+  for (const cmd of commands) {
+    const result = await commandRunner({
+      command: cmd.command,
+      args: cmd.args || [],
+      cwd: workspaceDir,
+      timeoutMs: cmd.timeoutMs || 6000,
+    });
+
+    outputs.push({
+      label: cmd.label,
+      command: [cmd.command, ...(cmd.args || [])].join(" "),
+      ...result,
+    });
+  }
+  return outputs;
+}
+
+async function runGatewayLocalChecks(config) {
+  const port = Number.parseInt(config.PORT || CONFIG_DEFAULTS.PORT, 10);
+  const candidates = [`http://127.0.0.1:${port}/healthz`];
+  if (config.HOST && !["0.0.0.0", "127.0.0.1", "localhost"].includes(config.HOST)) {
+    candidates.push(`http://${config.HOST}:${port}/healthz`);
+  }
+
+  const uniqueUrls = [...new Set(candidates)];
+  const checks = [];
+
+  for (const url of uniqueUrls) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      checks.push({
+        label: `GET ${url}`,
+        ok: response.ok,
+        statusCode: response.status,
+        error: null,
+      });
+    } catch (error) {
+      checks.push({
+        label: `GET ${url}`,
+        ok: false,
+        statusCode: null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return checks;
+}
+
+async function runTroubleshootAction({ actionId, config, environment, workspaceDir, commandRunner }) {
+  if (actionId === "snapshot.network") {
+    const outputs = await runCommandBatch(
+      commandRunner,
+      [
+        { label: "Listening TCP sockets", command: "ss", args: ["-ltn"] },
+        { label: "IPv4 interfaces", command: "ip", args: ["-4", "addr", "show"] },
+        { label: "Route table", command: "ip", args: ["route"] },
+        { label: "Host IP addresses", command: "hostname", args: ["-I"] },
+        { label: "UFW status (if installed)", command: "ufw", args: ["status"] },
+      ],
+      workspaceDir,
+    );
+
+    return {
+      actionId,
+      title: "Network snapshot",
+      destructive: false,
+      generatedAt: new Date().toISOString(),
+      outputs,
+    };
+  }
+
+  if (actionId === "check.gateway-local") {
+    const outputs = await runGatewayLocalChecks(config);
+    return {
+      actionId,
+      title: "Gateway local access checks",
+      destructive: false,
+      generatedAt: new Date().toISOString(),
+      outputs,
+    };
+  }
+
+  if (actionId === "detect.wsl-portproxy") {
+    if (!environment.isWsl) {
+      throw new Error("detect.wsl-portproxy is only available when running inside WSL.");
+    }
+
+    const port = Number.parseInt(config.PORT || CONFIG_DEFAULTS.PORT, 10);
+    const outputs = await runCommandBatch(
+      commandRunner,
+      [
+        {
+          label: "Windows portproxy entries",
+          command: "powershell.exe",
+          args: ["-NoProfile", "-Command", "netsh interface portproxy show all"],
+        },
+        {
+          label: "Windows firewall rule check",
+          command: "powershell.exe",
+          args: [
+            "-NoProfile",
+            "-Command",
+            `Get-NetFirewallRule -DisplayName 'Blastdoor ${port}' | Format-Table -AutoSize DisplayName,Enabled,Direction,Action`,
+          ],
+        },
+      ],
+      workspaceDir,
+    );
+
+    return {
+      actionId,
+      title: "WSL2 portproxy detection",
+      destructive: false,
+      generatedAt: new Date().toISOString(),
+      outputs,
+    };
+  }
+
+  throw new Error(`Unknown or unsupported troubleshooting action '${actionId}'.`);
+}
+
+function createTroubleshootReport({ config, health, environment, serviceStatus }) {
+  return {
+    generatedAt: new Date().toISOString(),
+    serviceStatus,
+    environment,
+    checks: createTroubleshootChecks({ config, health, environment }),
+    safeActions: buildSafeActions(environment),
+    guidedActions: buildGuidedActions({ environment, config }),
+  };
+}
+
 export function createManagerApp(options = {}) {
   const workspaceDir = path.resolve(options.workspaceDir || path.join(__dirname, ".."));
   const envPath = options.envPath || path.join(workspaceDir, ".env");
   const managerDir = options.managerDir || path.join(workspaceDir, "public", "manager");
   const processFactory = options.processFactory || spawn;
+  const commandRunner = options.commandRunner || runDiagnosticCommand;
   const processState = createProcessState({ workspaceDir, processFactory });
 
   const app = express();
@@ -549,6 +920,59 @@ export function createManagerApp(options = {}) {
       });
     } catch (error) {
       res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/troubleshoot", async (_req, res) => {
+    try {
+      const config = await readEnvConfig(envPath);
+      const serviceStatus = processState.getStatus();
+      const health = await checkBlastdoorHealth(config);
+      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+      const report = createTroubleshootReport({ config, health, environment, serviceStatus });
+
+      res.json({
+        ok: true,
+        report,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/troubleshoot/run", async (req, res) => {
+    try {
+      const actionId = normalizeString(req.body?.actionId, "");
+      if (!actionId) {
+        throw new Error("actionId is required.");
+      }
+
+      if (actionId.startsWith("guide.")) {
+        throw new Error(
+          "Requested action is potentially destructive and must be reviewed manually. Use diagnostics guidance instead.",
+        );
+      }
+
+      const config = await readEnvConfig(envPath);
+      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+      const result = await runTroubleshootAction({
+        actionId,
+        config,
+        environment,
+        workspaceDir,
+        commandRunner,
+      });
+
+      res.json({
+        ok: true,
+        result,
+      });
+    } catch (error) {
+      res.status(400).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }
