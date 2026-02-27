@@ -17,6 +17,9 @@ const appearanceStatusMessage = document.getElementById("appearanceStatusMessage
 const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
 const appearanceForm = document.getElementById("appearanceForm");
 const appearanceThemeName = document.getElementById("appearanceThemeName");
+const appearanceLogoSelectLegacy = document.getElementById("appearanceLogoSelect");
+const appearanceClosedBgSelectLegacy = document.getElementById("appearanceClosedBgSelect");
+const appearanceOpenBgSelectLegacy = document.getElementById("appearanceOpenBgSelect");
 const appearanceLogoDisplay = document.getElementById("appearanceLogoDisplay");
 const appearanceLogoPath = document.getElementById("appearanceLogoPath");
 const appearanceClosedBgDisplay = document.getElementById("appearanceClosedBgDisplay");
@@ -34,6 +37,27 @@ const appearanceAssetCancelBtn = document.getElementById("appearanceAssetCancelB
 const appearanceMakeActive = document.getElementById("appearanceMakeActive");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
+const hasModernAppearancePicker = Boolean(
+  appearanceLogoDisplay &&
+    appearanceLogoPath &&
+    appearanceClosedBgDisplay &&
+    appearanceClosedBgPath &&
+    appearanceOpenBgDisplay &&
+    appearanceOpenBgPath &&
+    appearanceChooseLogoBtn &&
+    appearanceChooseClosedBgBtn &&
+    appearanceChooseOpenBgBtn &&
+    appearanceAssetChooser &&
+    appearanceAssetChooserTitle &&
+    appearanceAssetChooserList &&
+    appearanceAssetSelectBtn &&
+    appearanceAssetCancelBtn,
+);
+const hasLegacyAppearancePicker = Boolean(
+  appearanceLogoSelectLegacy &&
+    appearanceClosedBgSelectLegacy &&
+    appearanceOpenBgSelectLegacy,
+);
 
 let latestDiagnostics = null;
 let latestTroubleshootReport = null;
@@ -322,6 +346,26 @@ function sortAssetsByName(assets) {
   return [...assets].sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
 }
 
+function fillAssetSelect(selectEl, assets, { allowEmpty, emptyLabel, required }) {
+  if (!selectEl) {
+    return;
+  }
+
+  selectEl.innerHTML = "";
+  if (allowEmpty) {
+    selectEl.append(optionMarkup("", emptyLabel, true));
+  }
+
+  for (const asset of assets) {
+    selectEl.append(optionMarkup(asset.path, asset.name, !allowEmpty && selectEl.options.length === 0));
+  }
+
+  selectEl.required = Boolean(required);
+  if (!allowEmpty && selectEl.options.length > 0 && !selectEl.value) {
+    selectEl.value = selectEl.options[0].value;
+  }
+}
+
 function fillThemeSelect(themes, activeThemeId) {
   appearanceThemeSelect.innerHTML = "";
   if (!themes.length) {
@@ -346,6 +390,10 @@ function setAppearanceSelection(nextSelection) {
 }
 
 function renderAppearanceSelection() {
+  if (!hasModernAppearancePicker) {
+    return;
+  }
+
   const logo = appearanceSelection.logoPath || "";
   const closed = appearanceSelection.closedBackgroundPath || "";
   const open = appearanceSelection.openBackgroundPath || "";
@@ -360,6 +408,10 @@ function renderAppearanceSelection() {
 }
 
 function closeAppearanceAssetPicker() {
+  if (!hasModernAppearancePicker) {
+    return;
+  }
+
   appearanceAssetChooserState = null;
   appearanceAssetChooserList.innerHTML = "";
   appearanceAssetChooser.hidden = true;
@@ -367,6 +419,11 @@ function closeAppearanceAssetPicker() {
 }
 
 function openAppearanceAssetPicker({ key, title, assets, allowNone, noneLabel }) {
+  if (!hasModernAppearancePicker) {
+    setAppearanceMessage("Theme asset picker is unavailable in this cached UI. Hard refresh the admin panel.", true);
+    return;
+  }
+
   const sortedAssets = sortAssetsByName(assets || []);
   const options = [];
   if (allowNone) {
@@ -447,23 +504,47 @@ function renderThemeCatalog(payload) {
 
   fillThemeSelect(payload.themes || [], payload.activeThemeId || "");
 
-  const validLogo = latestThemeAssets.logos.some((asset) => asset.path === appearanceSelection.logoPath)
-    ? appearanceSelection.logoPath
-    : "";
-  const validClosed = latestThemeAssets.backgrounds.some((asset) => asset.path === appearanceSelection.closedBackgroundPath)
-    ? appearanceSelection.closedBackgroundPath
-    : "";
-  const validOpen = latestThemeAssets.backgrounds.some((asset) => asset.path === appearanceSelection.openBackgroundPath)
-    ? appearanceSelection.openBackgroundPath
-    : "";
+  if (hasModernAppearancePicker) {
+    const validLogo = latestThemeAssets.logos.some((asset) => asset.path === appearanceSelection.logoPath)
+      ? appearanceSelection.logoPath
+      : "";
+    const validClosed = latestThemeAssets.backgrounds.some((asset) => asset.path === appearanceSelection.closedBackgroundPath)
+      ? appearanceSelection.closedBackgroundPath
+      : "";
+    const validOpen = latestThemeAssets.backgrounds.some((asset) => asset.path === appearanceSelection.openBackgroundPath)
+      ? appearanceSelection.openBackgroundPath
+      : "";
 
-  setAppearanceSelection({
-    logoPath: validLogo,
-    closedBackgroundPath: validClosed,
-    openBackgroundPath: validOpen,
-  });
-  renderAppearanceSelection();
-  closeAppearanceAssetPicker();
+    setAppearanceSelection({
+      logoPath: validLogo,
+      closedBackgroundPath: validClosed,
+      openBackgroundPath: validOpen,
+    });
+    renderAppearanceSelection();
+    closeAppearanceAssetPicker();
+    return;
+  }
+
+  if (hasLegacyAppearancePicker) {
+    fillAssetSelect(appearanceLogoSelectLegacy, latestThemeAssets.logos, {
+      allowEmpty: true,
+      emptyLabel: "No logo",
+      required: false,
+    });
+    fillAssetSelect(appearanceClosedBgSelectLegacy, latestThemeAssets.backgrounds, {
+      allowEmpty: false,
+      emptyLabel: "",
+      required: true,
+    });
+    fillAssetSelect(appearanceOpenBgSelectLegacy, latestThemeAssets.backgrounds, {
+      allowEmpty: true,
+      emptyLabel: "Same as closed background",
+      required: false,
+    });
+    return;
+  }
+
+  throw new Error("Appearance panel controls are missing. Hard refresh the admin panel and try again.");
 }
 
 async function refreshThemes() {
@@ -477,23 +558,44 @@ function openAppearanceModal() {
 }
 
 function closeAppearanceModal() {
-  closeAppearanceAssetPicker();
+  if (hasModernAppearancePicker) {
+    closeAppearanceAssetPicker();
+  }
   appearanceModal.hidden = true;
   appearanceModal.classList.add("hidden");
 }
 
 function buildAppearanceCreatePayload() {
-  if (!appearanceSelection.closedBackgroundPath) {
-    throw new Error("Choose a closed background before saving the theme.");
+  if (hasModernAppearancePicker) {
+    if (!appearanceSelection.closedBackgroundPath) {
+      throw new Error("Choose a closed background before saving the theme.");
+    }
+
+    return {
+      name: String(appearanceThemeName.value || ""),
+      logoPath: String(appearanceSelection.logoPath || ""),
+      closedBackgroundPath: String(appearanceSelection.closedBackgroundPath || ""),
+      openBackgroundPath: String(appearanceSelection.openBackgroundPath || ""),
+      makeActive: toBooleanString(appearanceMakeActive.checked),
+    };
   }
 
-  return {
-    name: String(appearanceThemeName.value || ""),
-    logoPath: String(appearanceSelection.logoPath || ""),
-    closedBackgroundPath: String(appearanceSelection.closedBackgroundPath || ""),
-    openBackgroundPath: String(appearanceSelection.openBackgroundPath || ""),
-    makeActive: toBooleanString(appearanceMakeActive.checked),
-  };
+  if (hasLegacyAppearancePicker) {
+    const closedPath = String(appearanceClosedBgSelectLegacy.value || "");
+    if (!closedPath) {
+      throw new Error("Choose a closed background before saving the theme.");
+    }
+
+    return {
+      name: String(appearanceThemeName.value || ""),
+      logoPath: String(appearanceLogoSelectLegacy.value || ""),
+      closedBackgroundPath: closedPath,
+      openBackgroundPath: String(appearanceOpenBgSelectLegacy.value || ""),
+      makeActive: toBooleanString(appearanceMakeActive.checked),
+    };
+  }
+
+  throw new Error("Appearance panel controls are missing. Hard refresh the admin panel and try again.");
 }
 
 async function refreshAll() {
@@ -604,12 +706,14 @@ document.getElementById("appearanceBtn").addEventListener("click", async () => {
     return;
   }
 
-  setAppearanceSelection({
-    logoPath: "",
-    closedBackgroundPath: "",
-    openBackgroundPath: "",
-  });
-  renderAppearanceSelection();
+  if (hasModernAppearancePicker) {
+    setAppearanceSelection({
+      logoPath: "",
+      closedBackgroundPath: "",
+      openBackgroundPath: "",
+    });
+    renderAppearanceSelection();
+  }
   openAppearanceModal();
   setAppearanceMessage("Loading themes...");
   try {
@@ -628,60 +732,62 @@ document.getElementById("appearanceCancelBtn").addEventListener("click", () => {
   closeAppearanceModal();
 });
 
-appearanceChooseLogoBtn.addEventListener("click", () => {
-  openAppearanceAssetPicker({
-    key: "logoPath",
-    title: "Choose Logo",
-    assets: latestThemeAssets.logos,
-    allowNone: true,
-    noneLabel: "None",
+if (hasModernAppearancePicker) {
+  appearanceChooseLogoBtn.addEventListener("click", () => {
+    openAppearanceAssetPicker({
+      key: "logoPath",
+      title: "Choose Logo",
+      assets: latestThemeAssets.logos,
+      allowNone: true,
+      noneLabel: "None",
+    });
   });
-});
 
-appearanceChooseClosedBgBtn.addEventListener("click", () => {
-  openAppearanceAssetPicker({
-    key: "closedBackgroundPath",
-    title: "Choose Closed Background",
-    assets: latestThemeAssets.backgrounds,
-    allowNone: false,
-    noneLabel: "",
+  appearanceChooseClosedBgBtn.addEventListener("click", () => {
+    openAppearanceAssetPicker({
+      key: "closedBackgroundPath",
+      title: "Choose Closed Background",
+      assets: latestThemeAssets.backgrounds,
+      allowNone: false,
+      noneLabel: "",
+    });
   });
-});
 
-appearanceChooseOpenBgBtn.addEventListener("click", () => {
-  openAppearanceAssetPicker({
-    key: "openBackgroundPath",
-    title: "Choose Open Background",
-    assets: latestThemeAssets.backgrounds,
-    allowNone: true,
-    noneLabel: "None",
+  appearanceChooseOpenBgBtn.addEventListener("click", () => {
+    openAppearanceAssetPicker({
+      key: "openBackgroundPath",
+      title: "Choose Open Background",
+      assets: latestThemeAssets.backgrounds,
+      allowNone: true,
+      noneLabel: "None",
+    });
   });
-});
 
-appearanceAssetSelectBtn.addEventListener("click", () => {
-  if (!appearanceAssetChooserState?.key) {
+  appearanceAssetSelectBtn.addEventListener("click", () => {
+    if (!appearanceAssetChooserState?.key) {
+      closeAppearanceAssetPicker();
+      return;
+    }
+
+    const selected = appearanceAssetChooserList.querySelector("input[name='appearanceAssetPickerChoice']:checked");
+    if (!selected) {
+      setAppearanceMessage("Choose an asset before confirming.", true);
+      return;
+    }
+
+    setAppearanceSelection({
+      ...appearanceSelection,
+      [appearanceAssetChooserState.key]: String(selected.value || ""),
+    });
+    renderAppearanceSelection();
     closeAppearanceAssetPicker();
-    return;
-  }
-
-  const selected = appearanceAssetChooserList.querySelector("input[name='appearanceAssetPickerChoice']:checked");
-  if (!selected) {
-    setAppearanceMessage("Choose an asset before confirming.", true);
-    return;
-  }
-
-  setAppearanceSelection({
-    ...appearanceSelection,
-    [appearanceAssetChooserState.key]: String(selected.value || ""),
+    setAppearanceMessage("Asset selection updated.");
   });
-  renderAppearanceSelection();
-  closeAppearanceAssetPicker();
-  setAppearanceMessage("Asset selection updated.");
-});
 
-appearanceAssetCancelBtn.addEventListener("click", () => {
-  closeAppearanceAssetPicker();
-});
+  appearanceAssetCancelBtn.addEventListener("click", () => {
+    closeAppearanceAssetPicker();
+  });
+}
 
 document.getElementById("appearanceApplyBtn").addEventListener("click", async () => {
   try {
@@ -704,12 +810,14 @@ appearanceForm.addEventListener("submit", async (event) => {
     const created = await api("POST", "/themes/create", payload);
     renderThemeCatalog(created);
     appearanceThemeName.value = "";
-    setAppearanceSelection({
-      logoPath: "",
-      closedBackgroundPath: "",
-      openBackgroundPath: "",
-    });
-    renderAppearanceSelection();
+    if (hasModernAppearancePicker) {
+      setAppearanceSelection({
+        logoPath: "",
+        closedBackgroundPath: "",
+        openBackgroundPath: "",
+      });
+      renderAppearanceSelection();
+    }
     appearanceMakeActive.checked = true;
     setAppearanceMessage("Theme saved.");
   } catch (error) {
