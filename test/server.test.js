@@ -662,8 +662,8 @@ test("blast doors closed mode blocks all routes and websocket upgrades", async (
     });
 
     assert.equal(response.status, 503);
-    assert.equal(response.headers["x-blastdoors-state"], "closed");
-    assert.match(response.body, /Blast Doors Are Closed/);
+    assert.equal(response.headers["x-blastdoors-state"], "locked");
+    assert.match(response.body, /Blast Doors Are Locked/);
   }
 
   const postLoginBlocked = await request(gateway.port, {

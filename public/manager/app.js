@@ -96,7 +96,7 @@ function fillForm(config) {
   const blastDoorsClosed = parseBooleanish(config.BLAST_DOORS_CLOSED);
   blastDoorsToggle.checked = blastDoorsClosed;
   blastDoorsClosedField.value = toBooleanString(blastDoorsClosed);
-  blastDoorsState.textContent = blastDoorsClosed ? "Closed" : "Open";
+  blastDoorsState.textContent = blastDoorsClosed ? "Locked" : "Unlocked";
 }
 
 function buildConfigPayloadFromForm() {
@@ -115,9 +115,10 @@ function buildConfigPayloadFromForm() {
 }
 
 async function saveConfig(payload, successMessage) {
-  await api("POST", "/config", payload);
+  const result = await api("POST", "/config", payload);
   setMessage(successMessage);
   await refreshAll();
+  return result;
 }
 
 async function api(method, routePath, body) {
@@ -301,14 +302,28 @@ form.addEventListener("submit", async (event) => {
 blastDoorsToggle.addEventListener("change", async () => {
   const closed = blastDoorsToggle.checked;
   blastDoorsClosedField.value = toBooleanString(closed);
-  blastDoorsState.textContent = closed ? "Closed" : "Open";
+  blastDoorsState.textContent = closed ? "Locked" : "Unlocked";
 
   const payload = buildConfigPayloadFromForm();
   try {
-    await saveConfig(
+    const result = await saveConfig(
       payload,
-      closed ? "Blast doors closed. All gateway routes are blocked." : "Blast doors opened. Gateway routing restored.",
+      closed ? "Blast doors locked." : "Blast doors unlocked.",
     );
+    const serviceRestarted = Boolean(result?.runtime?.serviceRestarted);
+    if (closed) {
+      setMessage(
+        serviceRestarted
+          ? "Blast doors locked. Gateway was restarted and lockout is active."
+          : "Blast doors locked. Start/restart the gateway service if lockout is not active yet.",
+      );
+    } else {
+      setMessage(
+        serviceRestarted
+          ? "Blast doors unlocked. Gateway was restarted and routing is restored."
+          : "Blast doors unlocked. Start/restart the gateway service if routing is still blocked.",
+      );
+    }
   } catch (error) {
     setMessage(error.message || String(error), true);
     await refreshAll();

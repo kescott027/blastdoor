@@ -208,6 +208,75 @@ test("manager can start stop and monitor gateway process", async () => {
   });
 });
 
+test("manager lock toggle restarts a running managed gateway immediately", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "BLAST_DOORS_CLOSED=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { factory, created } = createFakeProcessFactory();
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      processFactory: factory,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const started = await request(port, { method: "POST", pathname: "/api/start" });
+      assert.equal(started.status, 200);
+      assert.equal(started.body.status.running, true);
+      assert.equal(created.length, 1);
+      assert.equal(created[0].killed, false);
+
+      const configBefore = await request(port, { pathname: "/api/config" });
+      assert.equal(configBefore.status, 200);
+      assert.equal(configBefore.body.config.BLAST_DOORS_CLOSED, "false");
+
+      const saved = await request(port, {
+        method: "POST",
+        pathname: "/api/config",
+        body: {
+          ...configBefore.body.config,
+          BLAST_DOORS_CLOSED: "true",
+          AUTH_PASSWORD: "",
+        },
+      });
+
+      assert.equal(saved.status, 200);
+      assert.equal(saved.body.ok, true);
+      assert.equal(saved.body.config.BLAST_DOORS_CLOSED, "true");
+      assert.equal(saved.body.runtime.blastDoorsChanged, true);
+      assert.equal(saved.body.runtime.serviceRestarted, true);
+
+      assert.equal(created[0].killed, true);
+      assert.equal(created.length, 2);
+
+      const monitor = await request(port, { pathname: "/api/monitor" });
+      assert.equal(monitor.status, 200);
+      assert.equal(monitor.body.status.running, true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager diagnostics endpoint returns sanitized report", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");

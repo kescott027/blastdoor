@@ -416,9 +416,11 @@ function createTroubleshootChecks({ config, health, environment }) {
     title: "Blast doors lockout state",
     status: blastDoorsClosed ? "warn" : "ok",
     detail: blastDoorsClosed
-      ? "Blast doors are CLOSED. All gateway routes are intentionally blocked."
-      : "Blast doors are OPEN. Normal authenticated gateway routing is available.",
-    recommendation: blastDoorsClosed ? "Open blast doors from the admin panel when maintenance is complete." : null,
+      ? "Blast doors are LOCKED. All gateway routes are intentionally blocked."
+      : "Blast doors are UNLOCKED. Normal authenticated gateway routing is available.",
+    recommendation: blastDoorsClosed
+      ? "Unlock blast doors from the admin panel when maintenance is complete."
+      : null,
   });
 
   checks.push({
@@ -829,9 +831,25 @@ export function createManagerApp(options = {}) {
 
       validateConfig(loadConfigFromEnv({ ...incoming }));
       await writeEnvConfig(envPath, incoming);
+
+      const blastDoorsChanged =
+        normalizeString(existing.BLAST_DOORS_CLOSED, CONFIG_DEFAULTS.BLAST_DOORS_CLOSED) !==
+        normalizeString(incoming.BLAST_DOORS_CLOSED, CONFIG_DEFAULTS.BLAST_DOORS_CLOSED);
+
+      let serviceRestarted = false;
+      if (blastDoorsChanged && processState.getStatus().running) {
+        await processState.stop();
+        await processState.start();
+        serviceRestarted = true;
+      }
+
       res.json({
         ok: true,
         config: scrubConfigForClient({ ...existing, ...incoming }),
+        runtime: {
+          blastDoorsChanged,
+          serviceRestarted,
+        },
       });
     } catch (error) {
       res.status(400).json({

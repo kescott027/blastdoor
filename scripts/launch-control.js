@@ -58,8 +58,8 @@ function printControls() {
   line("  X - Exit cleanly");
   line("  R - Restart Blastdoor service");
   line(`  D - Debug console stream (${state.debugStreaming ? "ON" : "OFF"})`);
-  line("  L - LOCK BLASTDOORS");
-  line("  U - UNLOCK BLASTDOORS");
+  line("  L - LOCK BLAST DOORS");
+  line("  U - UNLOCK BLAST DOORS");
   line("  A - Open Admin panel");
   line("  ? - Show controls");
   line("");
@@ -339,12 +339,25 @@ async function saveConfigPatch(patch) {
   for (const [key, value] of Object.entries(patch)) {
     config[key] = String(value);
   }
-  await apiRequest("POST", "/config", config);
+  return await apiRequest("POST", "/config", config);
 }
 
 async function setBlastDoors(closed) {
-  await saveConfigPatch({ BLAST_DOORS_CLOSED: closed ? "true" : "false" });
-  info(closed ? "Blast doors are now CLOSED." : "Blast doors are now OPEN.");
+  const result = await saveConfigPatch({ BLAST_DOORS_CLOSED: closed ? "true" : "false" });
+  const restarted = Boolean(result?.runtime?.serviceRestarted);
+  if (closed) {
+    info(
+      restarted
+        ? "Blast doors are now LOCKED. Gateway restarted and lockout is active."
+        : "Blast doors are now LOCKED. Restart gateway service to enforce lockout.",
+    );
+  } else {
+    info(
+      restarted
+        ? "Blast doors are now UNLOCKED. Gateway restarted and routing is restored."
+        : "Blast doors are now UNLOCKED. Restart gateway service to restore routing if needed.",
+    );
+  }
 }
 
 async function startGatewayService() {

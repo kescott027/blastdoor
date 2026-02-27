@@ -197,7 +197,7 @@ function renderBlastDoorsClosedPage() {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Blast Doors Closed</title>
+    <title>Blast Doors Locked</title>
     <style>
       :root {
         --bg0: #07090f;
@@ -251,10 +251,10 @@ function renderBlastDoorsClosedPage() {
   </head>
   <body>
     <main>
-      <h1>Blast Doors Are Closed</h1>
+      <h1>Blast Doors Are Locked</h1>
       <p class="alert">Gateway lockout is active. External routing is disabled.</p>
       <p>All requests are intentionally blocked while this security state is enabled.</p>
-      <p>If you manage this service, open the Blastdoor admin panel and toggle blast doors open.</p>
+      <p>If you manage this service, open the Blastdoor admin panel and unlock blast doors.</p>
     </main>
   </body>
 </html>`;
@@ -358,7 +358,7 @@ export function createApp(config, options = {}) {
     res.status(503);
     res.set("cache-control", "no-store");
     res.set("retry-after", "60");
-    res.set("x-blastdoors-state", "closed");
+    res.set("x-blastdoors-state", "locked");
     res.type("html");
     res.send(renderBlastDoorsClosedPage());
   });
