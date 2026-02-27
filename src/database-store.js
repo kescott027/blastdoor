@@ -91,6 +91,22 @@ export class BlastdoorDatabase {
     };
   }
 
+  listUsers() {
+    const statement = this.db.prepare(`
+      SELECT username, password_hash, totp_secret, disabled
+      FROM users
+      ORDER BY username ASC
+    `);
+
+    const rows = statement.all();
+    return rows.map((row) => ({
+      username: row.username,
+      passwordHash: row.password_hash,
+      totpSecret: row.totp_secret || null,
+      disabled: row.disabled === 1,
+    }));
+  }
+
   setConfigValue(key, value) {
     if (typeof key !== "string" || key.length === 0) {
       throw new Error("config key is required.");
@@ -319,6 +335,25 @@ export class BlastdoorPostgresDatabase {
       totpSecret: row.totp_secret || null,
       disabled: row.disabled === true,
     };
+  }
+
+  async listUsers() {
+    await this.ensureReady();
+    const result = await this.pool.query(
+      `
+      SELECT username, password_hash, totp_secret, disabled
+      FROM users
+      ORDER BY username ASC
+      `,
+      [],
+    );
+
+    return result.rows.map((row) => ({
+      username: row.username,
+      passwordHash: row.password_hash,
+      totpSecret: row.totp_secret || null,
+      disabled: row.disabled === true,
+    }));
   }
 
   async setConfigValue(key, value) {

@@ -163,3 +163,6 @@ graphics/background/*
 graphics/themes/*
 !graphics/themes/YOURTHEMES.txt
 !graphics/themes/default-theme.json
+
+# Local user profile runtime store
+data/user-profiles.json

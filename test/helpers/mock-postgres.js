@@ -34,10 +34,15 @@ function createPool(state) {
         return { rows: [], rowCount: 1 };
       }
 
-      if (sql.includes("select username, password_hash, totp_secret, disabled")) {
+      if (sql.includes("select username, password_hash, totp_secret, disabled") && sql.includes("where username = $1")) {
         const [username] = values;
         const row = state.users.get(username);
         return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+      }
+
+      if (sql.includes("select username, password_hash, totp_secret, disabled") && sql.includes("from users")) {
+        const rows = Array.from(state.users.values()).sort((a, b) => a.username.localeCompare(b.username));
+        return { rows, rowCount: rows.length };
       }
 
       if (sql.includes("insert into app_config")) {

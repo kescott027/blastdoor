@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createPasswordHash } from "./security.js";
 import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
+import { createPasswordStore } from "./password-store.js";
+import { createUserAdminStore } from "./user-admin-store.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
 import {
   createThemeId,
@@ -87,6 +89,8 @@ const CONFIG_DEFAULTS = {
 
 const SENSITIVE_CONFIG_KEYS = new Set(["AUTH_PASSWORD_HASH", "SESSION_SECRET", "TOTP_SECRET"]);
 const REDACTED_MARKER = "[REDACTED]";
+const MANAGED_USER_STATUSES = new Set(["active", "deactivated", "banned"]);
+const USER_FILTER_OPTIONS = new Set(["active", "inactive", "authenticated", "all"]);
 
 function formatEnvValue(value) {
   if (value === "") {
@@ -110,6 +114,49 @@ function normalizeString(value, fallback = "") {
   }
 
   return String(value).trim();
+}
+
+function normalizeUsername(value) {
+  return normalizeString(value, "").toLowerCase();
+}
+
+function normalizeUserStatus(value, fallback = "active") {
+  const normalized = normalizeString(value, "").toLowerCase();
+  if (MANAGED_USER_STATUSES.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeUserFilter(value, fallback = "active") {
+  const normalized = normalizeString(value, "").toLowerCase();
+  if (USER_FILTER_OPTIONS.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function validateManagedUsername(value) {
+  const username = normalizeUsername(value);
+  if (!/^[a-z0-9._-]{3,64}$/.test(username)) {
+    throw new Error("Username must be 3-64 chars using a-z, 0-9, '.', '_', or '-'.");
+  }
+  return username;
+}
+
+function sanitizeEmail(value) {
+  const email = normalizeString(value, "").toLowerCase();
+  if (!email) {
+    return "";
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Email must be valid.");
+  }
+  return email;
+}
+
+function sanitizeLongText(value, maxLength = 4096) {
+  return normalizeString(value, "").slice(0, maxLength);
 }
 
 function parseBodyConfig(body) {
@@ -962,8 +1009,10 @@ export function createManagerApp(options = {}) {
   const managerDir = options.managerDir || path.join(workspaceDir, "public", "manager");
   const graphicsDir = options.graphicsDir || path.join(workspaceDir, "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
+  const userProfileStorePath = options.userProfileStorePath || path.join(workspaceDir, "data", "user-profiles.json");
   const processFactory = options.processFactory || spawn;
   const commandRunner = options.commandRunner || runDiagnosticCommand;
+  const postgresPoolFactory = options.postgresPoolFactory;
   const processState = createProcessState({ workspaceDir, processFactory });
   const managerWriteRateLimitWindowMs = Number.isInteger(options.managerWriteRateLimitWindowMs)
     ? options.managerWriteRateLimitWindowMs
@@ -971,6 +1020,93 @@ export function createManagerApp(options = {}) {
   const managerWriteRateLimitMax = Number.isInteger(options.managerWriteRateLimitMax)
     ? options.managerWriteRateLimitMax
     : 120;
+
+  async function withUserManagementStores(handler) {
+    const configFromEnv = await readEnvConfig(envPath);
+    const runtimeConfig = loadConfigFromEnv(configFromEnv);
+    const credentialStore = createPasswordStore(runtimeConfig, {
+      postgresPoolFactory,
+    });
+    const userProfileStore = createUserAdminStore({
+      filePath: userProfileStorePath,
+    });
+
+    try {
+      return await handler({
+        configFromEnv,
+        runtimeConfig,
+        credentialStore,
+        userProfileStore,
+      });
+    } finally {
+      if (typeof credentialStore?.close === "function") {
+        await credentialStore.close();
+      }
+      if (typeof userProfileStore?.close === "function") {
+        await userProfileStore.close();
+      }
+    }
+  }
+
+  async function buildManagedUserList({ filter = "active" } = {}) {
+    return withUserManagementStores(async ({ configFromEnv, credentialStore, userProfileStore }) => {
+      const credentials = await credentialStore.listUsers();
+      const profiles = await userProfileStore.listProfiles({
+        sessionMaxAgeHours: Number.parseInt(configFromEnv.SESSION_MAX_AGE_HOURS || "12", 10),
+      });
+      const profileByUsername = new Map(profiles.map((entry) => [entry.username, entry]));
+
+      const users = credentials.map((credential) => {
+        const profile = profileByUsername.get(credential.username) || null;
+        const status = normalizeUserStatus(profile?.status || (credential.disabled ? "deactivated" : "active"));
+        const authenticatedNow = Boolean(profile?.authenticatedNow && status === "active");
+        return {
+          username: credential.username,
+          friendlyName: profile?.friendlyName || "",
+          email: profile?.email || "",
+          status,
+          displayInfo: profile?.displayInfo || "",
+          notes: profile?.notes || "",
+          lastLoginAt: profile?.lastLoginAt || "",
+          lastKnownIp: profile?.lastKnownIp || "",
+          authenticatedNow,
+          tempCodeActive: Boolean(profile?.tempCodeActive),
+          tempCodeExpiresAt: profile?.tempCodeExpiresAt || "",
+          sessionVersion: Number.parseInt(String(profile?.sessionVersion || 1), 10) || 1,
+          disabled: credential.disabled === true,
+        };
+      });
+
+      const selectedFilter = normalizeUserFilter(filter, "active");
+      const filteredUsers = users.filter((user) => {
+        if (selectedFilter === "all") {
+          return true;
+        }
+        if (selectedFilter === "active") {
+          return user.status === "active";
+        }
+        if (selectedFilter === "inactive") {
+          return user.status === "deactivated" || user.status === "banned";
+        }
+        if (selectedFilter === "authenticated") {
+          return user.authenticatedNow;
+        }
+        return true;
+      });
+
+      filteredUsers.sort((a, b) => a.username.localeCompare(b.username));
+      return {
+        filter: selectedFilter,
+        users: filteredUsers,
+        counts: {
+          total: users.length,
+          active: users.filter((entry) => entry.status === "active").length,
+          inactive: users.filter((entry) => entry.status === "deactivated" || entry.status === "banned").length,
+          authenticated: users.filter((entry) => entry.authenticatedNow).length,
+        },
+      };
+    });
+  }
 
   const app = express();
   app.disable("x-powered-by");
@@ -1147,6 +1283,213 @@ export function createManagerApp(options = {}) {
       });
     } catch (error) {
       res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/users", async (req, res) => {
+    try {
+      const view = normalizeUserFilter(req.query?.view, "active");
+      const payload = await buildManagedUserList({ filter: view });
+      res.json({
+        ok: true,
+        ...payload,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/users/create", async (req, res) => {
+    try {
+      const username = validateManagedUsername(req.body?.username);
+      const password = normalizeString(req.body?.password, "");
+      if (password.length < 12) {
+        throw new Error("Password must be at least 12 characters.");
+      }
+      const status = normalizeUserStatus(req.body?.status, "active");
+      const friendlyName = sanitizeLongText(req.body?.friendlyName, 160);
+      const email = sanitizeEmail(req.body?.email);
+      const displayInfo = sanitizeLongText(req.body?.displayInfo, 2048);
+      const notes = sanitizeLongText(req.body?.notes, 4096);
+
+      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
+        const users = await credentialStore.listUsers();
+        if (users.some((entry) => entry.username === username)) {
+          throw new Error("User already exists.");
+        }
+
+        await credentialStore.upsertUser({
+          username,
+          passwordHash: createPasswordHash(password),
+          totpSecret: null,
+          disabled: status !== "active",
+        });
+        await userProfileStore.upsertProfile({
+          username,
+          friendlyName,
+          email,
+          status,
+          displayInfo,
+          notes,
+        });
+      });
+
+      const listPayload = await buildManagedUserList({ filter: "all" });
+      const createdUser = listPayload.users.find((entry) => entry.username === username) || null;
+      res.json({
+        ok: true,
+        user: createdUser,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/users/update", async (req, res) => {
+    try {
+      const username = validateManagedUsername(req.body?.username);
+      const password = normalizeString(req.body?.password, "");
+      const status = normalizeUserStatus(req.body?.status, "active");
+      const friendlyName = sanitizeLongText(req.body?.friendlyName, 160);
+      const email = sanitizeEmail(req.body?.email);
+      const displayInfo = sanitizeLongText(req.body?.displayInfo, 2048);
+      const notes = sanitizeLongText(req.body?.notes, 4096);
+
+      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
+        const users = await credentialStore.listUsers();
+        const existingUser = users.find((entry) => entry.username === username);
+        if (!existingUser) {
+          throw new Error("User not found.");
+        }
+
+        await credentialStore.upsertUser({
+          username,
+          passwordHash: password ? createPasswordHash(password) : existingUser.passwordHash,
+          totpSecret: existingUser.totpSecret || null,
+          disabled: status !== "active",
+        });
+        await userProfileStore.upsertProfile({
+          username,
+          friendlyName,
+          email,
+          status,
+          displayInfo,
+          notes,
+        });
+      });
+
+      const listPayload = await buildManagedUserList({ filter: "all" });
+      const updatedUser = listPayload.users.find((entry) => entry.username === username) || null;
+      res.json({
+        ok: true,
+        user: updatedUser,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/users/set-status", async (req, res) => {
+    try {
+      const username = validateManagedUsername(req.body?.username);
+      const status = normalizeUserStatus(req.body?.status, "active");
+
+      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
+        const users = await credentialStore.listUsers();
+        const existingUser = users.find((entry) => entry.username === username);
+        if (!existingUser) {
+          throw new Error("User not found.");
+        }
+
+        await credentialStore.upsertUser({
+          username,
+          passwordHash: existingUser.passwordHash,
+          totpSecret: existingUser.totpSecret || null,
+          disabled: status !== "active",
+        });
+        await userProfileStore.upsertProfile({
+          username,
+          status,
+        });
+      });
+
+      const listPayload = await buildManagedUserList({ filter: "all" });
+      const updatedUser = listPayload.users.find((entry) => entry.username === username) || null;
+      res.json({
+        ok: true,
+        user: updatedUser,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/users/reset-login-code", async (req, res) => {
+    try {
+      const username = validateManagedUsername(req.body?.username);
+      const delivery = normalizeString(req.body?.delivery, "manual") || "manual";
+      const ttlMinutes = Number.parseInt(normalizeString(req.body?.ttlMinutes, "30"), 10);
+
+      let issuedCode = null;
+      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
+        const users = await credentialStore.listUsers();
+        const existingUser = users.find((entry) => entry.username === username);
+        if (!existingUser) {
+          throw new Error("User not found.");
+        }
+
+        issuedCode = await userProfileStore.issueTemporaryLoginCode(username, { ttlMinutes, delivery });
+      });
+
+      res.json({
+        ok: true,
+        username,
+        delivery,
+        code: issuedCode?.code || "",
+        expiresAt: issuedCode?.expiresAt || "",
+        warning:
+          delivery === "email"
+            ? "Email dispatch is not configured. Copy this temporary code and deliver it securely."
+            : "",
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/users/invalidate-token", async (req, res) => {
+    try {
+      const username = validateManagedUsername(req.body?.username);
+      let profile = null;
+      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
+        const users = await credentialStore.listUsers();
+        const existingUser = users.find((entry) => entry.username === username);
+        if (!existingUser) {
+          throw new Error("User not found.");
+        }
+
+        profile = await userProfileStore.invalidateUserSessions(username);
+      });
+
+      res.json({
+        ok: true,
+        username,
+        sessionVersion: profile?.sessionVersion || 1,
+      });
+    } catch (error) {
+      res.status(400).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }

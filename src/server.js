@@ -21,6 +21,7 @@ import {
 import { createLogger } from "./logger.js";
 import { createConfigStore } from "./config-store.js";
 import { createPasswordStore } from "./password-store.js";
+import { createUserAdminStore } from "./user-admin-store.js";
 import { mapThemeForClient, readThemeStore, resolveActiveTheme } from "./login-theme.js";
 import { createBlastDoorsStateController } from "./blastdoors-state.js";
 
@@ -547,6 +548,15 @@ function collectRequestContext(req) {
   };
 }
 
+function normalizeManagedUserStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "active" || normalized === "deactivated" || normalized === "banned") {
+    return normalized;
+  }
+
+  return "active";
+}
+
 export function createApp(config, options = {}) {
   validateConfig(config);
   const logger = options.logger || createNoopLogger();
@@ -560,6 +570,8 @@ export function createApp(config, options = {}) {
   const graphicsDir = options.graphicsDir || path.join(__dirname, "..", "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
   const runtimeStatePath = options.runtimeStatePath || path.join(process.cwd(), "data", "runtime-state.json");
+  const userProfileStorePath = options.userProfileStorePath || path.join(process.cwd(), "data", "user-profiles.json");
+  const userAdminStore = options.userAdminStore || createUserAdminStore({ filePath: userProfileStorePath });
   const blastDoorsStateController =
     options.blastDoorsStateController ||
     createBlastDoorsStateController({
@@ -711,14 +723,65 @@ export function createApp(config, options = {}) {
     }),
   );
 
-  function authGuard(req, res, next) {
-    if (req.session?.authenticated) {
-      return next();
-    }
-
+  async function authGuard(req, res, next) {
     const nextPath = safeNextPath(req.originalUrl, "/");
     const accept = req.get("accept") || "";
     const wantsHtml = accept.includes("text/html");
+
+    if (req.session?.authenticated) {
+      const sessionUser = typeof req.session.user === "string" ? req.session.user : "";
+      if (!sessionUser) {
+        req.session.destroy(() => {
+          res.clearCookie("blastdoor.sid");
+          if (wantsHtml) {
+            res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+            return;
+          }
+          res.status(401).json({ error: "Authentication required" });
+        });
+        return;
+      }
+
+      try {
+        const profile = await userAdminStore.getProfile(sessionUser);
+        const profileStatus = normalizeManagedUserStatus(profile?.status);
+        const profileSessionVersion = Number.parseInt(String(profile?.sessionVersion || 1), 10) || 1;
+        const sessionVersion = Number.parseInt(String(req.session.userSessionVersion || 1), 10) || 1;
+        if (profileStatus !== "active" || profileSessionVersion !== sessionVersion) {
+          if (logger.debugEnabled) {
+            logger.info("auth.guard.session_invalidated", {
+              ...collectRequestContext(req),
+              usernameFingerprint: fingerprintIdentifier(sessionUser),
+              profileStatus,
+              profileSessionVersion,
+              sessionVersion,
+            });
+          }
+
+          req.session.destroy(() => {
+            res.clearCookie("blastdoor.sid");
+            if (wantsHtml) {
+              res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+              return;
+            }
+            res.status(401).json({ error: "Authentication required" });
+          });
+          return;
+        }
+      } catch (error) {
+        logger.error("auth.guard.profile_store_error", {
+          ...collectRequestContext(req),
+          usernameFingerprint: fingerprintIdentifier(sessionUser),
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+        return res.status(500).json({ error: "Authentication service unavailable." });
+      }
+
+      return next();
+    }
+
     if (wantsHtml) {
       if (logger.debugEnabled) {
         logger.debug("auth.guard.redirect", collectRequestContext(req));
@@ -854,21 +917,59 @@ export function createApp(config, options = {}) {
       return res.status(500).send("Authentication service unavailable.");
     }
 
+    let managedProfile;
+    try {
+      managedProfile = await userAdminStore.getRawProfile(username);
+      if (!managedProfile && userRecord?.username) {
+        managedProfile = await userAdminStore.upsertProfile({
+          username: userRecord.username,
+          status: userRecord.disabled ? "deactivated" : "active",
+        });
+      }
+    } catch (error) {
+      logger.error("auth.login.profile_store_error", {
+        ...collectRequestContext(req),
+        usernameFingerprint: fingerprintIdentifier(username),
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+      return res.status(500).send("Authentication profile service unavailable.");
+    }
+
     const usernameValid = Boolean(userRecord);
-    const passwordValid = userRecord ? verifyPassword(password, userRecord.passwordHash) : false;
+    const profileStatus = normalizeManagedUserStatus(managedProfile?.status || (userRecord?.disabled ? "deactivated" : "active"));
+    let passwordValid = userRecord ? verifyPassword(password, userRecord.passwordHash) : false;
+    let tempCodeValid = false;
+    if (userRecord && !passwordValid && password.trim()) {
+      try {
+        tempCodeValid = await userAdminStore.verifyTemporaryLoginCode(username, password, { consume: true });
+      } catch (error) {
+        logger.warn("auth.login.temp_code_verify_failed", {
+          ...collectRequestContext(req),
+          usernameFingerprint: fingerprintIdentifier(username),
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+    }
+    passwordValid = passwordValid || tempCodeValid;
     const effectiveTotpSecret = userRecord?.totpSecret || config.totpSecret;
     const totpValid = config.requireTotp
       ? Boolean(effectiveTotpSecret) && authenticator.check(totp, effectiveTotpSecret)
       : true;
 
-    if (!usernameValid || !passwordValid || !totpValid) {
+    if (!usernameValid || !passwordValid || !totpValid || profileStatus !== "active") {
       if (logger.debugEnabled) {
         logger.warn("auth.login.credentials_rejected", {
           ...collectRequestContext(req),
           usernameFingerprint: fingerprintIdentifier(username),
           usernameValid,
           passwordValid,
+          tempCodeValid,
           totpValid,
+          profileStatus,
           requireTotp: config.requireTotp,
           nextPath,
         });
@@ -888,6 +989,19 @@ export function createApp(config, options = {}) {
       );
     }
 
+    let loginProfile = managedProfile;
+    try {
+      loginProfile = await userAdminStore.recordSuccessfulLogin(userRecord?.username || username, req.ip);
+    } catch (error) {
+      logger.warn("auth.login.profile_update_failed", {
+        ...collectRequestContext(req),
+        usernameFingerprint: fingerprintIdentifier(username),
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+
     return req.session.regenerate((err) => {
       if (err) {
         logger.error("auth.login.session_regenerate_failed", {
@@ -902,6 +1016,7 @@ export function createApp(config, options = {}) {
 
       req.session.authenticated = true;
       req.session.user = userRecord?.username || username;
+      req.session.userSessionVersion = Number.parseInt(String(loginProfile?.sessionVersion || 1), 10) || 1;
 
       return req.session.save((saveErr) => {
         if (saveErr) {
@@ -1019,7 +1134,15 @@ export function createApp(config, options = {}) {
   app.use(authGuard);
   app.use("/", proxy);
 
-  return { app, proxy, sessionMiddleware, passwordStore, blastDoorsStateController, runtimeStatePath };
+  return {
+    app,
+    proxy,
+    sessionMiddleware,
+    passwordStore,
+    userAdminStore,
+    blastDoorsStateController,
+    runtimeStatePath,
+  };
 }
 
 export function attachWebsocketAuth(
@@ -1131,7 +1254,7 @@ export function createServer(config, options = {}) {
     logFile: config.debugLogFile || "logs/blastdoor-debug.log",
   });
 
-  const { app, proxy, sessionMiddleware, passwordStore, blastDoorsStateController, runtimeStatePath } = createApp(
+  const { app, proxy, sessionMiddleware, passwordStore, userAdminStore, blastDoorsStateController, runtimeStatePath } = createApp(
     config,
     { ...options, logger },
   );
@@ -1174,6 +1297,15 @@ export function createServer(config, options = {}) {
     if (typeof passwordStore?.close === "function") {
       Promise.resolve(passwordStore.close()).catch((error) => {
         logger.warn("password_store.close_failed", {
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      });
+    }
+    if (typeof userAdminStore?.close === "function") {
+      Promise.resolve(userAdminStore.close()).catch((error) => {
+        logger.warn("user_profile_store.close_failed", {
           error: {
             message: error instanceof Error ? error.message : String(error),
           },

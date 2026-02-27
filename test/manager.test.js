@@ -1073,6 +1073,134 @@ test("manager remains accessible when blast doors are closed", async () => {
   });
 });
 
+test("manager user management supports create update filters and token actions", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const passwordStoreFile = path.join(workspaceDir, "mock", "password-store.json");
+    await fs.mkdir(path.dirname(passwordStoreFile), { recursive: true });
+    await fs.writeFile(
+      passwordStoreFile,
+      JSON.stringify(
+        {
+          users: [{ username: "gm", passwordHash: "scrypt$seed$hash", disabled: false }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=file",
+        `PASSWORD_STORE_FILE=${passwordStoreFile}`,
+        "AUTH_USERNAME=",
+        "AUTH_PASSWORD_HASH=",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "SESSION_MAX_AGE_HOURS=12",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const initial = await request(port, { pathname: "/api/users?view=all" });
+      assert.equal(initial.status, 200);
+      assert.equal(initial.body.users.length, 1);
+      assert.equal(initial.body.users[0].username, "gm");
+
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/users/create",
+        body: {
+          username: "pilot-1",
+          password: "Correct Horse Battery Staple 123!",
+          friendlyName: "Pilot One",
+          email: "pilot@example.test",
+          status: "active",
+          displayInfo: "Frontline scout",
+          notes: "Created from manager integration test",
+        },
+      });
+      assert.equal(created.status, 200);
+      assert.equal(created.body.ok, true);
+      assert.equal(created.body.user.username, "pilot-1");
+      assert.equal(created.body.user.status, "active");
+
+      const updated = await request(port, {
+        method: "POST",
+        pathname: "/api/users/update",
+        body: {
+          username: "pilot-1",
+          password: "",
+          friendlyName: "Pilot Prime",
+          email: "pilot-prime@example.test",
+          status: "deactivated",
+          displayInfo: "Grounded",
+          notes: "Temporarily disabled",
+        },
+      });
+      assert.equal(updated.status, 200);
+      assert.equal(updated.body.user.status, "deactivated");
+      assert.equal(updated.body.user.friendlyName, "Pilot Prime");
+
+      const inactive = await request(port, { pathname: "/api/users?view=inactive" });
+      assert.equal(inactive.status, 200);
+      assert.equal(inactive.body.users.some((entry) => entry.username === "pilot-1"), true);
+
+      const reinstated = await request(port, {
+        method: "POST",
+        pathname: "/api/users/set-status",
+        body: {
+          username: "pilot-1",
+          status: "active",
+        },
+      });
+      assert.equal(reinstated.status, 200);
+      assert.equal(reinstated.body.user.status, "active");
+
+      const tempCode = await request(port, {
+        method: "POST",
+        pathname: "/api/users/reset-login-code",
+        body: {
+          username: "pilot-1",
+          delivery: "email",
+          ttlMinutes: 15,
+        },
+      });
+      assert.equal(tempCode.status, 200);
+      assert.match(String(tempCode.body.code || ""), /[A-Za-z0-9_-]{8,}/);
+      assert.match(String(tempCode.body.warning || ""), /email dispatch is not configured/i);
+
+      const invalidated = await request(port, {
+        method: "POST",
+        pathname: "/api/users/invalidate-token",
+        body: {
+          username: "pilot-1",
+        },
+      });
+      assert.equal(invalidated.status, 200);
+      assert.ok(Number.parseInt(String(invalidated.body.sessionVersion || "0"), 10) >= 2);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("formatManagerListenError explains when manager port is already in use", () => {
   const message = formatManagerListenError({ code: "EADDRINUSE" }, { host: "127.0.0.1", port: 8090 });
   assert.match(message, /already in use/);

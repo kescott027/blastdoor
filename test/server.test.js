@@ -12,6 +12,7 @@ import { createServer } from "../src/server.js";
 import { BlastdoorDatabase, BlastdoorPostgresDatabase } from "../src/database-store.js";
 import { writeBlastDoorsState } from "../src/blastdoors-state.js";
 import { createPasswordHash } from "../src/security.js";
+import { createUserAdminStore } from "../src/user-admin-store.js";
 import { createMockPostgresPoolFactory } from "./helpers/mock-postgres.js";
 
 class CookieJar {
@@ -186,6 +187,7 @@ async function startGateway({
   graphicsDir = "",
   themeStorePath = "",
   runtimeStatePath = "",
+  userProfileStorePath = "",
 }) {
   const password = "Correct Horse Battery Staple 123!";
   const authUsername = "gm";
@@ -223,6 +225,7 @@ async function startGateway({
       graphicsDir: graphicsDir || undefined,
       themeStorePath: themeStorePath || undefined,
       runtimeStatePath: runtimeStatePath || undefined,
+      userProfileStorePath: userProfileStorePath || undefined,
     },
   );
 
@@ -1130,4 +1133,71 @@ test("login rate limiting blocks excessive attempts", async (t) => {
 
   assert.equal(blocked.status, 429);
   assert.match(blocked.body, /Too many login attempts/);
+});
+
+test("user profile store supports temp code login and per-user token invalidation", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const userProfileStorePath = path.join(tempDir, "user-profiles.json");
+    const gateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      userProfileStorePath,
+    });
+
+    t.after(async () => {
+      await closeServer(gateway.server);
+      await closeServer(target.server);
+    });
+
+    const profileStore = createUserAdminStore({ filePath: userProfileStorePath });
+    await profileStore.upsertProfile({
+      username: gateway.username,
+      status: "active",
+    });
+    const issuedCode = await profileStore.issueTemporaryLoginCode(gateway.username, {
+      ttlMinutes: 30,
+      delivery: "manual",
+    });
+
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+    const loginWithTempCode = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: issuedCode.code,
+      next: "/",
+    });
+    assertTransitionResponse(loginWithTempCode, "/");
+
+    const proxiedBeforeInvalidate = await request(
+      gateway.port,
+      { path: "/world", headers: { accept: "application/json" } },
+      jar,
+    );
+    assert.equal(proxiedBeforeInvalidate.status, 200);
+
+    await profileStore.invalidateUserSessions(gateway.username);
+    const proxiedAfterInvalidate = await request(
+      gateway.port,
+      { path: "/world", headers: { accept: "application/json" } },
+      jar,
+    );
+    assert.equal(proxiedAfterInvalidate.status, 401);
+
+    await profileStore.upsertProfile({
+      username: gateway.username,
+      status: "banned",
+    });
+    const bannedJar = new CookieJar();
+    const bannedCsrf = await getLoginCsrf(gateway.port, bannedJar, "/");
+    const bannedLogin = await postLogin(gateway.port, bannedJar, {
+      csrf: bannedCsrf,
+      username: gateway.username,
+      password: gateway.password,
+      next: "/",
+    });
+    assert.equal(bannedLogin.status, 401);
+    assert.match(bannedLogin.body, /Access denied/i);
+  });
 });
