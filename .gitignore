@@ -162,3 +162,4 @@ graphics/background/*
 !graphics/background/YOURBACKGROUNDS.txt
 graphics/themes/*
 !graphics/themes/YOURTHEMES.txt
+!graphics/themes/default-theme.json

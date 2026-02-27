@@ -13,7 +13,7 @@ const ENV_PATH = path.join(WORKSPACE_DIR, ".env");
 const MANAGER_HOST = process.env.MANAGER_HOST || "127.0.0.1";
 const MANAGER_PORT = Number.parseInt(process.env.MANAGER_PORT || "8090", 10);
 const MANAGER_URL = `http://${MANAGER_HOST}:${MANAGER_PORT}`;
-const CONTROLS_REFRESH_MS = Number.parseInt(process.env.CONTROLS_REFRESH_MS || "0", 10);
+const DEBUG_CONTROLS_REFRESH_MS = 15000;
 const API_BASE_CANDIDATES = ["/api", "/manager/api"];
 const WATCH_IGNORE_PREFIXES = [".git/", "node_modules/", "logs/", "data/"];
 
@@ -21,6 +21,8 @@ const state = {
   shuttingDown: false,
   managerChild: null,
   ownsManager: false,
+  managerRestartInProgress: false,
+  managerStopInProgress: false,
   actionInFlight: false,
   debugStreaming: false,
   debugInterval: null,
@@ -29,6 +31,7 @@ const state = {
   prevRuntimeLines: [],
   prevDebugLines: [],
   lastChangeNoticeAt: 0,
+  lastControlsSnapshot: "",
 };
 
 function line(message = "") {
@@ -58,12 +61,32 @@ function printControls() {
   line("Controls:");
   line("  X - Exit cleanly");
   line("  R - Restart Blastdoor service");
+  line("  S - Start Admin panel service only");
+  line("  T - Stop Admin panel service only");
+  line("  M - Restart Admin panel service only");
   line(`  D - Debug console stream (${state.debugStreaming ? "ON" : "OFF"})`);
   line("  L - LOCK BLAST DOORS");
   line("  U - UNLOCK BLAST DOORS");
   line("  A - Open Admin panel");
   line("  ? - Show controls");
   line("");
+}
+
+function controlsSnapshot() {
+  return JSON.stringify({
+    debugStreaming: state.debugStreaming,
+    managerRunning: Boolean(state.managerChild),
+    ownsManager: Boolean(state.ownsManager),
+  });
+}
+
+function renderControlsIfChanged(force = false) {
+  const snapshot = controlsSnapshot();
+  if (!force && snapshot === state.lastControlsSnapshot) {
+    return;
+  }
+  state.lastControlsSnapshot = snapshot;
+  printControls();
 }
 
 function toBoolean(value) {
@@ -277,12 +300,14 @@ function startManagerProcess() {
 
   state.managerChild = child;
   state.ownsManager = true;
+  renderControlsIfChanged();
   child.stdout?.on("data", (chunk) => streamPrefixed("manager", chunk));
   child.stderr?.on("data", (chunk) => streamPrefixed("manager", chunk));
   child.on("exit", (code, signal) => {
     line(`[manager] exited code=${code ?? "null"} signal=${signal ?? "null"}`);
     state.managerChild = null;
-    if (!state.shuttingDown) {
+    renderControlsIfChanged();
+    if (!state.shuttingDown && !state.managerRestartInProgress && !state.managerStopInProgress) {
       error("Manager exited unexpectedly.");
       void shutdown(1);
     }
@@ -326,6 +351,70 @@ async function stopManagerProcess() {
       finish();
     }
   });
+}
+
+async function restartManagerOnly() {
+  if (!state.ownsManager) {
+    warn("Cannot restart manager from this console because it is an external instance. Restart it directly with make manager-launch.");
+    return;
+  }
+
+  state.managerRestartInProgress = true;
+  try {
+    await stopManagerProcess();
+    startManagerProcess();
+    await waitForManagerReady();
+    info("Admin panel service restarted.");
+  } finally {
+    state.managerRestartInProgress = false;
+    renderControlsIfChanged();
+  }
+}
+
+async function startManagerOnly() {
+  if (state.managerChild) {
+    info("Admin panel service is already running under this launch console.");
+    return;
+  }
+
+  if (await managerReachable()) {
+    info("Admin panel service is already running (external process).");
+    state.ownsManager = false;
+    renderControlsIfChanged();
+    return;
+  }
+
+  info("Starting Admin panel service...");
+  startManagerProcess();
+  await waitForManagerReady();
+  info("Admin panel service started.");
+  renderControlsIfChanged();
+}
+
+async function stopManagerOnly() {
+  if (!state.managerChild) {
+    if (await managerReachable()) {
+      warn("Cannot stop admin panel from this console because it is an external instance.");
+      return;
+    }
+
+    info("Admin panel service is already stopped.");
+    return;
+  }
+
+  if (!state.ownsManager) {
+    warn("Cannot stop admin panel from this console because it is an external instance.");
+    return;
+  }
+
+  state.managerStopInProgress = true;
+  try {
+    await stopManagerProcess();
+    info("Admin panel service stopped.");
+  } finally {
+    state.managerStopInProgress = false;
+    renderControlsIfChanged();
+  }
 }
 
 async function getConfig() {
@@ -406,6 +495,10 @@ function stopDebugStream() {
   state.debugStreaming = false;
   state.prevRuntimeLines = [];
   state.prevDebugLines = [];
+  if (state.footerInterval) {
+    clearInterval(state.footerInterval);
+    state.footerInterval = null;
+  }
 }
 
 function startDebugStream() {
@@ -419,6 +512,11 @@ function startDebugStream() {
       warn(`Debug stream error: ${debugError.message}`);
     });
   }, 1500);
+  state.footerInterval = setInterval(() => {
+    if (!state.shuttingDown && state.debugStreaming) {
+      printControls();
+    }
+  }, DEBUG_CONTROLS_REFRESH_MS);
   info("Debug stream enabled.");
 }
 
@@ -551,7 +649,7 @@ async function runAction(actionName, fn) {
     error(`${actionName} failed: ${actionError.message}`);
   } finally {
     state.actionInFlight = false;
-    printControls();
+    renderControlsIfChanged();
   }
 }
 
@@ -637,9 +735,24 @@ function bindKeyControls() {
       return;
     }
 
+    if (pressed === "S") {
+      void runAction("start admin panel", startManagerOnly);
+      return;
+    }
+
+    if (pressed === "T") {
+      void runAction("stop admin panel", stopManagerOnly);
+      return;
+    }
+
+    if (pressed === "M") {
+      void runAction("restart admin panel", restartManagerOnly);
+      return;
+    }
+
     if (pressed === "D") {
       toggleDebugStream();
-      printControls();
+      renderControlsIfChanged(true);
       return;
     }
 
@@ -663,7 +776,7 @@ function bindKeyControls() {
     }
 
     if (pressed === "?" || pressed === "H") {
-      printControls();
+      renderControlsIfChanged(true);
     }
   });
 }
@@ -678,15 +791,7 @@ async function main() {
   await startGatewayService();
   startFileWatcher();
   bindKeyControls();
-  printControls();
-
-  if (Number.isInteger(CONTROLS_REFRESH_MS) && CONTROLS_REFRESH_MS > 0) {
-    state.footerInterval = setInterval(() => {
-      if (!state.shuttingDown) {
-        printControls();
-      }
-    }, CONTROLS_REFRESH_MS);
-  }
+  renderControlsIfChanged(true);
 
   void openAdminPanel();
 }
