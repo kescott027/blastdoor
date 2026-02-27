@@ -16,6 +16,7 @@ const MANAGER_URL = `http://${MANAGER_HOST}:${MANAGER_PORT}`;
 const DEBUG_CONTROLS_REFRESH_MS = 15000;
 const API_BASE_CANDIDATES = ["/api", "/manager/api"];
 const WATCH_IGNORE_PREFIXES = [".git/", "node_modules/", "logs/", "data/"];
+process.title = "blastdoor-launch-console";
 
 const state = {
   shuttingDown: false,
@@ -32,6 +33,7 @@ const state = {
   prevDebugLines: [],
   lastChangeNoticeAt: 0,
   lastControlsSnapshot: "",
+  keypressHandler: null,
 };
 
 function line(message = "") {
@@ -666,6 +668,11 @@ function cleanupInput() {
     state.footerInterval = null;
   }
 
+  if (state.keypressHandler) {
+    process.stdin.off("keypress", state.keypressHandler);
+    state.keypressHandler = null;
+  }
+
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }
@@ -679,6 +686,8 @@ async function shutdown(exitCode = 0) {
 
   state.shuttingDown = true;
   info("Shutting down launch console...");
+  stopDebugStream();
+  stopFileWatcher();
 
   try {
     await stopGatewayService();
@@ -688,9 +697,13 @@ async function shutdown(exitCode = 0) {
 
   await validatePersistenceIfNeeded();
 
-  if (state.ownsManager) {
-    await stopManagerProcess();
-  } else {
+  if (state.ownsManager && state.managerChild) {
+    try {
+      await stopManagerProcess();
+    } catch (managerStopError) {
+      warn(`Manager stop request failed: ${managerStopError.message}`);
+    }
+  } else if (!state.ownsManager) {
     info("Leaving existing manager process running.");
   }
 
@@ -718,7 +731,7 @@ function bindKeyControls() {
   }
   process.stdin.resume();
 
-  process.stdin.on("keypress", (_str, key) => {
+  const keypressHandler = (_str, key) => {
     if (!key) {
       return;
     }
@@ -783,7 +796,9 @@ function bindKeyControls() {
     if (pressed === "?" || pressed === "H") {
       renderControlsIfChanged(true);
     }
-  });
+  };
+  state.keypressHandler = keypressHandler;
+  process.stdin.on("keypress", keypressHandler);
 }
 
 async function main() {

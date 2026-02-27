@@ -1496,5 +1496,6 @@ function isEntrypoint() {
 }
 
 if (isEntrypoint()) {
+  process.title = "blastdoor-manager";
   createManagerServer();
 }

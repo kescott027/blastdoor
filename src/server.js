@@ -1177,6 +1177,7 @@ function isEntrypoint() {
 }
 
 if (isEntrypoint()) {
+  process.title = "blastdoor-gateway";
   const config = loadConfigFromEnv();
   createServer(config);
 }
