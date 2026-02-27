@@ -15,6 +15,10 @@ const tsScript = document.getElementById("tsScript");
 const appearanceModal = document.getElementById("appearanceModal");
 const appearanceStatusMessage = document.getElementById("appearanceStatusMessage");
 const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
+const appearanceEditBtn = document.getElementById("appearanceEditBtn");
+const appearanceNewBtn = document.getElementById("appearanceNewBtn");
+const appearanceEditorSection = document.getElementById("appearanceEditorSection");
+const appearanceEditorHeading = document.getElementById("appearanceEditorHeading");
 const appearanceForm = document.getElementById("appearanceForm");
 const appearanceThemeName = document.getElementById("appearanceThemeName");
 const appearanceLogoSelectLegacy = document.getElementById("appearanceLogoSelect");
@@ -38,7 +42,11 @@ const appearanceMakeActive = document.getElementById("appearanceMakeActive");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
 const hasModernAppearancePicker = Boolean(
-  appearanceLogoDisplay &&
+  appearanceEditBtn &&
+    appearanceNewBtn &&
+    appearanceEditorSection &&
+    appearanceEditorHeading &&
+    appearanceLogoDisplay &&
     appearanceLogoPath &&
     appearanceClosedBgDisplay &&
     appearanceClosedBgPath &&
@@ -61,6 +69,8 @@ const hasLegacyAppearancePicker = Boolean(
 
 let latestDiagnostics = null;
 let latestTroubleshootReport = null;
+let latestThemes = [];
+let latestActiveThemeId = "";
 let latestThemeAssets = { logos: [], backgrounds: [] };
 let appearanceSelection = {
   logoPath: "",
@@ -68,6 +78,8 @@ let appearanceSelection = {
   openBackgroundPath: "",
 };
 let appearanceAssetChooserState = null;
+let appearanceEditorMode = "hidden";
+let appearanceEditingThemeId = "";
 
 function setMessage(text, isError = false) {
   statusMessage.textContent = text;
@@ -389,6 +401,92 @@ function setAppearanceSelection(nextSelection) {
   };
 }
 
+function normalizeThemeForEditor(theme) {
+  if (!theme || typeof theme !== "object") {
+    return null;
+  }
+
+  return {
+    id: String(theme.id || ""),
+    name: String(theme.name || ""),
+    logoPath: String(theme.logoPath || ""),
+    closedBackgroundPath: String(theme.closedBackgroundPath || ""),
+    openBackgroundPath: String(theme.openBackgroundPath || ""),
+  };
+}
+
+function findSelectedThemeForEditor() {
+  const selectedId = String(appearanceThemeSelect?.value || "");
+  if (!selectedId) {
+    return null;
+  }
+
+  const selectedTheme = latestThemes.find((theme) => theme.id === selectedId);
+  return normalizeThemeForEditor(selectedTheme);
+}
+
+function showAppearanceEditor(mode) {
+  if (!hasModernAppearancePicker) {
+    return;
+  }
+
+  appearanceEditorMode = mode;
+  appearanceEditorSection.hidden = false;
+  appearanceEditorSection.classList.remove("hidden");
+  appearanceEditorHeading.textContent = mode === "edit" ? "Edit Existing Theme" : "Add New Theme";
+}
+
+function hideAppearanceEditor() {
+  if (!hasModernAppearancePicker) {
+    return;
+  }
+
+  appearanceEditorMode = "hidden";
+  appearanceEditingThemeId = "";
+  closeAppearanceAssetPicker();
+  appearanceEditorSection.hidden = true;
+  appearanceEditorSection.classList.add("hidden");
+}
+
+function startNewThemeEditor() {
+  if (!hasModernAppearancePicker) {
+    return;
+  }
+
+  appearanceEditingThemeId = "";
+  appearanceThemeName.value = "";
+  setAppearanceSelection({
+    logoPath: "",
+    closedBackgroundPath: "",
+    openBackgroundPath: "",
+  });
+  renderAppearanceSelection();
+  appearanceMakeActive.checked = true;
+  showAppearanceEditor("new");
+}
+
+function startEditThemeEditor() {
+  if (!hasModernAppearancePicker) {
+    return;
+  }
+
+  const selectedTheme = findSelectedThemeForEditor();
+  if (!selectedTheme) {
+    throw new Error("Select a saved theme before choosing Edit Theme.");
+  }
+
+  appearanceEditingThemeId = selectedTheme.id;
+  appearanceThemeName.value = selectedTheme.name;
+  setAppearanceSelection({
+    logoPath: selectedTheme.logoPath,
+    closedBackgroundPath: selectedTheme.closedBackgroundPath,
+    openBackgroundPath: selectedTheme.openBackgroundPath,
+  });
+  renderAppearanceSelection();
+  appearanceMakeActive.checked = selectedTheme.id === latestActiveThemeId;
+  showAppearanceEditor("edit");
+}
+
 function renderAppearanceSelection() {
   if (!hasModernAppearancePicker) {
     return;
@@ -497,6 +595,8 @@ function openAppearanceAssetPicker({ key, title, assets, allowNone, noneLabel })
 }
 
 function renderThemeCatalog(payload) {
+  latestThemes = Array.isArray(payload.themes) ? payload.themes.map(normalizeThemeForEditor).filter(Boolean) : [];
+  latestActiveThemeId = String(payload.activeThemeId || "");
   latestThemeAssets = {
     logos: sortAssetsByName(payload.assets?.logos || []),
     backgrounds: sortAssetsByName(payload.assets?.backgrounds || []),
@@ -505,14 +605,27 @@ function renderThemeCatalog(payload) {
   fillThemeSelect(payload.themes || [], payload.activeThemeId || "");
 
   if (hasModernAppearancePicker) {
-    const validLogo = latestThemeAssets.logos.some((asset) => asset.path === appearanceSelection.logoPath)
-      ? appearanceSelection.logoPath
+    let nextSelection = { ...appearanceSelection };
+    if (appearanceEditorMode === "edit" && appearanceEditingThemeId) {
+      const matchingTheme = latestThemes.find((theme) => theme.id === appearanceEditingThemeId);
+      if (matchingTheme) {
+        nextSelection = {
+          logoPath: matchingTheme.logoPath,
+          closedBackgroundPath: matchingTheme.closedBackgroundPath,
+          openBackgroundPath: matchingTheme.openBackgroundPath,
+        };
+        appearanceThemeName.value = matchingTheme.name;
+      }
+    }
+
+    const validLogo = latestThemeAssets.logos.some((asset) => asset.path === nextSelection.logoPath)
+      ? nextSelection.logoPath
       : "";
-    const validClosed = latestThemeAssets.backgrounds.some((asset) => asset.path === appearanceSelection.closedBackgroundPath)
-      ? appearanceSelection.closedBackgroundPath
+    const validClosed = latestThemeAssets.backgrounds.some((asset) => asset.path === nextSelection.closedBackgroundPath)
+      ? nextSelection.closedBackgroundPath
       : "";
-    const validOpen = latestThemeAssets.backgrounds.some((asset) => asset.path === appearanceSelection.openBackgroundPath)
-      ? appearanceSelection.openBackgroundPath
+    const validOpen = latestThemeAssets.backgrounds.some((asset) => asset.path === nextSelection.openBackgroundPath)
+      ? nextSelection.openBackgroundPath
       : "";
 
     setAppearanceSelection({
@@ -559,7 +672,7 @@ function openAppearanceModal() {
 
 function closeAppearanceModal() {
   if (hasModernAppearancePicker) {
-    closeAppearanceAssetPicker();
+    hideAppearanceEditor();
   }
   appearanceModal.hidden = true;
   appearanceModal.classList.add("hidden");
@@ -706,18 +819,13 @@ document.getElementById("appearanceBtn").addEventListener("click", async () => {
     return;
   }
 
-  if (hasModernAppearancePicker) {
-    setAppearanceSelection({
-      logoPath: "",
-      closedBackgroundPath: "",
-      openBackgroundPath: "",
-    });
-    renderAppearanceSelection();
-  }
   openAppearanceModal();
   setAppearanceMessage("Loading themes...");
   try {
     await refreshThemes();
+    if (hasModernAppearancePicker) {
+      hideAppearanceEditor();
+    }
     setAppearanceMessage("Theme catalog loaded.");
   } catch (error) {
     setAppearanceMessage(error.message || String(error), true);
@@ -729,8 +837,30 @@ document.getElementById("appearanceCloseBtn").addEventListener("click", () => {
 });
 
 document.getElementById("appearanceCancelBtn").addEventListener("click", () => {
+  if (hasModernAppearancePicker) {
+    hideAppearanceEditor();
+    setAppearanceMessage("Theme editor hidden.");
+    return;
+  }
+
   closeAppearanceModal();
 });
+
+if (hasModernAppearancePicker) {
+  appearanceNewBtn.addEventListener("click", () => {
+    startNewThemeEditor();
+    setAppearanceMessage("Add New Theme mode.");
+  });
+
+  appearanceEditBtn.addEventListener("click", () => {
+    try {
+      startEditThemeEditor();
+      setAppearanceMessage("Edit Existing Theme mode.");
+    } catch (error) {
+      setAppearanceMessage(error.message || String(error), true);
+    }
+  });
+}
 
 if (hasModernAppearancePicker) {
   appearanceChooseLogoBtn.addEventListener("click", () => {
@@ -807,18 +937,28 @@ appearanceForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const payload = buildAppearanceCreatePayload();
+    if (hasModernAppearancePicker && appearanceEditorMode === "edit") {
+      if (!appearanceEditingThemeId) {
+        throw new Error("No theme is selected for editing.");
+      }
+
+      const updated = await api("POST", "/themes/update", {
+        ...payload,
+        themeId: appearanceEditingThemeId,
+      });
+      renderThemeCatalog(updated);
+      setAppearanceMessage("Theme updated.");
+      return;
+    }
+
     const created = await api("POST", "/themes/create", payload);
     renderThemeCatalog(created);
-    appearanceThemeName.value = "";
     if (hasModernAppearancePicker) {
-      setAppearanceSelection({
-        logoPath: "",
-        closedBackgroundPath: "",
-        openBackgroundPath: "",
-      });
-      renderAppearanceSelection();
+      startNewThemeEditor();
+    } else {
+      appearanceThemeName.value = "";
+      appearanceMakeActive.checked = true;
     }
-    appearanceMakeActive.checked = true;
     setAppearanceMessage("Theme saved.");
   } catch (error) {
     setAppearanceMessage(error.message || String(error), true);

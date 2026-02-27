@@ -155,56 +155,62 @@
           </label>
           <div class="button-row">
             <button id="appearanceApplyBtn" type="button">Apply Theme</button>
+            <button id="appearanceEditBtn" type="button">Edit Theme</button>
+            <button id="appearanceNewBtn" type="button">New Theme</button>
           </div>
         </div>
 
-        <form id="appearanceForm">
-          <div class="appearance-grid">
-            <label>Theme Name
-              <input id="appearanceThemeName" name="name" placeholder="Astral Siege" required />
-            </label>
-            <label>Logo (optional)
-              <div class="asset-picker-row">
-                <input id="appearanceLogoDisplay" type="text" readonly value="None" />
-                <button id="appearanceChooseLogoBtn" type="button">Choose a Logo</button>
-              </div>
-              <input id="appearanceLogoPath" name="logoPath" type="hidden" value="" />
-            </label>
-            <label>Closed Background
-              <div class="asset-picker-row">
-                <input id="appearanceClosedBgDisplay" type="text" readonly value="None" />
-                <button id="appearanceChooseClosedBgBtn" type="button">Choose Closed Background</button>
-              </div>
-              <input id="appearanceClosedBgPath" name="closedBackgroundPath" type="hidden" value="" />
-            </label>
-            <label>Open Background (optional)
-              <div class="asset-picker-row">
-                <input id="appearanceOpenBgDisplay" type="text" readonly value="None" />
-                <button id="appearanceChooseOpenBgBtn" type="button">Choose Open Background</button>
-              </div>
-              <input id="appearanceOpenBgPath" name="openBackgroundPath" type="hidden" value="" />
-            </label>
-            <label class="checkbox-label">
-              <input id="appearanceMakeActive" name="makeActive" type="checkbox" checked />
-              Make active after save
-            </label>
-          </div>
+        <section id="appearanceEditorSection" class="appearance-editor hidden" hidden>
+          <h3 id="appearanceEditorHeading">Add New Theme</h3>
 
-          <section id="appearanceAssetChooser" class="asset-chooser hidden" hidden>
-            <h3 id="appearanceAssetChooserTitle">Choose Asset</h3>
-            <p class="panel-note">Select one option and click Use Selection.</p>
-            <div id="appearanceAssetChooserList" class="asset-chooser-list"></div>
-            <div class="button-row">
-              <button id="appearanceAssetSelectBtn" type="button">Use Selection</button>
-              <button id="appearanceAssetCancelBtn" type="button" class="ghost-btn">Cancel</button>
+          <form id="appearanceForm">
+            <div class="appearance-grid">
+              <label>Theme Name
+                <input id="appearanceThemeName" name="name" placeholder="Astral Siege" required />
+              </label>
+              <label>Logo (optional)
+                <div class="asset-picker-row">
+                  <input id="appearanceLogoDisplay" type="text" readonly value="None" />
+                  <button id="appearanceChooseLogoBtn" type="button">Choose a Logo</button>
+                </div>
+                <input id="appearanceLogoPath" name="logoPath" type="hidden" value="" />
+              </label>
+              <label>Closed Background
+                <div class="asset-picker-row">
+                  <input id="appearanceClosedBgDisplay" type="text" readonly value="None" />
+                  <button id="appearanceChooseClosedBgBtn" type="button">Choose Closed Background</button>
+                </div>
+                <input id="appearanceClosedBgPath" name="closedBackgroundPath" type="hidden" value="" />
+              </label>
+              <label>Open Background (optional)
+                <div class="asset-picker-row">
+                  <input id="appearanceOpenBgDisplay" type="text" readonly value="None" />
+                  <button id="appearanceChooseOpenBgBtn" type="button">Choose Open Background</button>
+                </div>
+                <input id="appearanceOpenBgPath" name="openBackgroundPath" type="hidden" value="" />
+              </label>
+              <label class="checkbox-label">
+                <input id="appearanceMakeActive" name="makeActive" type="checkbox" checked />
+                Make active after save
+              </label>
             </div>
-          </section>
 
-          <div class="button-row">
-            <button id="appearanceSaveBtn" type="submit">Save Theme</button>
-            <button id="appearanceCancelBtn" type="button" class="ghost-btn">Cancel</button>
-          </div>
-        </form>
+            <section id="appearanceAssetChooser" class="asset-chooser hidden" hidden>
+              <h3 id="appearanceAssetChooserTitle">Choose Asset</h3>
+              <p class="panel-note">Select one option and click Use Selection.</p>
+              <div id="appearanceAssetChooserList" class="asset-chooser-list"></div>
+              <div class="button-row">
+                <button id="appearanceAssetSelectBtn" type="button">Use Selection</button>
+                <button id="appearanceAssetCancelBtn" type="button" class="ghost-btn">Cancel</button>
+              </div>
+            </section>
+
+            <div class="button-row">
+              <button id="appearanceSaveBtn" type="submit">Save Theme</button>
+              <button id="appearanceCancelBtn" type="button" class="ghost-btn">Cancel</button>
+            </div>
+          </form>
+        </section>
       </section>
     </aside>
 

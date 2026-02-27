@@ -375,6 +375,10 @@ test("manager creates and applies login themes from graphics assets", async () =
     const port = server.address().port;
 
     try {
+      const logoAsset = await request(port, { pathname: "/graphics/logo/crest.png" });
+      assert.equal(logoAsset.status, 200);
+      assert.equal(logoAsset.body.raw, "logo");
+
       const before = await request(port, { pathname: "/api/themes" });
       assert.equal(before.status, 200);
       assert.equal(before.body.ok, true);
@@ -404,18 +408,38 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(created.body.themes.length, 2);
       assert.equal(created.body.createdTheme.logoUrl, "/graphics/logo/crest.png");
 
+      const updated = await request(port, {
+        method: "POST",
+        pathname: "/api/themes/update",
+        body: {
+          themeId: created.body.createdTheme.id,
+          name: "Crystal Watch Prime",
+          logoPath: "",
+          closedBackgroundPath: "background/open.png",
+          openBackgroundPath: "background/closed.png",
+          makeActive: "true",
+        },
+      });
+      assert.equal(updated.status, 200);
+      assert.equal(updated.body.ok, true);
+      assert.equal(updated.body.updatedTheme.id, created.body.createdTheme.id);
+      assert.equal(updated.body.updatedTheme.name, "Crystal Watch Prime");
+      assert.equal(updated.body.updatedTheme.logoPath, "");
+      assert.equal(updated.body.updatedTheme.closedBackgroundPath, "background/open.png");
+      assert.equal(updated.body.updatedTheme.openBackgroundPath, "background/closed.png");
+
       const applied = await request(port, {
         method: "POST",
         pathname: "/api/themes/apply",
-        body: { themeId: created.body.createdTheme.id },
+        body: { themeId: updated.body.updatedTheme.id },
       });
       assert.equal(applied.status, 200);
       assert.equal(applied.body.ok, true);
-      assert.equal(applied.body.activeThemeId, created.body.createdTheme.id);
+      assert.equal(applied.body.activeThemeId, updated.body.updatedTheme.id);
 
       const rawThemeStore = await fs.readFile(themeStorePath, "utf8");
       assert.match(rawThemeStore, /"activeThemeId"/);
-      assert.match(rawThemeStore, /Crystal Watch/);
+      assert.match(rawThemeStore, /Crystal Watch Prime/);
     } finally {
       await closeServer(server);
     }

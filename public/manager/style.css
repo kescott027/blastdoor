@@ -321,6 +321,16 @@ input:focus {
   margin-bottom: 0.8rem;
 }
 
+.appearance-editor {
+  margin-top: 0.65rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.appearance-editor h3 {
+  margin: 0 0 0.55rem;
+}
+
 .asset-picker-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

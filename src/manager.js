@@ -130,7 +130,12 @@ function parseBooleanLikeBody(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
 }
 
-function validateThemeAssetSelection({ themeName, logoPath, closedBackgroundPath, openBackgroundPath }, assets) {
+function validateThemeAssetSelection(
+  { themeName, logoPath, closedBackgroundPath, openBackgroundPath },
+  assets,
+  options = {},
+) {
+  const requireClosedBackground = options.requireClosedBackground !== false;
   const logoSelection = normalizeThemeAssetPath(logoPath, "logo");
   const closedSelection = normalizeThemeAssetPath(closedBackgroundPath, "background");
   const openSelection = normalizeThemeAssetPath(openBackgroundPath, "background");
@@ -155,7 +160,7 @@ function validateThemeAssetSelection({ themeName, logoPath, closedBackgroundPath
     throw new Error("Theme name is required.");
   }
 
-  if (!closedSelection) {
+  if (requireClosedBackground && !closedSelection) {
     throw new Error("Closed background image selection is required.");
   }
 
@@ -921,6 +926,13 @@ export function createManagerApp(options = {}) {
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
   app.use("/manager", express.static(managerDir, { etag: true, maxAge: "1h" }));
+  app.use(
+    "/graphics",
+    express.static(graphicsDir, {
+      etag: true,
+      maxAge: "1h",
+    }),
+  );
 
   const registerApiGet = (routePath, handler) => {
     app.get(`/api${routePath}`, handler);
@@ -1142,6 +1154,65 @@ export function createManagerApp(options = {}) {
         ok: true,
         activeThemeId: updatedStore.activeThemeId || "",
         createdTheme: mapThemeForClient(createdTheme),
+        themes: (updatedStore.themes || []).map(mapThemeForClient),
+        assets,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/themes/update", async (req, res) => {
+    try {
+      const themeId = normalizeString(req.body?.themeId, "");
+      if (!themeId) {
+        throw new Error("themeId is required.");
+      }
+
+      const assets = await listThemeAssets(graphicsDir);
+      const validated = validateThemeAssetSelection(
+        {
+          themeName: req.body?.name,
+          logoPath: req.body?.logoPath,
+          closedBackgroundPath: req.body?.closedBackgroundPath,
+          openBackgroundPath: req.body?.openBackgroundPath,
+        },
+        assets,
+        { requireClosedBackground: false },
+      );
+      const makeActive = parseBooleanLikeBody(req.body?.makeActive);
+
+      const store = await readThemeStore(themeStorePath);
+      const themeIndex = (store.themes || []).findIndex((theme) => theme.id === themeId);
+      if (themeIndex < 0) {
+        throw new Error("Requested theme was not found.");
+      }
+
+      const existingTheme = store.themes[themeIndex];
+      const now = new Date().toISOString();
+      const updatedTheme = {
+        ...existingTheme,
+        name: validated.name,
+        logoPath: validated.logoPath,
+        closedBackgroundPath: validated.closedBackgroundPath,
+        openBackgroundPath: validated.openBackgroundPath,
+        updatedAt: now,
+      };
+
+      const nextThemes = [...(store.themes || [])];
+      nextThemes[themeIndex] = updatedTheme;
+      const nextActiveThemeId = makeActive ? themeId : store.activeThemeId;
+      const updatedStore = await writeThemeStore(themeStorePath, {
+        activeThemeId: nextActiveThemeId,
+        themes: nextThemes,
+      });
+
+      res.json({
+        ok: true,
+        activeThemeId: updatedStore.activeThemeId || "",
+        updatedTheme: mapThemeForClient(updatedTheme),
         themes: (updatedStore.themes || []).map(mapThemeForClient),
         assets,
       });
