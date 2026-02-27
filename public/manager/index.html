@@ -31,6 +31,7 @@
           <button id="stopBtn" type="button">Stop</button>
           <button id="restartBtn" type="button">Restart</button>
           <button id="refreshBtn" type="button">Refresh</button>
+          <button id="appearanceBtn" type="button">Login Appearance</button>
         </div>
         <dl class="stats">
           <div><dt>Running</dt><dd id="runningValue">No</dd></div>
@@ -127,6 +128,56 @@
         <pre id="debugLogs" class="log-box"></pre>
       </section>
     </main>
+
+    <div id="appearanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="appearanceTitle">
+      <section class="modal-panel">
+        <header class="modal-header">
+          <h2 id="appearanceTitle">Blastdoor Login Appearance</h2>
+          <button id="appearanceCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          Create and apply themes using assets from <code>/graphics/logo</code> and <code>/graphics/background</code>.
+        </p>
+
+        <p class="status-message" id="appearanceStatusMessage"></p>
+
+        <div class="appearance-grid">
+          <label>Saved Themes
+            <select id="appearanceThemeSelect"></select>
+          </label>
+          <div class="button-row">
+            <button id="appearanceApplyBtn" type="button">Apply Theme</button>
+          </div>
+        </div>
+
+        <form id="appearanceForm">
+          <div class="appearance-grid">
+            <label>Theme Name
+              <input id="appearanceThemeName" name="name" placeholder="Astral Siege" required />
+            </label>
+            <label>Logo (optional)
+              <select id="appearanceLogoSelect" name="logoPath"></select>
+            </label>
+            <label>Closed Background
+              <select id="appearanceClosedBgSelect" name="closedBackgroundPath" required></select>
+            </label>
+            <label>Open Background (optional)
+              <select id="appearanceOpenBgSelect" name="openBackgroundPath"></select>
+            </label>
+            <label class="checkbox-label">
+              <input id="appearanceMakeActive" name="makeActive" type="checkbox" checked />
+              Make active after save
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button id="appearanceSaveBtn" type="submit">Save Theme</button>
+            <button id="appearanceCancelBtn" type="button" class="ghost-btn">Cancel</button>
+          </div>
+        </form>
+      </section>
+    </div>
 
     <script type="module" src="/manager/app.js"></script>
   </body>

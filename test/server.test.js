@@ -182,6 +182,8 @@ async function startGateway({
   allowedOrigins = "",
   allowNullOrigin = false,
   blastDoorsClosed = false,
+  graphicsDir = "",
+  themeStorePath = "",
 }) {
   const password = "Correct Horse Battery Staple 123!";
   const authUsername = "gm";
@@ -213,7 +215,12 @@ async function startGateway({
       allowNullOrigin,
       blastDoorsClosed,
     },
-    { silent: true, postgresPoolFactory },
+    {
+      silent: true,
+      postgresPoolFactory,
+      graphicsDir: graphicsDir || undefined,
+      themeStorePath: themeStorePath || undefined,
+    },
   );
 
   if (!server.listening) {
@@ -222,6 +229,12 @@ async function startGateway({
 
   const address = server.address();
   return { server, port: address.port, username: authUsername, password, authPasswordHash };
+}
+
+function assertTransitionResponse(loginResponse, expectedNextPath) {
+  assert.equal(loginResponse.status, 200);
+  assert.match(loginResponse.body, /Access Granted/);
+  assert.equal(loginResponse.body.includes(`href="${expectedNextPath}"`), true);
 }
 
 async function withTempDir(callback) {
@@ -443,8 +456,7 @@ test("gateway behavior without TOTP", async (t) => {
       `http://localhost:${gateway.port}`,
     );
 
-    assert.equal(response.status, 302);
-    assert.equal(response.headers.location, "/");
+    assertTransitionResponse(response, "/");
   });
 
   await t.test("login accepts configured allowed origin override", async () => {
@@ -470,7 +482,7 @@ test("gateway behavior without TOTP", async (t) => {
         "https://portal.example.test",
       );
 
-      assert.equal(response.status, 302);
+      assertTransitionResponse(response, "/");
     } finally {
       await closeServer(gatewayOverride.server);
       await closeServer(targetOverride.server);
@@ -500,7 +512,7 @@ test("gateway behavior without TOTP", async (t) => {
         "null",
       );
 
-      assert.equal(response.status, 302);
+      assertTransitionResponse(response, "/");
     } finally {
       await closeServer(gatewayOverride.server);
       await closeServer(targetOverride.server);
@@ -533,8 +545,7 @@ test("gateway behavior without TOTP", async (t) => {
       next: "//evil.example",
     });
 
-    assert.equal(login.status, 302);
-    assert.equal(login.headers.location, "/");
+    assertTransitionResponse(login, "/");
 
     const proxied = await request(
       gateway.port,
@@ -559,7 +570,7 @@ test("gateway behavior without TOTP", async (t) => {
       password: gateway.password,
       next: "/",
     });
-    assert.equal(login.status, 302);
+    assertTransitionResponse(login, "/");
 
     const logout = await request(gateway.port, { method: "POST", path: "/logout" }, jar);
     assert.equal(logout.status, 302);
@@ -585,7 +596,7 @@ test("gateway behavior without TOTP", async (t) => {
       password: gateway.password,
       next: "/",
     });
-    assert.equal(login.status, 302);
+    assertTransitionResponse(login, "/");
 
     const auth = await wsHandshake(gateway.port, "/socket", jar.header());
     assert.match(auth.statusLine, /^HTTP\/1\.1 101/);
@@ -634,11 +645,77 @@ test("gateway behavior with TOTP enabled", async (t) => {
     totp: goodToken,
   });
 
-  assert.equal(login.status, 302);
-  assert.equal(login.headers.location, "/session");
+  assertTransitionResponse(login, "/session");
 
   const proxied = await request(gateway.port, { path: "/session", headers: { accept: "application/json" } }, jar);
   assert.equal(proxied.status, 200);
+});
+
+test("login page renders active theme assets and success transition uses open background", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const graphicsDir = path.join(tempDir, "graphics");
+    const logoDir = path.join(graphicsDir, "logo");
+    const backgroundDir = path.join(graphicsDir, "background");
+    const themeStorePath = path.join(graphicsDir, "themes", "themes.json");
+
+    await fs.mkdir(logoDir, { recursive: true });
+    await fs.mkdir(backgroundDir, { recursive: true });
+    await fs.mkdir(path.dirname(themeStorePath), { recursive: true });
+    await fs.writeFile(path.join(logoDir, "test-logo.png"), "logo", "utf8");
+    await fs.writeFile(path.join(backgroundDir, "test-closed.png"), "closed", "utf8");
+    await fs.writeFile(path.join(backgroundDir, "test-open.png"), "open", "utf8");
+    await fs.writeFile(
+      themeStorePath,
+      JSON.stringify(
+        {
+          activeThemeId: "theme-one",
+          themes: [
+            {
+              id: "theme-one",
+              name: "Theme One",
+              logoPath: "logo/test-logo.png",
+              closedBackgroundPath: "background/test-closed.png",
+              openBackgroundPath: "background/test-open.png",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const gateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      graphicsDir,
+      themeStorePath,
+    });
+
+    t.after(async () => {
+      await closeServer(gateway.server);
+      await closeServer(target.server);
+    });
+
+    const jar = new CookieJar();
+    const loginPage = await request(gateway.port, { path: "/login", headers: { accept: "text/html" } }, jar);
+    assert.equal(loginPage.status, 200);
+    assert.match(loginPage.body, /\/graphics\/logo\/test-logo\.png/);
+    assert.match(loginPage.body, /\/graphics\/background\/test-closed\.png/);
+    assert.match(loginPage.body, /\/graphics\/background\/test-open\.png/);
+
+    const csrf = parseCsrf(loginPage.body);
+    const login = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: gateway.password,
+      next: "/theme-world",
+    });
+    assertTransitionResponse(login, "/theme-world");
+    assert.match(login.body, /auth-success-active/);
+    assert.match(login.body, /\/graphics\/background\/test-open\.png/);
+  });
 });
 
 test("blast doors closed mode blocks all routes and websocket upgrades", async (t) => {
@@ -719,8 +796,7 @@ test("gateway authenticates using file password store", async (t) => {
       next: "/file-mode",
     });
 
-    assert.equal(login.status, 302);
-    assert.equal(login.headers.location, "/file-mode");
+    assertTransitionResponse(login, "/file-mode");
 
     const proxied = await request(
       gateway.port,
@@ -766,8 +842,7 @@ test("gateway authenticates using sqlite password store", async (t) => {
       next: "/sqlite-mode",
     });
 
-    assert.equal(login.status, 302);
-    assert.equal(login.headers.location, "/sqlite-mode");
+    assertTransitionResponse(login, "/sqlite-mode");
 
     const proxied = await request(
       sqliteGateway.port,
@@ -819,8 +894,7 @@ test("gateway authenticates using postgres password store", async (t) => {
     next: "/postgres-mode",
   });
 
-  assert.equal(login.status, 302);
-  assert.equal(login.headers.location, "/postgres-mode");
+  assertTransitionResponse(login, "/postgres-mode");
 
   const proxied = await request(
     gateway.port,
@@ -902,7 +976,7 @@ test("proxy returns 502 when target is unreachable", async (t) => {
     next: "/",
   });
 
-  assert.equal(login.status, 302);
+  assertTransitionResponse(login, "/");
 
   const proxied = await request(gateway.port, { path: "/world", headers: { accept: "application/json" } }, jar);
   assert.ok([502, 504].includes(proxied.status));

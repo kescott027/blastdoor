@@ -145,3 +145,19 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Track graphics directory structure only; keep user assets local.
+graphics/*
+!graphics/logo/
+!graphics/background/
+!graphics/themes/
+graphics/logo/*
+!graphics/logo/YOURLOGOS.txt
+graphics/background/*
+!graphics/background/YOURBACKGROUNDS.txt
+graphics/themes/*
+!graphics/themes/YOURTHEMES.txt

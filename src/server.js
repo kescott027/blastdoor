@@ -20,6 +20,7 @@ import {
 import { createLogger } from "./logger.js";
 import { createConfigStore } from "./config-store.js";
 import { createPasswordStore } from "./password-store.js";
+import { mapThemeForClient, readThemeStore, resolveActiveTheme } from "./login-theme.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -145,7 +146,7 @@ export function validateConfig(config) {
   }
 }
 
-function renderLoginPage({ error, csrfToken, nextPath, requireTotp }) {
+function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
   const errorBlock = error
     ? `<p class="alert" role="alert">${escapeHtml(error)}</p>`
     : "";
@@ -153,6 +154,17 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp }) {
   const totpField = requireTotp
     ? `<label for="totp">Authenticator Code</label>
        <input id="totp" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="123456" required />`
+    : "";
+
+  const logoMarkup = theme.logoUrl
+    ? `<img class="brand-logo" src="${escapeHtml(theme.logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
+    : `<span class="brand-logo-fallback">BLASTDOOR</span>`;
+
+  const closedBgStyle = theme.closedBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(theme.closedBackgroundUrl)}');"`
+    : "";
+  const openBgStyle = theme.openBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
     : "";
 
   return `<!doctype html>
@@ -164,6 +176,12 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp }) {
     <link rel="stylesheet" href="/assets/theme.css" />
   </head>
   <body>
+    <div class="theme-stage" aria-hidden="true">
+      <div class="theme-bg theme-bg-closed"${closedBgStyle}></div>
+      <div class="theme-bg theme-bg-open"${openBgStyle}></div>
+      <div class="theme-overlay"></div>
+    </div>
+    <div class="brand-anchor">${logoMarkup}</div>
     <div class="sky"></div>
     <main class="shell" aria-live="polite">
       <section class="panel">
@@ -187,6 +205,56 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp }) {
         </form>
       </section>
     </main>
+  </body>
+</html>`;
+}
+
+function renderLoginSuccessPage({ nextPath, theme }) {
+  const logoMarkup = theme.logoUrl
+    ? `<img class="brand-logo" src="${escapeHtml(theme.logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
+    : `<span class="brand-logo-fallback">BLASTDOOR</span>`;
+
+  const closedBgStyle = theme.closedBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(theme.closedBackgroundUrl)}');"`
+    : "";
+  const openBgStyle = theme.openBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
+    : "";
+  const encodedNextPath = JSON.stringify(nextPath);
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blastdoor Access Granted</title>
+    <link rel="stylesheet" href="/assets/theme.css" />
+  </head>
+  <body class="auth-success">
+    <div class="theme-stage" aria-hidden="true">
+      <div class="theme-bg theme-bg-closed"${closedBgStyle}></div>
+      <div class="theme-bg theme-bg-open"${openBgStyle}></div>
+      <div class="theme-overlay"></div>
+    </div>
+    <div class="brand-anchor">${logoMarkup}</div>
+    <main class="shell">
+      <section class="panel success-panel">
+        <p class="eyebrow">Foundry VTT Gateway</p>
+        <h1>Access Granted</h1>
+        <p class="intro">Transitioning to your selected world...</p>
+        <p class="success-note">If redirection does not start automatically, continue below.</p>
+        <p><a class="continue-link" href="${escapeHtml(nextPath)}" id="continueLink">Continue to Foundry</a></p>
+      </section>
+    </main>
+    <script>
+      const nextPath = ${encodedNextPath};
+      requestAnimationFrame(() => {
+        document.body.classList.add("auth-success-active");
+      });
+      setTimeout(() => {
+        window.location.assign(nextPath);
+      }, 1500);
+    </script>
   </body>
 </html>`;
 }
@@ -304,6 +372,42 @@ export function createApp(config, options = {}) {
   }
 
   const publicDir = options.publicDir || path.join(__dirname, "..", "public");
+  const graphicsDir = options.graphicsDir || path.join(__dirname, "..", "graphics");
+  const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
+
+  async function resolveLoginTheme() {
+    try {
+      const themeStore = await readThemeStore(themeStorePath);
+      const activeTheme = resolveActiveTheme(themeStore);
+      if (!activeTheme) {
+        return mapThemeForClient({
+          id: "",
+          name: "Default",
+          logoPath: "",
+          closedBackgroundPath: "",
+          openBackgroundPath: "",
+          createdAt: "",
+          updatedAt: "",
+        });
+      }
+      return mapThemeForClient(activeTheme);
+    } catch (error) {
+      logger.warn("theme.load_failed", {
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+      return mapThemeForClient({
+        id: "",
+        name: "Default",
+        logoPath: "",
+        closedBackgroundPath: "",
+        openBackgroundPath: "",
+        createdAt: "",
+        updatedAt: "",
+      });
+    }
+  }
 
   const app = express();
   if (config.trustProxy !== false) {
@@ -389,6 +493,14 @@ export function createApp(config, options = {}) {
       maxAge: "1h",
     }),
   );
+  app.use(
+    "/graphics",
+    express.static(graphicsDir, {
+      etag: true,
+      immutable: true,
+      maxAge: "1h",
+    }),
+  );
 
   const loginLimiter = rateLimit({
     windowMs: config.loginRateLimitWindowMs,
@@ -425,7 +537,7 @@ export function createApp(config, options = {}) {
     res.status(200).json({ ok: true });
   });
 
-  app.get("/login", (req, res) => {
+  app.get("/login", async (req, res) => {
     if (req.session?.authenticated) {
       const nextPath = safeNextPath(req.query.next, "/");
       if (logger.debugEnabled) {
@@ -441,6 +553,7 @@ export function createApp(config, options = {}) {
     req.session.loginCsrf = createCsrfToken();
 
     const nextPath = safeNextPath(req.query.next, "/");
+    const theme = await resolveLoginTheme();
     res.set("cache-control", "no-store");
     return res.status(200).send(
       renderLoginPage({
@@ -448,6 +561,7 @@ export function createApp(config, options = {}) {
         csrfToken: req.session.loginCsrf,
         nextPath,
         requireTotp: config.requireTotp,
+        theme,
       }),
     );
   });
@@ -524,6 +638,7 @@ export function createApp(config, options = {}) {
         });
       }
 
+      const theme = await resolveLoginTheme();
       req.session.loginCsrf = createCsrfToken();
       res.set("cache-control", "no-store");
       return res.status(401).send(
@@ -532,6 +647,7 @@ export function createApp(config, options = {}) {
           csrfToken: req.session.loginCsrf,
           nextPath,
           requireTotp: config.requireTotp,
+          theme,
         }),
       );
     }
@@ -571,7 +687,25 @@ export function createApp(config, options = {}) {
           });
         }
 
-        return res.redirect(nextPath);
+        const accept = req.get("accept") || "";
+        const wantsHtml = accept.includes("text/html");
+        if (!wantsHtml) {
+          return res.redirect(nextPath);
+        }
+
+        return resolveLoginTheme()
+          .then((theme) => {
+            res.set("cache-control", "no-store");
+            res.status(200).send(
+              renderLoginSuccessPage({
+                nextPath,
+                theme,
+              }),
+            );
+          })
+          .catch(() => {
+            res.redirect(nextPath);
+          });
       });
     });
   });

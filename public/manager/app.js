@@ -12,6 +12,15 @@ const tsStatusMessage = document.getElementById("tsStatusMessage");
 const tsHints = document.getElementById("tsHints");
 const tsOutput = document.getElementById("tsOutput");
 const tsScript = document.getElementById("tsScript");
+const appearanceModal = document.getElementById("appearanceModal");
+const appearanceStatusMessage = document.getElementById("appearanceStatusMessage");
+const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
+const appearanceForm = document.getElementById("appearanceForm");
+const appearanceThemeName = document.getElementById("appearanceThemeName");
+const appearanceLogoSelect = document.getElementById("appearanceLogoSelect");
+const appearanceClosedBgSelect = document.getElementById("appearanceClosedBgSelect");
+const appearanceOpenBgSelect = document.getElementById("appearanceOpenBgSelect");
+const appearanceMakeActive = document.getElementById("appearanceMakeActive");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
 
@@ -31,6 +40,11 @@ function setDiagMessage(text, isError = false) {
 function setTsMessage(text, isError = false) {
   tsStatusMessage.textContent = text;
   tsStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setAppearanceMessage(text, isError = false) {
+  appearanceStatusMessage.textContent = text;
+  appearanceStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
 function toBooleanString(value) {
@@ -278,6 +292,87 @@ function renderTroubleshootActionResult(result) {
   tsOutput.textContent = lines.join("\n\n");
 }
 
+function optionMarkup(value, label, selected = false) {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label;
+  option.selected = selected;
+  return option;
+}
+
+function fillAssetSelect(selectEl, assets, { allowEmpty, emptyLabel, required }) {
+  selectEl.innerHTML = "";
+  if (allowEmpty) {
+    selectEl.append(optionMarkup("", emptyLabel, true));
+  }
+
+  for (const asset of assets) {
+    selectEl.append(optionMarkup(asset.path, asset.name, !allowEmpty && selectEl.options.length === 0));
+  }
+
+  selectEl.required = Boolean(required);
+  if (!allowEmpty && selectEl.options.length > 0 && !selectEl.value) {
+    selectEl.value = selectEl.options[0].value;
+  }
+}
+
+function fillThemeSelect(themes, activeThemeId) {
+  appearanceThemeSelect.innerHTML = "";
+  if (!themes.length) {
+    appearanceThemeSelect.append(optionMarkup("", "No themes saved", true));
+    appearanceThemeSelect.disabled = true;
+    return;
+  }
+
+  appearanceThemeSelect.disabled = false;
+  for (const theme of themes) {
+    const selected = theme.id === activeThemeId;
+    appearanceThemeSelect.append(optionMarkup(theme.id, theme.name, selected));
+  }
+}
+
+function renderThemeCatalog(payload) {
+  fillThemeSelect(payload.themes || [], payload.activeThemeId || "");
+  fillAssetSelect(appearanceLogoSelect, payload.assets?.logos || [], {
+    allowEmpty: true,
+    emptyLabel: "No logo",
+    required: false,
+  });
+  fillAssetSelect(appearanceClosedBgSelect, payload.assets?.backgrounds || [], {
+    allowEmpty: false,
+    emptyLabel: "",
+    required: true,
+  });
+  fillAssetSelect(appearanceOpenBgSelect, payload.assets?.backgrounds || [], {
+    allowEmpty: true,
+    emptyLabel: "Same as closed background",
+    required: false,
+  });
+}
+
+async function refreshThemes() {
+  const payload = await api("GET", "/themes");
+  renderThemeCatalog(payload);
+}
+
+function openAppearanceModal() {
+  appearanceModal.classList.remove("hidden");
+}
+
+function closeAppearanceModal() {
+  appearanceModal.classList.add("hidden");
+}
+
+function buildAppearanceCreatePayload() {
+  return {
+    name: String(appearanceThemeName.value || ""),
+    logoPath: String(appearanceLogoSelect.value || ""),
+    closedBackgroundPath: String(appearanceClosedBgSelect.value || ""),
+    openBackgroundPath: String(appearanceOpenBgSelect.value || ""),
+    makeActive: toBooleanString(appearanceMakeActive.checked),
+  };
+}
+
 async function refreshAll() {
   try {
     const [configResult, monitorResult] = await Promise.all([api("GET", "/config"), api("GET", "/monitor")]);
@@ -363,6 +458,53 @@ document.getElementById("restartBtn").addEventListener("click", async () => {
 document.getElementById("refreshBtn").addEventListener("click", async () => {
   await refreshAll();
   setMessage("Status refreshed.");
+});
+
+document.getElementById("appearanceBtn").addEventListener("click", async () => {
+  openAppearanceModal();
+  setAppearanceMessage("Loading themes...");
+  try {
+    await refreshThemes();
+    setAppearanceMessage("Theme catalog loaded.");
+  } catch (error) {
+    setAppearanceMessage(error.message || String(error), true);
+  }
+});
+
+document.getElementById("appearanceCloseBtn").addEventListener("click", () => {
+  closeAppearanceModal();
+});
+
+document.getElementById("appearanceCancelBtn").addEventListener("click", () => {
+  closeAppearanceModal();
+});
+
+document.getElementById("appearanceApplyBtn").addEventListener("click", async () => {
+  try {
+    if (appearanceThemeSelect.disabled || !appearanceThemeSelect.value) {
+      throw new Error("No saved theme is available to apply.");
+    }
+
+    const payload = await api("POST", "/themes/apply", { themeId: appearanceThemeSelect.value });
+    renderThemeCatalog(payload);
+    setAppearanceMessage("Theme applied. Refresh /login to preview.");
+  } catch (error) {
+    setAppearanceMessage(error.message || String(error), true);
+  }
+});
+
+appearanceForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const payload = buildAppearanceCreatePayload();
+    const created = await api("POST", "/themes/create", payload);
+    renderThemeCatalog(created);
+    appearanceThemeName.value = "";
+    appearanceMakeActive.checked = true;
+    setAppearanceMessage("Theme saved.");
+  } catch (error) {
+    setAppearanceMessage(error.message || String(error), true);
+  }
 });
 
 document.getElementById("diagGenerateBtn").addEventListener("click", async () => {

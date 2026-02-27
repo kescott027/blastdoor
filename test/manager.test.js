@@ -277,6 +277,86 @@ test("manager lock toggle restarts a running managed gateway immediately", async
   });
 });
 
+test("manager creates and applies login themes from graphics assets", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const graphicsDir = path.join(workspaceDir, "graphics");
+    const themeStorePath = path.join(graphicsDir, "themes", "themes.json");
+
+    await fs.mkdir(path.join(graphicsDir, "logo"), { recursive: true });
+    await fs.mkdir(path.join(graphicsDir, "background"), { recursive: true });
+    await fs.writeFile(path.join(graphicsDir, "logo", "crest.png"), "logo", "utf8");
+    await fs.writeFile(path.join(graphicsDir, "background", "closed.png"), "closed", "utf8");
+    await fs.writeFile(path.join(graphicsDir, "background", "open.png"), "open", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      graphicsDir,
+      themeStorePath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const before = await request(port, { pathname: "/api/themes" });
+      assert.equal(before.status, 200);
+      assert.equal(before.body.ok, true);
+      assert.equal(Array.isArray(before.body.assets.logos), true);
+      assert.equal(Array.isArray(before.body.assets.backgrounds), true);
+      assert.equal(before.body.themes.length, 0);
+
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/themes/create",
+        body: {
+          name: "Crystal Watch",
+          logoPath: "logo/crest.png",
+          closedBackgroundPath: "background/closed.png",
+          openBackgroundPath: "background/open.png",
+          makeActive: "true",
+        },
+      });
+      assert.equal(created.status, 200);
+      assert.equal(created.body.ok, true);
+      assert.equal(created.body.activeThemeId, created.body.createdTheme.id);
+      assert.equal(created.body.themes.length, 1);
+      assert.equal(created.body.createdTheme.logoUrl, "/graphics/logo/crest.png");
+
+      const applied = await request(port, {
+        method: "POST",
+        pathname: "/api/themes/apply",
+        body: { themeId: created.body.createdTheme.id },
+      });
+      assert.equal(applied.status, 200);
+      assert.equal(applied.body.ok, true);
+      assert.equal(applied.body.activeThemeId, created.body.createdTheme.id);
+
+      const rawThemeStore = await fs.readFile(themeStorePath, "utf8");
+      assert.match(rawThemeStore, /"activeThemeId"/);
+      assert.match(rawThemeStore, /Crystal Watch/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager diagnostics endpoint returns sanitized report", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");

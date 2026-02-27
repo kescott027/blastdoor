@@ -9,6 +9,14 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createPasswordHash } from "./security.js";
 import { validateConfig, loadConfigFromEnv } from "./server.js";
+import {
+  createThemeId,
+  listThemeAssets,
+  mapThemeForClient,
+  normalizeThemeAssetPath,
+  readThemeStore,
+  writeThemeStore,
+} from "./login-theme.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -106,6 +114,51 @@ function parseBodyConfig(body) {
   }
 
   return output;
+}
+
+function normalizeThemeName(value) {
+  return String(value || "").trim();
+}
+
+function parseBooleanLikeBody(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function validateThemeAssetSelection({ themeName, logoPath, closedBackgroundPath, openBackgroundPath }, assets) {
+  const logoSelection = normalizeThemeAssetPath(logoPath, "logo");
+  const closedSelection = normalizeThemeAssetPath(closedBackgroundPath, "background");
+  const openSelection = normalizeThemeAssetPath(openBackgroundPath, "background");
+
+  const logoPaths = new Set((assets.logos || []).map((entry) => entry.path));
+  const backgroundPaths = new Set((assets.backgrounds || []).map((entry) => entry.path));
+
+  if (logoSelection && !logoPaths.has(logoSelection)) {
+    throw new Error("Selected logo is not available under graphics/logo.");
+  }
+
+  if (closedSelection && !backgroundPaths.has(closedSelection)) {
+    throw new Error("Selected closed background is not available under graphics/background.");
+  }
+
+  if (openSelection && !backgroundPaths.has(openSelection)) {
+    throw new Error("Selected open background is not available under graphics/background.");
+  }
+
+  const name = normalizeThemeName(themeName);
+  if (!name) {
+    throw new Error("Theme name is required.");
+  }
+
+  if (!closedSelection) {
+    throw new Error("Closed background image selection is required.");
+  }
+
+  return {
+    name,
+    logoPath: logoSelection,
+    closedBackgroundPath: closedSelection,
+    openBackgroundPath: openSelection,
+  };
 }
 
 function scrubConfigForClient(config) {
@@ -773,6 +826,8 @@ export function createManagerApp(options = {}) {
   const workspaceDir = path.resolve(options.workspaceDir || path.join(__dirname, ".."));
   const envPath = options.envPath || path.join(workspaceDir, ".env");
   const managerDir = options.managerDir || path.join(workspaceDir, "public", "manager");
+  const graphicsDir = options.graphicsDir || path.join(workspaceDir, "graphics");
+  const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
   const processFactory = options.processFactory || spawn;
   const commandRunner = options.commandRunner || runDiagnosticCommand;
   const processState = createProcessState({ workspaceDir, processFactory });
@@ -910,6 +965,103 @@ export function createManagerApp(options = {}) {
       });
     } catch (error) {
       res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/themes", async (_req, res) => {
+    try {
+      const [store, assets] = await Promise.all([readThemeStore(themeStorePath), listThemeAssets(graphicsDir)]);
+      res.json({
+        ok: true,
+        activeThemeId: store.activeThemeId || "",
+        themes: (store.themes || []).map(mapThemeForClient),
+        assets,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/themes/create", async (req, res) => {
+    try {
+      const assets = await listThemeAssets(graphicsDir);
+      const validated = validateThemeAssetSelection(
+        {
+          themeName: req.body?.name,
+          logoPath: req.body?.logoPath,
+          closedBackgroundPath: req.body?.closedBackgroundPath,
+          openBackgroundPath: req.body?.openBackgroundPath,
+        },
+        assets,
+      );
+      const makeActive = parseBooleanLikeBody(req.body?.makeActive);
+
+      const store = await readThemeStore(themeStorePath);
+      const existingIds = new Set((store.themes || []).map((theme) => theme.id));
+      const id = createThemeId(validated.name, existingIds);
+      const now = new Date().toISOString();
+      const createdTheme = {
+        id,
+        name: validated.name,
+        logoPath: validated.logoPath,
+        closedBackgroundPath: validated.closedBackgroundPath,
+        openBackgroundPath: validated.openBackgroundPath,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const nextThemes = [...(store.themes || []), createdTheme];
+      const nextActiveThemeId = makeActive || !store.activeThemeId ? createdTheme.id : store.activeThemeId;
+      const updatedStore = await writeThemeStore(themeStorePath, {
+        activeThemeId: nextActiveThemeId,
+        themes: nextThemes,
+      });
+
+      res.json({
+        ok: true,
+        activeThemeId: updatedStore.activeThemeId || "",
+        createdTheme: mapThemeForClient(createdTheme),
+        themes: (updatedStore.themes || []).map(mapThemeForClient),
+        assets,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/themes/apply", async (req, res) => {
+    try {
+      const themeId = normalizeString(req.body?.themeId, "");
+      if (!themeId) {
+        throw new Error("themeId is required.");
+      }
+
+      const [store, assets] = await Promise.all([readThemeStore(themeStorePath), listThemeAssets(graphicsDir)]);
+      const selectedTheme = (store.themes || []).find((theme) => theme.id === themeId);
+      if (!selectedTheme) {
+        throw new Error("Requested theme was not found.");
+      }
+
+      const updatedStore = await writeThemeStore(themeStorePath, {
+        activeThemeId: themeId,
+        themes: store.themes || [],
+      });
+
+      res.json({
+        ok: true,
+        activeThemeId: updatedStore.activeThemeId || "",
+        activeTheme: mapThemeForClient(selectedTheme),
+        themes: (updatedStore.themes || []).map(mapThemeForClient),
+        assets,
+      });
+    } catch (error) {
+      res.status(400).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }
