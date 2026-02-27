@@ -296,6 +296,8 @@ function normalizeLoginBoxMode(value) {
 function renderThemeStyleVars(theme) {
   const loginBoxWidthPercent = clampThemePercent(theme?.loginBoxWidthPercent, 100, 20, 100);
   const loginBoxHeightPercent = clampThemePercent(theme?.loginBoxHeightPercent, 100, 20, 100);
+  const loginBoxOpacityPercent = clampThemePercent(theme?.loginBoxOpacityPercent, 100, 10, 100);
+  const loginBoxHoverOpacityPercent = clampThemePercent(theme?.loginBoxHoverOpacityPercent, 100, 10, 100);
   const loginBoxPosXPercent = clampThemePercent(theme?.loginBoxPosXPercent, 50, 0, 100);
   const loginBoxPosYPercent = clampThemePercent(theme?.loginBoxPosYPercent, 50, 0, 100);
   const logoSizePercent = clampThemePercent(theme?.logoSizePercent, 30, 30, 100);
@@ -306,6 +308,8 @@ function renderThemeStyleVars(theme) {
   const vars = [
     `--login-box-width-scale:${(loginBoxWidthPercent / 100).toFixed(4)}`,
     `--login-box-height-scale:${(loginBoxHeightPercent / 100).toFixed(4)}`,
+    `--login-box-opacity-scale:${(loginBoxOpacityPercent / 100).toFixed(4)}`,
+    `--login-box-hover-opacity-scale:${(loginBoxHoverOpacityPercent / 100).toFixed(4)}`,
     `--login-box-shift-x:${(loginBoxPosXPercent - 50).toFixed(2)}vw`,
     `--login-box-shift-y:${(loginBoxPosYPercent - 50).toFixed(2)}vh`,
     `--logo-size-scale:${(logoSizePercent / 30).toFixed(4)}`,

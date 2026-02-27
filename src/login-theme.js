@@ -9,6 +9,8 @@ const THEME_LAYOUT_DEFAULTS = {
   loginBoxHeightPercent: 100,
   loginBoxPosXPercent: 50,
   loginBoxPosYPercent: 50,
+  loginBoxOpacityPercent: 100,
+  loginBoxHoverOpacityPercent: 100,
   logoSizePercent: 30,
   logoOffsetXPercent: 2,
   logoOffsetYPercent: 2,
@@ -58,6 +60,18 @@ export function normalizeThemeLayoutSettings(value = {}) {
       0,
       100,
     ),
+    loginBoxOpacityPercent: clampNumeric(
+      source.loginBoxOpacityPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxOpacityPercent,
+      10,
+      100,
+    ),
+    loginBoxHoverOpacityPercent: clampNumeric(
+      source.loginBoxHoverOpacityPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxHoverOpacityPercent,
+      10,
+      100,
+    ),
     logoSizePercent: clampNumeric(source.logoSizePercent, THEME_LAYOUT_DEFAULTS.logoSizePercent, 30, 100),
     logoOffsetXPercent: clampNumeric(source.logoOffsetXPercent, THEME_LAYOUT_DEFAULTS.logoOffsetXPercent, 0, 100),
     logoOffsetYPercent: clampNumeric(source.logoOffsetYPercent, THEME_LAYOUT_DEFAULTS.logoOffsetYPercent, 0, 100),
@@ -81,6 +95,8 @@ function themeNeedsLayoutDefaults(theme) {
     !hasOwn(theme, "loginBoxHeightPercent") ||
     !hasOwn(theme, "loginBoxPosXPercent") ||
     !hasOwn(theme, "loginBoxPosYPercent") ||
+    !hasOwn(theme, "loginBoxOpacityPercent") ||
+    !hasOwn(theme, "loginBoxHoverOpacityPercent") ||
     !hasOwn(theme, "logoSizePercent") ||
     !hasOwn(theme, "logoOffsetXPercent") ||
     !hasOwn(theme, "logoOffsetYPercent") ||
@@ -201,6 +217,8 @@ function normalizeThemeDefinition(value, index) {
     loginBoxHeightPercent: layout.loginBoxHeightPercent,
     loginBoxPosXPercent: layout.loginBoxPosXPercent,
     loginBoxPosYPercent: layout.loginBoxPosYPercent,
+    loginBoxOpacityPercent: layout.loginBoxOpacityPercent,
+    loginBoxHoverOpacityPercent: layout.loginBoxHoverOpacityPercent,
     logoSizePercent: layout.logoSizePercent,
     logoOffsetXPercent: layout.logoOffsetXPercent,
     logoOffsetYPercent: layout.logoOffsetYPercent,
@@ -236,6 +254,8 @@ function createDefaultTheme() {
     loginBoxHeightPercent: THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
     loginBoxPosXPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
     loginBoxPosYPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
+    loginBoxOpacityPercent: THEME_LAYOUT_DEFAULTS.loginBoxOpacityPercent,
+    loginBoxHoverOpacityPercent: THEME_LAYOUT_DEFAULTS.loginBoxHoverOpacityPercent,
     logoSizePercent: THEME_LAYOUT_DEFAULTS.logoSizePercent,
     logoOffsetXPercent: THEME_LAYOUT_DEFAULTS.logoOffsetXPercent,
     logoOffsetYPercent: THEME_LAYOUT_DEFAULTS.logoOffsetYPercent,

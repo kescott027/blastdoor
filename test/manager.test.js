@@ -401,6 +401,8 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(before.body.themes[0].openBackgroundUrl, "");
       assert.equal(before.body.themes[0].loginBoxWidthPercent, 100);
       assert.equal(before.body.themes[0].loginBoxHeightPercent, 100);
+      assert.equal(before.body.themes[0].loginBoxOpacityPercent, 100);
+      assert.equal(before.body.themes[0].loginBoxHoverOpacityPercent, 100);
       assert.equal(before.body.themes[0].loginBoxPosXPercent, 50);
       assert.equal(before.body.themes[0].loginBoxPosYPercent, 50);
       assert.equal(before.body.themes[0].logoSizePercent, 30);
@@ -419,6 +421,8 @@ test("manager creates and applies login themes from graphics assets", async () =
           openBackgroundPath: "background/open.png",
           loginBoxWidthPercent: 76,
           loginBoxHeightPercent: 84,
+          loginBoxOpacityPercent: 72,
+          loginBoxHoverOpacityPercent: 95,
           loginBoxPosXPercent: 60,
           loginBoxPosYPercent: 40,
           logoSizePercent: 55,
@@ -436,6 +440,8 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(created.body.createdTheme.logoUrl, "/graphics/logo/crest.png");
       assert.equal(created.body.createdTheme.loginBoxWidthPercent, 76);
       assert.equal(created.body.createdTheme.loginBoxHeightPercent, 84);
+      assert.equal(created.body.createdTheme.loginBoxOpacityPercent, 72);
+      assert.equal(created.body.createdTheme.loginBoxHoverOpacityPercent, 95);
       assert.equal(created.body.createdTheme.loginBoxPosXPercent, 60);
       assert.equal(created.body.createdTheme.loginBoxPosYPercent, 40);
       assert.equal(created.body.createdTheme.logoSizePercent, 55);
@@ -455,6 +461,8 @@ test("manager creates and applies login themes from graphics assets", async () =
           openBackgroundPath: "background/closed.png",
           loginBoxWidthPercent: 20,
           loginBoxHeightPercent: 100,
+          loginBoxOpacityPercent: 10,
+          loginBoxHoverOpacityPercent: 100,
           loginBoxPosXPercent: 0,
           loginBoxPosYPercent: 100,
           logoSizePercent: 100,
@@ -474,6 +482,8 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(updated.body.updatedTheme.openBackgroundPath, "background/closed.png");
       assert.equal(updated.body.updatedTheme.loginBoxWidthPercent, 20);
       assert.equal(updated.body.updatedTheme.loginBoxHeightPercent, 100);
+      assert.equal(updated.body.updatedTheme.loginBoxOpacityPercent, 10);
+      assert.equal(updated.body.updatedTheme.loginBoxHoverOpacityPercent, 100);
       assert.equal(updated.body.updatedTheme.loginBoxPosXPercent, 0);
       assert.equal(updated.body.updatedTheme.loginBoxPosYPercent, 100);
       assert.equal(updated.body.updatedTheme.logoSizePercent, 100);
@@ -586,6 +596,8 @@ test("manager adds missing theme layout defaults and persists migrated schema", 
       assert.ok(legacy);
       assert.equal(legacy.loginBoxWidthPercent, 100);
       assert.equal(legacy.loginBoxHeightPercent, 100);
+      assert.equal(legacy.loginBoxOpacityPercent, 100);
+      assert.equal(legacy.loginBoxHoverOpacityPercent, 100);
       assert.equal(legacy.loginBoxPosXPercent, 50);
       assert.equal(legacy.loginBoxPosYPercent, 50);
       assert.equal(legacy.logoSizePercent, 30);
@@ -597,6 +609,8 @@ test("manager adds missing theme layout defaults and persists migrated schema", 
       const raw = await fs.readFile(themeStorePath, "utf8");
       assert.match(raw, /"loginBoxWidthPercent": 100/);
       assert.match(raw, /"loginBoxHeightPercent": 100/);
+      assert.match(raw, /"loginBoxOpacityPercent": 100/);
+      assert.match(raw, /"loginBoxHoverOpacityPercent": 100/);
       assert.match(raw, /"loginBoxPosXPercent": 50/);
       assert.match(raw, /"loginBoxPosYPercent": 50/);
       assert.match(raw, /"logoSizePercent": 30/);

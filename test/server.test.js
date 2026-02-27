@@ -724,6 +724,8 @@ test("login page renders active theme assets and success transition uses open ba
               openBackgroundPath: "background/test-open.png",
               loginBoxWidthPercent: 80,
               loginBoxHeightPercent: 70,
+              loginBoxOpacityPercent: 62,
+              loginBoxHoverOpacityPercent: 90,
               loginBoxPosXPercent: 65,
               loginBoxPosYPercent: 35,
               logoSizePercent: 90,
@@ -760,6 +762,8 @@ test("login page renders active theme assets and success transition uses open ba
     assert.match(loginPage.body, /\/graphics\/background\/test-open\.png/);
     assert.match(loginPage.body, /--login-box-width-scale:0\.8000/);
     assert.match(loginPage.body, /--login-box-height-scale:0\.7000/);
+    assert.match(loginPage.body, /--login-box-opacity-scale:0\.6200/);
+    assert.match(loginPage.body, /--login-box-hover-opacity-scale:0\.9000/);
     assert.match(loginPage.body, /--login-box-shift-x:15\.00vw/);
     assert.match(loginPage.body, /--login-box-shift-y:-15\.00vh/);
     assert.match(loginPage.body, /--logo-size-scale:3\.0000/);
@@ -780,6 +784,8 @@ test("login page renders active theme assets and success transition uses open ba
     assert.match(login.body, /\/graphics\/background\/test-open\.png/);
     assert.match(login.body, /--login-box-width-scale:0\.8000/);
     assert.match(login.body, /--login-box-height-scale:0\.7000/);
+    assert.match(login.body, /--login-box-opacity-scale:0\.6200/);
+    assert.match(login.body, /--login-box-hover-opacity-scale:0\.9000/);
     assert.match(login.body, /--login-box-shift-x:15\.00vw/);
     assert.match(login.body, /--login-box-shift-y:-15\.00vh/);
     assert.match(login.body, /--background-zoom-scale:1\.4000/);

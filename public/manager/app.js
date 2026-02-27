@@ -44,6 +44,8 @@ const appearanceAssetCancelBtn = document.getElementById("appearanceAssetCancelB
 const appearanceMakeActive = document.getElementById("appearanceMakeActive");
 const appearanceLoginBoxWidthPercent = document.getElementById("appearanceLoginBoxWidthPercent");
 const appearanceLoginBoxHeightPercent = document.getElementById("appearanceLoginBoxHeightPercent");
+const appearanceLoginBoxOpacityPercent = document.getElementById("appearanceLoginBoxOpacityPercent");
+const appearanceLoginBoxHoverOpacityPercent = document.getElementById("appearanceLoginBoxHoverOpacityPercent");
 const appearanceLoginBoxPosXPercent = document.getElementById("appearanceLoginBoxPosXPercent");
 const appearanceLoginBoxPosYPercent = document.getElementById("appearanceLoginBoxPosYPercent");
 const appearanceLogoSizePercent = document.getElementById("appearanceLogoSizePercent");
@@ -52,6 +54,8 @@ const appearanceLogoOffsetYPercent = document.getElementById("appearanceLogoOffs
 const appearanceBackgroundZoomPercent = document.getElementById("appearanceBackgroundZoomPercent");
 const appearanceLoginBoxWidthValue = document.getElementById("appearanceLoginBoxWidthValue");
 const appearanceLoginBoxHeightValue = document.getElementById("appearanceLoginBoxHeightValue");
+const appearanceLoginBoxOpacityValue = document.getElementById("appearanceLoginBoxOpacityValue");
+const appearanceLoginBoxHoverOpacityValue = document.getElementById("appearanceLoginBoxHoverOpacityValue");
 const appearanceLoginBoxPosXValue = document.getElementById("appearanceLoginBoxPosXValue");
 const appearanceLoginBoxPosYValue = document.getElementById("appearanceLoginBoxPosYValue");
 const appearanceLogoSizeValue = document.getElementById("appearanceLogoSizeValue");
@@ -65,6 +69,8 @@ const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
 const THEME_LAYOUT_DEFAULTS = {
   loginBoxWidthPercent: 100,
   loginBoxHeightPercent: 100,
+  loginBoxOpacityPercent: 100,
+  loginBoxHoverOpacityPercent: 100,
   loginBoxPosXPercent: 50,
   loginBoxPosYPercent: 50,
   logoSizePercent: 30,
@@ -87,6 +93,8 @@ const hasThemeEditorFormControls = Boolean(
     appearanceMakeActive &&
     appearanceLoginBoxWidthPercent &&
     appearanceLoginBoxHeightPercent &&
+    appearanceLoginBoxOpacityPercent &&
+    appearanceLoginBoxHoverOpacityPercent &&
     appearanceLoginBoxPosXPercent &&
     appearanceLoginBoxPosYPercent &&
     appearanceLogoSizePercent &&
@@ -129,6 +137,8 @@ let appearanceSelection = {
   openBackgroundPath: "",
   loginBoxWidthPercent: THEME_LAYOUT_DEFAULTS.loginBoxWidthPercent,
   loginBoxHeightPercent: THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+  loginBoxOpacityPercent: THEME_LAYOUT_DEFAULTS.loginBoxOpacityPercent,
+  loginBoxHoverOpacityPercent: THEME_LAYOUT_DEFAULTS.loginBoxHoverOpacityPercent,
   loginBoxPosXPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
   loginBoxPosYPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
   logoSizePercent: THEME_LAYOUT_DEFAULTS.logoSizePercent,
@@ -503,6 +513,18 @@ function setAppearanceSelection(nextSelection) {
       20,
       100,
     ),
+    loginBoxOpacityPercent: clampThemeLayoutNumber(
+      nextSelection?.loginBoxOpacityPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxOpacityPercent,
+      10,
+      100,
+    ),
+    loginBoxHoverOpacityPercent: clampThemeLayoutNumber(
+      nextSelection?.loginBoxHoverOpacityPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxHoverOpacityPercent,
+      10,
+      100,
+    ),
     loginBoxPosXPercent: clampThemeLayoutNumber(
       nextSelection?.loginBoxPosXPercent,
       THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
@@ -564,6 +586,18 @@ function normalizeThemeForEditor(theme) {
       theme.loginBoxHeightPercent,
       THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
       20,
+      100,
+    ),
+    loginBoxOpacityPercent: clampThemeLayoutNumber(
+      theme.loginBoxOpacityPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxOpacityPercent,
+      10,
+      100,
+    ),
+    loginBoxHoverOpacityPercent: clampThemeLayoutNumber(
+      theme.loginBoxHoverOpacityPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxHoverOpacityPercent,
+      10,
       100,
     ),
     loginBoxPosXPercent: clampThemeLayoutNumber(
@@ -662,6 +696,8 @@ function startNewThemeEditor() {
     openBackgroundPath: "",
     loginBoxWidthPercent: THEME_LAYOUT_DEFAULTS.loginBoxWidthPercent,
     loginBoxHeightPercent: THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+    loginBoxOpacityPercent: THEME_LAYOUT_DEFAULTS.loginBoxOpacityPercent,
+    loginBoxHoverOpacityPercent: THEME_LAYOUT_DEFAULTS.loginBoxHoverOpacityPercent,
     loginBoxPosXPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
     loginBoxPosYPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
     logoSizePercent: THEME_LAYOUT_DEFAULTS.logoSizePercent,
@@ -694,6 +730,8 @@ function startManageThemeEditor() {
     openBackgroundPath: selectedTheme.openBackgroundPath,
     loginBoxWidthPercent: selectedTheme.loginBoxWidthPercent,
     loginBoxHeightPercent: selectedTheme.loginBoxHeightPercent,
+    loginBoxOpacityPercent: selectedTheme.loginBoxOpacityPercent,
+    loginBoxHoverOpacityPercent: selectedTheme.loginBoxHoverOpacityPercent,
     loginBoxPosXPercent: selectedTheme.loginBoxPosXPercent,
     loginBoxPosYPercent: selectedTheme.loginBoxPosYPercent,
     logoSizePercent: selectedTheme.logoSizePercent,
@@ -730,6 +768,12 @@ function renderAppearanceSelection() {
   if (appearanceLoginBoxHeightPercent) {
     appearanceLoginBoxHeightPercent.value = String(Math.round(appearanceSelection.loginBoxHeightPercent));
   }
+  if (appearanceLoginBoxOpacityPercent) {
+    appearanceLoginBoxOpacityPercent.value = String(Math.round(appearanceSelection.loginBoxOpacityPercent));
+  }
+  if (appearanceLoginBoxHoverOpacityPercent) {
+    appearanceLoginBoxHoverOpacityPercent.value = String(Math.round(appearanceSelection.loginBoxHoverOpacityPercent));
+  }
   if (appearanceLoginBoxPosXPercent) {
     appearanceLoginBoxPosXPercent.value = String(Math.round(appearanceSelection.loginBoxPosXPercent));
   }
@@ -753,6 +797,12 @@ function renderAppearanceSelection() {
   }
   if (appearanceLoginBoxHeightValue) {
     appearanceLoginBoxHeightValue.textContent = `${Math.round(appearanceSelection.loginBoxHeightPercent)}%`;
+  }
+  if (appearanceLoginBoxOpacityValue) {
+    appearanceLoginBoxOpacityValue.textContent = `${Math.round(appearanceSelection.loginBoxOpacityPercent)}%`;
+  }
+  if (appearanceLoginBoxHoverOpacityValue) {
+    appearanceLoginBoxHoverOpacityValue.textContent = `${Math.round(appearanceSelection.loginBoxHoverOpacityPercent)}%`;
   }
   if (appearanceLoginBoxPosXValue) {
     appearanceLoginBoxPosXValue.textContent = `${Math.round(appearanceSelection.loginBoxPosXPercent)}%`;
@@ -903,6 +953,8 @@ function renderThemeCatalog(payload) {
           openBackgroundPath: matchingTheme.openBackgroundPath,
           loginBoxWidthPercent: matchingTheme.loginBoxWidthPercent,
           loginBoxHeightPercent: matchingTheme.loginBoxHeightPercent,
+          loginBoxOpacityPercent: matchingTheme.loginBoxOpacityPercent,
+          loginBoxHoverOpacityPercent: matchingTheme.loginBoxHoverOpacityPercent,
           loginBoxPosXPercent: matchingTheme.loginBoxPosXPercent,
           loginBoxPosYPercent: matchingTheme.loginBoxPosYPercent,
           logoSizePercent: matchingTheme.logoSizePercent,
@@ -931,6 +983,8 @@ function renderThemeCatalog(payload) {
       openBackgroundPath: validOpen,
       loginBoxWidthPercent: nextSelection.loginBoxWidthPercent,
       loginBoxHeightPercent: nextSelection.loginBoxHeightPercent,
+      loginBoxOpacityPercent: nextSelection.loginBoxOpacityPercent,
+      loginBoxHoverOpacityPercent: nextSelection.loginBoxHoverOpacityPercent,
       loginBoxPosXPercent: nextSelection.loginBoxPosXPercent,
       loginBoxPosYPercent: nextSelection.loginBoxPosYPercent,
       logoSizePercent: nextSelection.logoSizePercent,
@@ -1003,6 +1057,8 @@ function buildAppearanceCreatePayload() {
       openBackgroundPath: String(appearanceSelection.openBackgroundPath || ""),
       loginBoxWidthPercent: Math.round(appearanceSelection.loginBoxWidthPercent),
       loginBoxHeightPercent: Math.round(appearanceSelection.loginBoxHeightPercent),
+      loginBoxOpacityPercent: Math.round(appearanceSelection.loginBoxOpacityPercent),
+      loginBoxHoverOpacityPercent: Math.round(appearanceSelection.loginBoxHoverOpacityPercent),
       loginBoxPosXPercent: Math.round(appearanceSelection.loginBoxPosXPercent),
       loginBoxPosYPercent: Math.round(appearanceSelection.loginBoxPosYPercent),
       logoSizePercent: Math.round(appearanceSelection.logoSizePercent),
@@ -1035,6 +1091,18 @@ function buildAppearanceCreatePayload() {
         appearanceLoginBoxHeightPercent?.value,
         THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
         20,
+        100,
+      ),
+      loginBoxOpacityPercent: clampThemeLayoutNumber(
+        appearanceLoginBoxOpacityPercent?.value,
+        THEME_LAYOUT_DEFAULTS.loginBoxOpacityPercent,
+        10,
+        100,
+      ),
+      loginBoxHoverOpacityPercent: clampThemeLayoutNumber(
+        appearanceLoginBoxHoverOpacityPercent?.value,
+        THEME_LAYOUT_DEFAULTS.loginBoxHoverOpacityPercent,
+        10,
         100,
       ),
       loginBoxPosXPercent: clampThemeLayoutNumber(
@@ -1319,6 +1387,20 @@ if (hasThemeEditorFormControls) {
     20,
     100,
     THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceLoginBoxOpacityPercent,
+    "loginBoxOpacityPercent",
+    10,
+    100,
+    THEME_LAYOUT_DEFAULTS.loginBoxOpacityPercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceLoginBoxHoverOpacityPercent,
+    "loginBoxHoverOpacityPercent",
+    10,
+    100,
+    THEME_LAYOUT_DEFAULTS.loginBoxHoverOpacityPercent,
   );
   bindAppearanceRangeInput(
     appearanceLoginBoxPosXPercent,
