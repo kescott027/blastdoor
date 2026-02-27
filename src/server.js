@@ -711,6 +711,14 @@ export function createApp(config, options = {}) {
     }),
   );
 
+  const loginPageLimiter = rateLimit({
+    windowMs: config.loginRateLimitWindowMs,
+    max: Math.max(config.loginRateLimitMax * 20, 120),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many login page requests. Try again shortly.",
+  });
+
   function authGuard(req, res, next) {
     if (req.session?.authenticated) {
       return next();
@@ -738,7 +746,7 @@ export function createApp(config, options = {}) {
     res.status(200).json({ ok: true });
   });
 
-  app.get("/login", async (req, res) => {
+  app.get("/login", loginPageLimiter, async (req, res) => {
     const forceReauth = parseBoolean(req.query.reauth, false);
     if (forceReauth && req.session) {
       const nextPath = safeNextPath(req.query.next, "/");
