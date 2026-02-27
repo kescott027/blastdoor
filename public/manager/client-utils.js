@@ -21,6 +21,17 @@ export function resolveApiPath(apiBasePath, routePath) {
   return `${base}/${route}`;
 }
 
+export function getApiBaseCandidates(primaryApiBase, legacyApiBase = "/api") {
+  const primary = String(primaryApiBase || "/api").replace(/\/+$/, "");
+  const legacy = String(legacyApiBase || "/api").replace(/\/+$/, "");
+
+  if (primary === legacy) {
+    return [primary];
+  }
+
+  return [primary, legacy];
+}
+
 export function formatUnexpectedPayload(response, rawBody) {
   const snippet = String(rawBody || "")
     .replace(/\s+/g, " ")

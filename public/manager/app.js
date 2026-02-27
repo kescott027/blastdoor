@@ -1,4 +1,4 @@
-import { formatUnexpectedPayload, resolveApiBasePath, resolveApiPath } from "./client-utils.js";
+import { formatUnexpectedPayload, getApiBaseCandidates, resolveApiBasePath, resolveApiPath } from "./client-utils.js";
 
 const statusMessage = document.getElementById("statusMessage");
 const form = document.getElementById("configForm");
@@ -6,6 +6,7 @@ const diagStatusMessage = document.getElementById("diagStatusMessage");
 const diagSummary = document.getElementById("diagSummary");
 const diagJson = document.getElementById("diagJson");
 const API_BASE = resolveApiBasePath(window.location.href);
+const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
 
 let latestDiagnostics = null;
 
@@ -73,29 +74,59 @@ function fillForm(config) {
 }
 
 async function api(method, routePath, body) {
-  const response = await fetch(resolveApiPath(API_BASE, routePath), {
-    method,
-    headers: {
-      "content-type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let lastError = null;
 
-  const rawBody = await response.text();
-  let payload = {};
-  if (rawBody) {
+  for (let index = 0; index < API_BASE_CANDIDATES.length; index += 1) {
+    const baseCandidate = API_BASE_CANDIDATES[index];
+    const hasFallback = index < API_BASE_CANDIDATES.length - 1;
+
     try {
-      payload = JSON.parse(rawBody);
-    } catch {
-      throw new Error(formatUnexpectedPayload(response, rawBody));
+      const response = await fetch(resolveApiPath(baseCandidate, routePath), {
+        method,
+        headers: {
+          "content-type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+
+      const rawBody = await response.text();
+      let payload = {};
+      if (rawBody) {
+        try {
+          payload = JSON.parse(rawBody);
+        } catch {
+          const parseError = new Error(formatUnexpectedPayload(response, rawBody));
+          if (hasFallback && response.status === 404) {
+            lastError = parseError;
+            continue;
+          }
+
+          throw parseError;
+        }
+      }
+
+      if (!response.ok) {
+        const requestError = new Error(payload.error || `Request failed (${response.status})`);
+        if (hasFallback && response.status === 404) {
+          lastError = requestError;
+          continue;
+        }
+
+        throw requestError;
+      }
+
+      return payload;
+    } catch (error) {
+      if (hasFallback && error instanceof TypeError) {
+        lastError = error;
+        continue;
+      }
+
+      throw error;
     }
   }
 
-  if (!response.ok) {
-    throw new Error(payload.error || `Request failed (${response.status})`);
-  }
-
-  return payload;
+  throw lastError || new Error("Request failed");
 }
 
 async function copyToClipboard(text) {

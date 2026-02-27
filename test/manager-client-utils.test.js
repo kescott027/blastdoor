@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatUnexpectedPayload, resolveApiBasePath, resolveApiPath } from "../public/manager/client-utils.js";
+import {
+  formatUnexpectedPayload,
+  getApiBaseCandidates,
+  resolveApiBasePath,
+  resolveApiPath,
+} from "../public/manager/client-utils.js";
 
 test("resolveApiBasePath supports manager route variants", () => {
   assert.equal(resolveApiBasePath("http://127.0.0.1:8090/manager/"), "/manager/api");
@@ -11,6 +16,11 @@ test("resolveApiBasePath supports manager route variants", () => {
 test("resolveApiPath normalizes slashes", () => {
   assert.equal(resolveApiPath("/manager/api", "/diagnostics"), "/manager/api/diagnostics");
   assert.equal(resolveApiPath("/manager/api/", "diagnostics"), "/manager/api/diagnostics");
+});
+
+test("getApiBaseCandidates provides manager + legacy fallback", () => {
+  assert.deepEqual(getApiBaseCandidates("/manager/api"), ["/manager/api", "/api"]);
+  assert.deepEqual(getApiBaseCandidates("/api"), ["/api"]);
 });
 
 test("formatUnexpectedPayload includes status url and trimmed payload snippet", () => {
