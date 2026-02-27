@@ -561,12 +561,42 @@ export function createManagerServer(options = {}) {
   const host = options.host || DEFAULT_MANAGER_HOST;
   const port = Number.isInteger(options.port) ? options.port : DEFAULT_MANAGER_PORT;
   const { app } = createManagerApp(options);
+  const exitOnError = options.exitOnError !== false;
+  const onListenError =
+    options.onListenError ||
+    ((error, context) => {
+      console.error(formatManagerListenError(error, context));
+      if (exitOnError) {
+        process.exit(1);
+      }
+    });
 
-  return app.listen(port, host, () => {
+  const server = app.listen(port, host, () => {
     if (!options.silent) {
       console.log(`Blastdoor Manager available at http://${host}:${port}/manager/`);
     }
   });
+
+  server.on("error", (error) => {
+    onListenError(error, { host, port, exitOnError });
+  });
+
+  return server;
+}
+
+export function formatManagerListenError(error, { host, port } = {}) {
+  const boundHost = host || DEFAULT_MANAGER_HOST;
+  const boundPort = port || DEFAULT_MANAGER_PORT;
+
+  if (error && error.code === "EADDRINUSE") {
+    return [
+      `Blastdoor Manager could not start because ${boundHost}:${boundPort} is already in use.`,
+      `Another manager instance is likely already running at http://${boundHost}:${boundPort}/manager/.`,
+      "Stop the existing process or set MANAGER_PORT to a different port, then retry make manager-launch.",
+    ].join(" ");
+  }
+
+  return `Blastdoor Manager failed to start on ${boundHost}:${boundPort}: ${error instanceof Error ? error.message : String(error)}`;
 }
 
 function isEntrypoint() {

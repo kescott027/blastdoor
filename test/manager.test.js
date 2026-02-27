@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter, once } from "node:events";
-import { createManagerApp } from "../src/manager.js";
+import { createManagerApp, createManagerServer, formatManagerListenError } from "../src/manager.js";
 
 function request(port, { method = "GET", pathname = "/", body = null }) {
   return new Promise((resolve, reject) => {
@@ -360,6 +360,57 @@ test("manager diagnostics returns JSON error when .env cannot be read", async ()
       assert.match(response.body.error, /Failed to read config/);
     } finally {
       await closeServer(server);
+    }
+  });
+});
+
+test("formatManagerListenError explains when manager port is already in use", () => {
+  const message = formatManagerListenError({ code: "EADDRINUSE" }, { host: "127.0.0.1", port: 8090 });
+  assert.match(message, /already in use/);
+  assert.match(message, /another manager instance/i);
+  assert.match(message, /MANAGER_PORT/);
+});
+
+test("createManagerServer routes listen errors to onListenError handler", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const blocker = http.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.end("busy");
+    });
+    blocker.listen(0, "127.0.0.1");
+    await once(blocker, "listening");
+    const busyPort = blocker.address().port;
+
+    let listenError = null;
+    let listenContext = null;
+    const listenErrorPromise = new Promise((resolve) => {
+      const server = createManagerServer({
+        workspaceDir,
+        envPath: path.join(workspaceDir, ".env"),
+        host: "127.0.0.1",
+        port: busyPort,
+        silent: true,
+        exitOnError: false,
+        onListenError: (error, context) => {
+          listenError = error;
+          listenContext = context;
+          if (server.listening) {
+            server.close(() => resolve());
+            return;
+          }
+          resolve();
+        },
+      });
+    });
+
+    try {
+      await listenErrorPromise;
+      assert.equal(listenError?.code, "EADDRINUSE");
+      assert.equal(listenContext?.host, "127.0.0.1");
+      assert.equal(listenContext?.port, busyPort);
+      assert.equal(listenContext?.exitOnError, false);
+    } finally {
+      await closeServer(blocker);
     }
   });
 });
