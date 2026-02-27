@@ -20,6 +20,7 @@ const appearanceNewBtn = document.getElementById("appearanceNewBtn");
 const appearanceEditorSection = document.getElementById("appearanceEditorSection");
 const appearanceEditorHeading = document.getElementById("appearanceEditorHeading");
 const appearanceForm = document.getElementById("appearanceForm");
+const appearanceCancelBtn = document.getElementById("appearanceCancelBtn");
 const appearanceRenameBtn = document.getElementById("appearanceRenameBtn");
 const appearanceDeleteBtn = document.getElementById("appearanceDeleteBtn");
 const appearanceThemeName = document.getElementById("appearanceThemeName");
@@ -43,19 +44,21 @@ const appearanceAssetCancelBtn = document.getElementById("appearanceAssetCancelB
 const appearanceMakeActive = document.getElementById("appearanceMakeActive");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
-const hasThemeEditorControls = Boolean(
+const hasThemeEditorPanelControls = Boolean(
   appearanceEditBtn &&
     appearanceNewBtn &&
     appearanceEditorSection &&
-    appearanceEditorHeading &&
-    appearanceForm &&
+    appearanceEditorHeading,
+);
+const hasThemeEditorFormControls = Boolean(
+  appearanceForm &&
     appearanceRenameBtn &&
     appearanceDeleteBtn &&
     appearanceThemeName &&
     appearanceMakeActive,
 );
 const hasAssetPickerControls = Boolean(
-    appearanceLogoDisplay &&
+  appearanceLogoDisplay &&
     appearanceLogoPath &&
     appearanceClosedBgDisplay &&
     appearanceClosedBgPath &&
@@ -89,6 +92,14 @@ let appearanceSelection = {
 let appearanceAssetChooserState = null;
 let appearanceEditorMode = "hidden";
 let appearanceEditingThemeId = "";
+
+function ensureThemeEditorFormControls() {
+  if (!hasThemeEditorFormControls) {
+    throw new Error(
+      "Theme editor controls are missing in this admin UI build. Hard refresh the admin panel and retry.",
+    );
+  }
+}
 
 function setMessage(text, isError = false) {
   statusMessage.textContent = text;
@@ -436,7 +447,7 @@ function findSelectedThemeForEditor() {
 }
 
 function setManageActionState() {
-  if (!hasThemeEditorControls) {
+  if (!hasThemeEditorPanelControls || !appearanceRenameBtn || !appearanceDeleteBtn) {
     return;
   }
 
@@ -446,7 +457,7 @@ function setManageActionState() {
 }
 
 function showAppearanceEditor(mode) {
-  if (!hasThemeEditorControls) {
+  if (!hasThemeEditorPanelControls) {
     return;
   }
 
@@ -458,7 +469,7 @@ function showAppearanceEditor(mode) {
 }
 
 function hideAppearanceEditor() {
-  if (!hasThemeEditorControls) {
+  if (!hasThemeEditorPanelControls) {
     return;
   }
 
@@ -473,9 +484,10 @@ function hideAppearanceEditor() {
 }
 
 function startNewThemeEditor() {
-  if (!hasThemeEditorControls) {
-    return;
+  if (!hasThemeEditorPanelControls) {
+    throw new Error("Theme editor panel controls are missing in this admin UI build. Hard refresh and retry.");
   }
+  ensureThemeEditorFormControls();
 
   appearanceEditingThemeId = "";
   appearanceThemeName.value = "";
@@ -490,9 +502,10 @@ function startNewThemeEditor() {
 }
 
 function startManageThemeEditor() {
-  if (!hasThemeEditorControls) {
-    return;
+  if (!hasThemeEditorPanelControls) {
+    throw new Error("Theme editor panel controls are missing in this admin UI build. Hard refresh and retry.");
   }
+  ensureThemeEditorFormControls();
 
   const selectedTheme = findSelectedThemeForEditor();
   if (!selectedTheme) {
@@ -629,7 +642,7 @@ function renderThemeCatalog(payload) {
   const preferredThemeId = appearanceEditingThemeId || String(appearanceThemeSelect?.value || "");
   fillThemeSelect(payload.themes || [], payload.activeThemeId || "", preferredThemeId);
 
-  if (hasThemeEditorControls && hasAssetPickerControls) {
+  if (hasThemeEditorPanelControls && hasThemeEditorFormControls && hasAssetPickerControls) {
     let nextSelection = { ...appearanceSelection };
     if (appearanceEditorMode === "edit" && appearanceEditingThemeId) {
       const matchingTheme = latestThemes.find((theme) => theme.id === appearanceEditingThemeId);
@@ -682,7 +695,7 @@ function renderThemeCatalog(payload) {
     return;
   }
 
-  if (hasThemeEditorControls) {
+  if (hasThemeEditorPanelControls) {
     return;
   }
 
@@ -700,7 +713,7 @@ function openAppearanceModal() {
 }
 
 function closeAppearanceModal() {
-  if (hasThemeEditorControls) {
+  if (hasThemeEditorPanelControls) {
     hideAppearanceEditor();
   }
   appearanceModal.hidden = true;
@@ -708,6 +721,8 @@ function closeAppearanceModal() {
 }
 
 function buildAppearanceCreatePayload() {
+  ensureThemeEditorFormControls();
+
   if (hasAssetPickerControls) {
     if (!appearanceSelection.closedBackgroundPath) {
       throw new Error("Choose a closed background before saving the theme.");
@@ -857,7 +872,7 @@ document.getElementById("appearanceBtn").addEventListener("click", async () => {
   setAppearanceMessage("Loading themes...");
   try {
     await refreshThemes();
-    if (hasThemeEditorControls) {
+    if (hasThemeEditorPanelControls) {
       hideAppearanceEditor();
     }
     setAppearanceMessage("Theme catalog loaded.");
@@ -870,22 +885,30 @@ document.getElementById("appearanceCloseBtn").addEventListener("click", () => {
   closeAppearanceModal();
 });
 
-document.getElementById("appearanceCancelBtn").addEventListener("click", () => {
-  if (hasThemeEditorControls) {
-    hideAppearanceEditor();
-    setAppearanceMessage("Theme editor hidden.");
-    return;
-  }
+if (appearanceCancelBtn) {
+  appearanceCancelBtn.addEventListener("click", () => {
+    if (hasThemeEditorPanelControls) {
+      hideAppearanceEditor();
+      setAppearanceMessage("Theme editor hidden.");
+      return;
+    }
 
-  closeAppearanceModal();
-});
-
-if (hasThemeEditorControls) {
-  appearanceNewBtn.addEventListener("click", () => {
-    startNewThemeEditor();
-    setAppearanceMessage("Add New Theme mode.");
+    closeAppearanceModal();
   });
+}
 
+if (appearanceNewBtn) {
+  appearanceNewBtn.addEventListener("click", () => {
+    try {
+      startNewThemeEditor();
+      setAppearanceMessage("Add New Theme mode.");
+    } catch (error) {
+      setAppearanceMessage(error.message || String(error), true);
+    }
+  });
+}
+
+if (appearanceEditBtn) {
   appearanceEditBtn.addEventListener("click", () => {
     try {
       startManageThemeEditor();
@@ -894,7 +917,9 @@ if (hasThemeEditorControls) {
       setAppearanceMessage(error.message || String(error), true);
     }
   });
+}
 
+if (hasThemeEditorFormControls && appearanceRenameBtn) {
   appearanceRenameBtn.addEventListener("click", async () => {
     try {
       if (appearanceEditorMode !== "edit" || !appearanceEditingThemeId) {
@@ -916,7 +941,9 @@ if (hasThemeEditorControls) {
       setAppearanceMessage(error.message || String(error), true);
     }
   });
+}
 
+if (hasThemeEditorFormControls && appearanceDeleteBtn) {
   appearanceDeleteBtn.addEventListener("click", async () => {
     try {
       if (appearanceEditorMode !== "edit" || !appearanceEditingThemeId) {
@@ -1013,37 +1040,39 @@ document.getElementById("appearanceApplyBtn").addEventListener("click", async ()
   }
 });
 
-appearanceForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const payload = buildAppearanceCreatePayload();
-    if (hasThemeEditorControls && appearanceEditorMode === "edit") {
-      if (!appearanceEditingThemeId) {
-        throw new Error("No theme is selected for editing.");
+if (appearanceForm) {
+  appearanceForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const payload = buildAppearanceCreatePayload();
+      if (hasThemeEditorPanelControls && appearanceEditorMode === "edit") {
+        if (!appearanceEditingThemeId) {
+          throw new Error("No theme is selected for editing.");
+        }
+
+        const updated = await api("POST", "/themes/update", {
+          ...payload,
+          themeId: appearanceEditingThemeId,
+        });
+        renderThemeCatalog(updated);
+        setAppearanceMessage("Theme updated.");
+        return;
       }
 
-      const updated = await api("POST", "/themes/update", {
-        ...payload,
-        themeId: appearanceEditingThemeId,
-      });
-      renderThemeCatalog(updated);
-      setAppearanceMessage("Theme updated.");
-      return;
+      const created = await api("POST", "/themes/create", payload);
+      renderThemeCatalog(created);
+      if (hasThemeEditorPanelControls) {
+        startNewThemeEditor();
+      } else if (appearanceThemeName && appearanceMakeActive) {
+        appearanceThemeName.value = "";
+        appearanceMakeActive.checked = true;
+      }
+      setAppearanceMessage("Theme saved.");
+    } catch (error) {
+      setAppearanceMessage(error.message || String(error), true);
     }
-
-    const created = await api("POST", "/themes/create", payload);
-    renderThemeCatalog(created);
-    if (hasThemeEditorControls) {
-      startNewThemeEditor();
-    } else {
-      appearanceThemeName.value = "";
-      appearanceMakeActive.checked = true;
-    }
-    setAppearanceMessage("Theme saved.");
-  } catch (error) {
-    setAppearanceMessage(error.message || String(error), true);
-  }
-});
+  });
+}
 
 document.getElementById("diagGenerateBtn").addEventListener("click", async () => {
   try {
