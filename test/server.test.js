@@ -7,11 +7,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
-import { authenticator } from "otplib";
 import { createServer } from "../src/server.js";
 import { BlastdoorDatabase, BlastdoorPostgresDatabase } from "../src/database-store.js";
 import { writeBlastDoorsState } from "../src/blastdoors-state.js";
 import { createPasswordHash } from "../src/security.js";
+import { authenticator } from "../src/otp.js";
 import { createMockPostgresPoolFactory } from "./helpers/mock-postgres.js";
 
 class CookieJar {

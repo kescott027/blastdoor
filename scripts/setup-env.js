@@ -6,8 +6,8 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
-import { authenticator } from "otplib";
 import { createPasswordHash } from "../src/security.js";
+import { authenticator } from "../src/otp.js";
 import { BlastdoorDatabase, BlastdoorPostgresDatabase } from "../src/database-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
