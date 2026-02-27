@@ -463,6 +463,12 @@ document.getElementById("refreshBtn").addEventListener("click", async () => {
 });
 
 document.getElementById("appearanceBtn").addEventListener("click", async () => {
+  if (!appearanceModal.hidden) {
+    closeAppearanceModal();
+    setAppearanceMessage("Appearance panel closed.");
+    return;
+  }
+
   openAppearanceModal();
   setAppearanceMessage("Loading themes...");
   try {
