@@ -9,6 +9,8 @@ Secure front-end authentication gateway for a self-hosted Foundry VTT instance.
 - Optional TOTP MFA (recommended and enabled by default)
 - Session-based auth with secure cookie settings
 - Login rate limiting and CSRF protection
+- Temporary login code issuance with optional email delivery
+- User self-service account page (password change, profile updates, admin messaging)
 - Reverse proxy to Foundry (including websocket traffic)
 - Fantasy/sci-fi themed responsive frontend
 - Local GUI management console for setup/config, launch control, and monitoring
@@ -214,6 +216,34 @@ Optional tuning values:
 - `BLASTDOOR_API_RETRY_MAX_DELAY_MS` (default `1200`)
 - `BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD` (default `5`)
 - `BLASTDOOR_API_CIRCUIT_RESET_MS` (default `10000`)
+- `EMAIL_PROVIDER` (`disabled`, `console`, `smtp`)
+- `EMAIL_FROM` (required when `EMAIL_PROVIDER=smtp`)
+- `EMAIL_ADMIN_TO` (used by user `Message Admin` action)
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_IGNORE_TLS`
+- `PUBLIC_BASE_URL` (recommended for correct login links in outbound email)
+
+### User Self-Service Flow
+
+- Temporary login codes now force a password-change flow before proxy routing is allowed.
+- After successful authentication, Blastdoor shows a 7-second transition page with:
+- `Continue` to destination
+- `My Account` quick access
+- `/account` supports:
+- password update
+- profile updates (`friendlyName`, `email`, `contactInfo`, `avatarUrl`, `displayInfo`)
+- `Message Admin` action (uses configured email provider)
+
+### Email Handling Strategies (Spike Summary)
+
+Simple path (implemented now):
+- Use `EMAIL_PROVIDER=smtp` for direct SMTP delivery.
+- Use `EMAIL_PROVIDER=console` for local verification without external email.
+- Manager `Reset Login / Temp Code` attempts email delivery when `delivery=email` and user profile has an email.
+
+Durable path (recommended next phase):
+- Add an outbox table/queue (sqlite/postgres) and background worker for retries + dead-letter handling.
+- Add provider adapters (e.g., SES/SendGrid/Resend) with idempotency keys and delivery status callbacks.
+- Expose queue health/retry metrics in admin diagnostics.
 
 ### File password store format
 

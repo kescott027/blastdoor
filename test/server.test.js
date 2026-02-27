@@ -188,10 +188,16 @@ async function startGateway({
   themeStorePath = "",
   runtimeStatePath = "",
   userProfileStorePath = "",
+  emailProvider = "disabled",
+  emailFrom = "",
+  emailAdminTo = "",
+  publicBaseUrl = "",
 }) {
   const password = "Correct Horse Battery Staple 123!";
   const authUsername = "gm";
   const authPasswordHash = createPasswordHash(password);
+  const effectiveUserProfileStorePath =
+    userProfileStorePath || path.join(os.tmpdir(), `blastdoor-user-profiles-${crypto.randomUUID()}.json`);
 
   const server = createServer(
     {
@@ -217,6 +223,16 @@ async function startGateway({
       postgresSsl,
       allowedOrigins,
       allowNullOrigin,
+      emailProvider,
+      emailFrom,
+      emailAdminTo,
+      smtpHost: "",
+      smtpPort: 587,
+      smtpSecure: false,
+      smtpUser: "",
+      smtpPass: "",
+      smtpIgnoreTls: false,
+      publicBaseUrl,
       blastDoorsClosed,
     },
     {
@@ -225,7 +241,7 @@ async function startGateway({
       graphicsDir: graphicsDir || undefined,
       themeStorePath: themeStorePath || undefined,
       runtimeStatePath: runtimeStatePath || undefined,
-      userProfileStorePath: userProfileStorePath || undefined,
+      userProfileStorePath: effectiveUserProfileStorePath,
     },
   );
 
@@ -334,6 +350,26 @@ async function postLogin(port, jar, { csrf, username, password, totp = "", next 
     {
       method: "POST",
       path: "/login",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "text/html",
+        origin: originOverride || `http://127.0.0.1:${port}`,
+      },
+      body,
+    },
+    jar,
+  );
+}
+
+async function postForm(port, jar, routePath, fields, originOverride = "") {
+  const body = new URLSearchParams(
+    Object.entries(fields).map(([key, value]) => [key, String(value ?? "")]),
+  ).toString();
+  return request(
+    port,
+    {
+      method: "POST",
+      path: routePath,
       headers: {
         "content-type": "application/x-www-form-urlencoded",
         accept: "text/html",
@@ -576,7 +612,8 @@ test("gateway behavior without TOTP", async (t) => {
       password: gateway.password,
       next: "/",
     });
-    assertTransitionResponse(login, "/");
+    assert.equal(login.status, 200);
+    assert.match(login.body, /Access Granted/);
 
     const logout = await request(gateway.port, { method: "POST", path: "/logout" }, jar);
     assert.equal(logout.status, 302);
@@ -1139,10 +1176,25 @@ test("user profile store supports temp code login and per-user token invalidatio
   await withTempDir(async (tempDir) => {
     const target = await startTargetServer();
     const userProfileStorePath = path.join(tempDir, "user-profiles.json");
+    const passwordStoreFile = path.join(tempDir, "password-store.json");
+    const password = "Correct Horse Battery Staple 123!";
+    await fs.writeFile(
+      passwordStoreFile,
+      JSON.stringify(
+        {
+          users: [{ username: "gm", passwordHash: createPasswordHash(password), disabled: false }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
     const gateway = await startGateway({
       foundryTarget: target.targetUrl,
       requireTotp: false,
       userProfileStorePath,
+      passwordStoreMode: "file",
+      passwordStoreFile,
     });
 
     t.after(async () => {
@@ -1154,6 +1206,7 @@ test("user profile store supports temp code login and per-user token invalidatio
     await profileStore.upsertProfile({
       username: gateway.username,
       status: "active",
+      firstLoginCompletedAt: new Date().toISOString(),
     });
     const issuedCode = await profileStore.issueTemporaryLoginCode(gateway.username, {
       ttlMinutes: 30,
@@ -1168,7 +1221,22 @@ test("user profile store supports temp code login and per-user token invalidatio
       password: issuedCode.code,
       next: "/",
     });
-    assertTransitionResponse(loginWithTempCode, "/");
+    assertTransitionResponse(loginWithTempCode, "/account?next=%2F");
+
+    const accountPage = await request(gateway.port, { path: "/account?next=%2F", headers: { accept: "text/html" } }, jar);
+    assert.equal(accountPage.status, 200);
+    const accountCsrf = parseCsrf(accountPage.body);
+
+    const newPassword = "Temp Flow Replacement Password 123!";
+    const passwordUpdated = await postForm(gateway.port, jar, "/account/password", {
+      csrf: accountCsrf,
+      next: "/",
+      currentPassword: "",
+      newPassword,
+      confirmPassword: newPassword,
+    });
+    assert.equal(passwordUpdated.status, 200);
+    assert.match(passwordUpdated.body, /Password updated/);
 
     const proxiedBeforeInvalidate = await request(
       gateway.port,
@@ -1199,5 +1267,177 @@ test("user profile store supports temp code login and per-user token invalidatio
     });
     assert.equal(bannedLogin.status, 401);
     assert.match(bannedLogin.body, /Access denied/i);
+  });
+});
+
+test("temporary login code forces account password update before proxy access", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const userProfileStorePath = path.join(tempDir, "user-profiles.json");
+    const passwordStoreFile = path.join(tempDir, "password-store.json");
+    const password = "Correct Horse Battery Staple 123!";
+    await fs.writeFile(
+      passwordStoreFile,
+      JSON.stringify(
+        {
+          users: [{ username: "gm", passwordHash: createPasswordHash(password), disabled: false }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    const gateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      userProfileStorePath,
+      passwordStoreMode: "file",
+      passwordStoreFile,
+    });
+
+    t.after(async () => {
+      await closeServer(gateway.server);
+      await closeServer(target.server);
+    });
+
+    const profileStore = createUserAdminStore({ filePath: userProfileStorePath });
+    await profileStore.upsertProfile({
+      username: gateway.username,
+      status: "active",
+      firstLoginCompletedAt: new Date().toISOString(),
+    });
+    const issuedCode = await profileStore.issueTemporaryLoginCode(gateway.username, {
+      ttlMinutes: 30,
+      delivery: "manual",
+    });
+
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/world");
+    const loginWithTempCode = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: issuedCode.code,
+      next: "/world",
+    });
+    assertTransitionResponse(loginWithTempCode, "/account?next=%2Fworld");
+    assert.match(loginWithTempCode.body, /My Account/);
+
+    const blockedProxy = await request(
+      gateway.port,
+      { path: "/world", headers: { accept: "application/json" } },
+      jar,
+    );
+    assert.equal(blockedProxy.status, 428);
+    assert.equal(JSON.parse(blockedProxy.body).accountPath, "/account?next=%2Fworld");
+
+    const accountPage = await request(
+      gateway.port,
+      { path: "/account?next=%2Fworld", headers: { accept: "text/html" } },
+      jar,
+    );
+    assert.equal(accountPage.status, 200);
+    assert.match(accountPage.body, /Password change is required/);
+    const accountCsrf = parseCsrf(accountPage.body);
+
+    const newPassword = "New Correct Horse Battery Staple 456!";
+    const passwordUpdated = await postForm(gateway.port, jar, "/account/password", {
+      csrf: accountCsrf,
+      next: "/world",
+      currentPassword: "",
+      newPassword,
+      confirmPassword: newPassword,
+    });
+    assert.equal(passwordUpdated.status, 200);
+    assert.match(passwordUpdated.body, /Password updated/);
+
+    const proxied = await request(
+      gateway.port,
+      { path: "/world", headers: { accept: "application/json" } },
+      jar,
+    );
+    assert.equal(proxied.status, 200);
+
+    const logout = await request(gateway.port, { path: "/logout", headers: { accept: "text/html" } }, jar);
+    assert.equal(logout.status, 302);
+
+    const csrf2 = await getLoginCsrf(gateway.port, jar, "/world");
+    const loginWithNewPassword = await postLogin(gateway.port, jar, {
+      csrf: csrf2,
+      username: gateway.username,
+      password: newPassword,
+      next: "/world",
+    });
+    assertTransitionResponse(loginWithNewPassword, "/world");
+  });
+});
+
+test("account self-service updates profile and supports message-admin action", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const userProfileStorePath = path.join(tempDir, "user-profiles.json");
+    const gateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      userProfileStorePath,
+      emailProvider: "console",
+      emailFrom: "blastdoor@example.test",
+      emailAdminTo: "admin@example.test",
+      publicBaseUrl: "http://127.0.0.1",
+    });
+
+    t.after(async () => {
+      await closeServer(gateway.server);
+      await closeServer(target.server);
+    });
+
+    const profileStore = createUserAdminStore({ filePath: userProfileStorePath });
+    await profileStore.upsertProfile({
+      username: gateway.username,
+      status: "active",
+    });
+
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/");
+    const login = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: gateway.password,
+      next: "/",
+    });
+    assert.equal(login.status, 200);
+    assert.match(login.body, /Access Granted/);
+
+    const accountPage = await request(gateway.port, { path: "/account?next=%2F", headers: { accept: "text/html" } }, jar);
+    assert.equal(accountPage.status, 200);
+    const accountCsrf = parseCsrf(accountPage.body);
+
+    const profileUpdate = await postForm(gateway.port, jar, "/account/profile", {
+      csrf: accountCsrf,
+      next: "/",
+      friendlyName: "Gate Keeper",
+      email: "gatekeeper@example.test",
+      contactInfo: "Discord: gatekeeper#1234",
+      avatarUrl: "https://example.test/avatar.png",
+      displayInfo: "Campaign host",
+    });
+    assert.equal(profileUpdate.status, 200);
+    assert.match(profileUpdate.body, /Profile updated/);
+
+    const profileAfterUpdate = await profileStore.getRawProfile(gateway.username);
+    assert.equal(profileAfterUpdate?.friendlyName, "Gate Keeper");
+    assert.equal(profileAfterUpdate?.email, "gatekeeper@example.test");
+    assert.equal(profileAfterUpdate?.contactInfo, "Discord: gatekeeper#1234");
+    assert.equal(profileAfterUpdate?.avatarUrl, "https://example.test/avatar.png");
+    assert.equal(profileAfterUpdate?.displayInfo, "Campaign host");
+
+    const messageCsrf = parseCsrf(profileUpdate.body);
+    const adminMessage = await postForm(gateway.port, jar, "/account/message-admin", {
+      csrf: messageCsrf,
+      next: "/",
+      subject: "Need help",
+      message: "Please review my account profile settings.",
+    });
+    assert.equal(adminMessage.status, 200);
+    assert.match(adminMessage.body, /Message sent to admin/);
   });
 });

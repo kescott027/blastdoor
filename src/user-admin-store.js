@@ -45,6 +45,18 @@ function normalizeSessionVersion(value, fallback = 1) {
   return version;
 }
 
+function normalizeBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
+}
+
 function normalizeStoredProfile(username, raw = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
   const normalizedUsername = normalizeUsername(username || source.username);
@@ -60,12 +72,16 @@ function normalizeStoredProfile(username, raw = {}) {
     username: normalizedUsername,
     friendlyName: normalizeOptionalString(source.friendlyName, 160),
     email: normalizeOptionalString(source.email, 320),
+    contactInfo: normalizeOptionalString(source.contactInfo, 1024),
+    avatarUrl: normalizeOptionalString(source.avatarUrl, 1024),
     status: normalizeStatus(source.status, "active"),
     displayInfo: normalizeOptionalString(source.displayInfo, 2048),
     notes: normalizeOptionalString(source.notes, 4096),
     lastLoginAt: normalizeIsoDatetime(source.lastLoginAt),
     lastKnownIp: normalizeOptionalString(source.lastKnownIp, 96),
     sessionVersion: normalizeSessionVersion(source.sessionVersion, 1),
+    requirePasswordChange: normalizeBoolean(source.requirePasswordChange, false),
+    firstLoginCompletedAt: normalizeIsoDatetime(source.firstLoginCompletedAt),
     tempLoginCodeHash: typeof source.tempLoginCodeHash === "string" ? source.tempLoginCodeHash : "",
     tempLoginCodeExpiresAt,
     tempLoginIssuedAt: normalizeIsoDatetime(source.tempLoginIssuedAt),
@@ -119,12 +135,16 @@ function sanitizeProfileForClient(profile, sessionMaxAgeHours = 12) {
     username: profile.username,
     friendlyName: profile.friendlyName,
     email: profile.email,
+    contactInfo: profile.contactInfo,
+    avatarUrl: profile.avatarUrl,
     status: profile.status,
     displayInfo: profile.displayInfo,
     notes: profile.notes,
     lastLoginAt: profile.lastLoginAt,
     lastKnownIp: profile.lastKnownIp,
     sessionVersion: profile.sessionVersion,
+    requirePasswordChange: Boolean(profile.requirePasswordChange),
+    firstLoginCompletedAt: profile.firstLoginCompletedAt,
     authenticatedNow,
     tempCodeActive,
     tempCodeExpiresAt,
@@ -220,7 +240,11 @@ export function createUserAdminStore(options = {}) {
       }
 
       return readOnly((store) => {
-        const profile = normalizeStoredProfile(normalizedUsername, store.users[normalizedUsername] || null);
+        const rawProfile = store.users[normalizedUsername];
+        if (!rawProfile) {
+          return null;
+        }
+        const profile = normalizeStoredProfile(normalizedUsername, rawProfile);
         if (!profile) {
           return null;
         }
@@ -234,7 +258,13 @@ export function createUserAdminStore(options = {}) {
         return null;
       }
 
-      return readOnly((store) => normalizeStoredProfile(normalizedUsername, store.users[normalizedUsername] || null));
+      return readOnly((store) => {
+        const rawProfile = store.users[normalizedUsername];
+        if (!rawProfile) {
+          return null;
+        }
+        return normalizeStoredProfile(normalizedUsername, rawProfile);
+      });
     },
 
     async upsertProfile({
@@ -244,6 +274,10 @@ export function createUserAdminStore(options = {}) {
       status,
       displayInfo,
       notes,
+      contactInfo,
+      avatarUrl,
+      requirePasswordChange,
+      firstLoginCompletedAt,
       sessionVersion,
       lastLoginAt,
       lastKnownIp,
@@ -261,10 +295,21 @@ export function createUserAdminStore(options = {}) {
           friendlyName:
             friendlyName === undefined ? existing?.friendlyName : normalizeOptionalString(friendlyName, 160),
           email: email === undefined ? existing?.email : normalizeOptionalString(email, 320),
+          contactInfo:
+            contactInfo === undefined ? existing?.contactInfo : normalizeOptionalString(contactInfo, 1024),
+          avatarUrl: avatarUrl === undefined ? existing?.avatarUrl : normalizeOptionalString(avatarUrl, 1024),
           status: status === undefined ? existing?.status : normalizeStatus(status, existing?.status || "active"),
           displayInfo:
             displayInfo === undefined ? existing?.displayInfo : normalizeOptionalString(displayInfo, 2048),
           notes: notes === undefined ? existing?.notes : normalizeOptionalString(notes, 4096),
+          requirePasswordChange:
+            requirePasswordChange === undefined
+              ? normalizeBoolean(existing?.requirePasswordChange, false)
+              : normalizeBoolean(requirePasswordChange, normalizeBoolean(existing?.requirePasswordChange, false)),
+          firstLoginCompletedAt:
+            firstLoginCompletedAt === undefined
+              ? existing?.firstLoginCompletedAt
+              : normalizeIsoDatetime(firstLoginCompletedAt),
           sessionVersion:
             sessionVersion === undefined
               ? normalizeSessionVersion(existing?.sessionVersion, 1)
@@ -330,6 +375,7 @@ export function createUserAdminStore(options = {}) {
           tempLoginCodeExpiresAt: expiresAt,
           tempLoginIssuedAt: issuedAt,
           tempLoginDelivery: delivery,
+          requirePasswordChange: true,
           updatedAt: issuedAt,
         });
         store.users[profile.username] = next;

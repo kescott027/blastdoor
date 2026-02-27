@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  createPasswordHash,
   createCsrfToken,
   evaluateSameOrigin,
   escapeHtml,
@@ -25,6 +26,7 @@ import { authenticator } from "./otp.js";
 import { createConfigStore } from "./config-store.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { createBlastDoorsStateController } from "./blastdoors-state.js";
+import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -232,6 +234,16 @@ export function loadConfigFromEnv(env = process.env) {
     tlsKeyFile: env.TLS_KEY_FILE || "",
     tlsCaFile: env.TLS_CA_FILE || "",
     tlsPassphrase: env.TLS_PASSPHRASE || "",
+    emailProvider: env.EMAIL_PROVIDER || "disabled",
+    emailFrom: env.EMAIL_FROM || "",
+    emailAdminTo: env.EMAIL_ADMIN_TO || "",
+    smtpHost: env.SMTP_HOST || "",
+    smtpPort: Number.parseInt(env.SMTP_PORT || "587", 10),
+    smtpSecure: parseBoolean(env.SMTP_SECURE, false),
+    smtpUser: env.SMTP_USER || "",
+    smtpPass: env.SMTP_PASS || "",
+    smtpIgnoreTls: parseBoolean(env.SMTP_IGNORE_TLS, false),
+    publicBaseUrl: env.PUBLIC_BASE_URL || "",
     passwordStoreMode,
     passwordStoreFile: env.PASSWORD_STORE_FILE || "mock/password-store.json",
     blastDoorsClosed: parseBoolean(env.BLAST_DOORS_CLOSED, false),
@@ -322,6 +334,17 @@ export function validateConfig(config) {
   if (config.tlsEnabled) {
     if (!config.tlsCertFile || !config.tlsKeyFile) {
       throw new Error("TLS_CERT_FILE and TLS_KEY_FILE are required when TLS_ENABLED=true.");
+    }
+  }
+
+  const normalizedEmailProvider = String(config.emailProvider || "disabled").toLowerCase();
+  if (!["disabled", "console", "smtp"].includes(normalizedEmailProvider)) {
+    throw new Error("EMAIL_PROVIDER must be one of: disabled, console, smtp.");
+  }
+  if (normalizedEmailProvider === "smtp") {
+    const smtpPort = Number.parseInt(String(config.smtpPort || ""), 10);
+    if (!config.smtpHost || !Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535 || !config.emailFrom) {
+      throw new Error("SMTP_HOST, SMTP_PORT, and EMAIL_FROM are required when EMAIL_PROVIDER=smtp.");
     }
   }
 
@@ -450,7 +473,7 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
 </html>`;
 }
 
-function renderLoginSuccessPage({ nextPath, theme }) {
+function renderLoginSuccessPage({ nextPath, accountPath, theme, forcePasswordChange = false }) {
   const logoMarkup = theme.logoUrl
     ? `<img class="brand-logo" src="${escapeHtml(theme.logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
     : `<span class="brand-logo-fallback">BLASTDOOR</span>`;
@@ -483,16 +506,42 @@ function renderLoginSuccessPage({ nextPath, theme }) {
       <section class="panel success-panel">
         <p class="eyebrow">Foundry VTT Gateway</p>
         <h1>Access Granted</h1>
-        <p class="intro">Transitioning to your selected world...</p>
+        <p class="intro">${
+          forcePasswordChange
+            ? "Password update required before Foundry access."
+            : "Transitioning to your selected world..."
+        }</p>
         <p class="success-note">If redirection does not start automatically, continue below.</p>
-        <p><a class="continue-link" href="${escapeHtml(nextPath)}" id="continueLink">Continue to Foundry</a></p>
+        <p class="success-links">
+          <a class="continue-link" href="${escapeHtml(nextPath)}" id="continueLink">${
+            forcePasswordChange ? "Continue to My Account" : "Continue to Foundry"
+          }</a>
+          <a class="continue-link" href="${escapeHtml(accountPath)}" id="accountLink">My Account</a>
+        </p>
+        <p class="success-note" id="redirectHint">Auto-redirect in 7 seconds...</p>
       </section>
     </main>
     <script>
       requestAnimationFrame(() => {
         document.body.classList.add("auth-success-active");
       });
+      const redirectDelayMs = 7000;
+      const hint = document.getElementById("redirectHint");
+      let remaining = Math.ceil(redirectDelayMs / 1000);
+      if (hint) {
+        hint.textContent = "Auto-redirect in " + remaining + " seconds...";
+      }
+      const interval = setInterval(() => {
+        remaining = Math.max(0, remaining - 1);
+        if (hint) {
+          hint.textContent = "Auto-redirect in " + remaining + " seconds...";
+        }
+        if (remaining <= 0) {
+          clearInterval(interval);
+        }
+      }, 1000);
       setTimeout(() => {
+        clearInterval(interval);
         const continueLink = document.getElementById("continueLink");
         if (!continueLink) {
           return;
@@ -502,7 +551,7 @@ function renderLoginSuccessPage({ nextPath, theme }) {
         if (href) {
           window.location.assign(href);
         }
-      }, 1500);
+      }, redirectDelayMs);
     </script>
   </body>
 </html>`;
@@ -577,6 +626,205 @@ function renderBlastDoorsClosedPage() {
 </html>`;
 }
 
+function normalizeOptionalText(value, maxLength = 2048) {
+  return String(value || "").trim().slice(0, maxLength);
+}
+
+function isAsciiVisible(value) {
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (code < 33 || code > 126) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isAlphaNumeric(value) {
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    if (!isDigit && !isUpper && !isLower) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isDomainLabel(label) {
+  if (!label || label.length > 63) {
+    return false;
+  }
+  if (label.startsWith("-") || label.endsWith("-")) {
+    return false;
+  }
+  for (const char of label) {
+    const code = char.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    if (!isDigit && !isUpper && !isLower && char !== "-") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isValidEmailAddress(candidate) {
+  if (!candidate || candidate.length > 254) {
+    return false;
+  }
+  if (!isAsciiVisible(candidate)) {
+    return false;
+  }
+
+  const atIndex = candidate.indexOf("@");
+  if (atIndex < 1) {
+    return false;
+  }
+  if (candidate.indexOf("@", atIndex + 1) !== -1) {
+    return false;
+  }
+
+  const localPart = candidate.slice(0, atIndex);
+  const domainPart = candidate.slice(atIndex + 1);
+
+  if (!localPart || !domainPart || localPart.length > 64 || domainPart.length > 253) {
+    return false;
+  }
+  if (localPart.startsWith(".") || localPart.endsWith(".") || localPart.includes("..")) {
+    return false;
+  }
+  if (domainPart.startsWith(".") || domainPart.endsWith(".") || domainPart.includes("..")) {
+    return false;
+  }
+
+  const labels = domainPart.split(".");
+  if (labels.length < 2) {
+    return false;
+  }
+  if (!labels.every(isDomainLabel)) {
+    return false;
+  }
+
+  const tld = labels[labels.length - 1];
+  if (tld.length < 2 || !isAlphaNumeric(tld)) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeEmail(value) {
+  const normalized = normalizeOptionalText(value, 320).toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  if (!isValidEmailAddress(normalized)) {
+    throw new Error("Email must be valid.");
+  }
+  return normalized;
+}
+
+function makeAccountPath(nextPath = "/") {
+  return `/account?next=${encodeURIComponent(safeNextPath(nextPath, "/"))}`;
+}
+
+function renderAccountPage({
+  nextPath,
+  csrfToken,
+  profile,
+  username,
+  forcePasswordChange = false,
+  flashMessage = "",
+  flashError = "",
+}) {
+  const statusClass = flashError ? "alert" : "success-note";
+  const statusText = flashError || flashMessage;
+  const continuePath = forcePasswordChange ? makeAccountPath(nextPath) : nextPath;
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blastdoor My Account</title>
+    <link rel="stylesheet" href="/assets/theme.css" />
+  </head>
+  <body>
+    <div class="sky"></div>
+    <main class="shell account-shell">
+      <section class="panel account-panel">
+        <p class="eyebrow">My Account</p>
+        <h1>Welcome ${escapeHtml(username)}</h1>
+        <p class="intro">${
+          forcePasswordChange
+            ? "Password change is required before accessing Foundry."
+            : "Manage your password and personal profile."
+        }</p>
+        ${statusText ? `<p class="${statusClass}" role="status">${escapeHtml(statusText)}</p>` : ""}
+
+        <div class="account-grid">
+          <section>
+            <h2>Password</h2>
+            <form method="post" action="/account/password">
+              <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
+              <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
+              <label for="currentPassword">Current Password${forcePasswordChange ? " (optional)" : ""}</label>
+              <input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" />
+              <label for="newPassword">New Password</label>
+              <input id="newPassword" name="newPassword" type="password" autocomplete="new-password" required />
+              <label for="confirmPassword">Confirm New Password</label>
+              <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" required />
+              <button type="submit">Update Password</button>
+            </form>
+          </section>
+
+          <section>
+            <h2>Profile</h2>
+            <form method="post" action="/account/profile">
+              <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
+              <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
+              <label for="friendlyName">Friendly Name</label>
+              <input id="friendlyName" name="friendlyName" value="${escapeHtml(profile?.friendlyName || "")}" />
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" value="${escapeHtml(profile?.email || "")}" />
+              <label for="contactInfo">Contact Info</label>
+              <textarea id="contactInfo" name="contactInfo" rows="2">${escapeHtml(profile?.contactInfo || "")}</textarea>
+              <label for="avatarUrl">Picture URL</label>
+              <input id="avatarUrl" name="avatarUrl" value="${escapeHtml(profile?.avatarUrl || "")}" />
+              <label for="displayInfo">Display Info</label>
+              <textarea id="displayInfo" name="displayInfo" rows="2">${escapeHtml(profile?.displayInfo || "")}</textarea>
+              <button type="submit">Save Profile</button>
+            </form>
+          </section>
+        </div>
+
+        <section class="account-message-panel">
+          <h2>Message Admin</h2>
+          <form method="post" action="/account/message-admin">
+            <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
+            <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
+            <label for="adminSubject">Subject</label>
+            <input id="adminSubject" name="subject" maxlength="160" />
+            <label for="adminMessage">Message</label>
+            <textarea id="adminMessage" name="message" rows="4" required></textarea>
+            <button type="submit">Send Message</button>
+          </form>
+        </section>
+
+        <p class="success-links">
+          <a class="continue-link" href="${escapeHtml(continuePath)}">Continue to Foundry</a>
+          <a class="continue-link" href="/logout">Log Out</a>
+        </p>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
 function createNoopLogger() {
   return {
     debugEnabled: false,
@@ -643,6 +891,25 @@ export function createApp(config, options = {}) {
       logger,
       postgresPoolFactory: options.postgresPoolFactory,
     });
+  const emailService =
+    options.emailService ||
+    createEmailService(
+      {
+        ...loadEmailConfigFromEnv({
+          EMAIL_PROVIDER: config.emailProvider,
+          EMAIL_FROM: config.emailFrom,
+          EMAIL_ADMIN_TO: config.emailAdminTo,
+          SMTP_HOST: config.smtpHost,
+          SMTP_PORT: config.smtpPort,
+          SMTP_SECURE: config.smtpSecure,
+          SMTP_USER: config.smtpUser,
+          SMTP_PASS: config.smtpPass,
+          SMTP_IGNORE_TLS: config.smtpIgnoreTls,
+          PUBLIC_BASE_URL: config.publicBaseUrl,
+        }),
+      },
+      { logger },
+    );
   const blastDoorsStateController =
     options.blastDoorsStateController ||
     createBlastDoorsStateController({
@@ -834,6 +1101,24 @@ export function createApp(config, options = {}) {
           });
           return;
         }
+
+        const requiresPasswordChange = Boolean(profile?.requirePasswordChange || !profile?.firstLoginCompletedAt);
+        req.session.forcePasswordChange = requiresPasswordChange;
+        const primaryNextPath = safeNextPath(req.session.postAuthNextPath || "/", "/");
+        const accountPath = makeAccountPath(primaryNextPath);
+        const requestPath = safeNextPath(req.originalUrl, "/");
+        const accountAllowed =
+          requestPath.startsWith("/account") || requestPath.startsWith("/logout") || requestPath.startsWith("/login");
+
+        if (requiresPasswordChange && !accountAllowed) {
+          if (wantsHtml) {
+            return res.redirect(accountPath);
+          }
+          return res.status(428).json({
+            error: "Password change required.",
+            accountPath,
+          });
+        }
       } catch (error) {
         logger.error("auth.guard.profile_store_error", {
           ...collectRequestContext(req),
@@ -863,6 +1148,60 @@ export function createApp(config, options = {}) {
     return res.status(401).json({ error: "Authentication required" });
   }
 
+  function resolvePostAuthNext(req) {
+    return safeNextPath(req.query?.next || req.body?.next || req.session?.postAuthNextPath || "/", "/");
+  }
+
+  function nextAccountCsrf(req) {
+    req.session.accountCsrf = createCsrfToken();
+    return req.session.accountCsrf;
+  }
+
+  function consumeAccountCsrf(req) {
+    const provided = typeof req.body?.csrf === "string" ? req.body.csrf : "";
+    const expected = req.session.accountCsrf;
+    req.session.accountCsrf = null;
+    return Boolean(expected) && safeEqual(provided, expected);
+  }
+
+  async function loadActiveSessionProfile(req) {
+    const username = typeof req.session?.user === "string" ? req.session.user : "";
+    if (!username) {
+      return null;
+    }
+
+    let profile = await blastdoorApi.getRawUserProfile(username);
+    if (!profile) {
+      profile = await blastdoorApi.upsertUserProfile({
+        username,
+        status: "active",
+      });
+    }
+    return profile;
+  }
+
+  async function renderAccount(req, res, message = "", error = "") {
+    const nextPath = resolvePostAuthNext(req);
+    req.session.postAuthNextPath = nextPath;
+    const profile = await loadActiveSessionProfile(req);
+    const forcePasswordChange = Boolean(profile?.requirePasswordChange);
+    req.session.forcePasswordChange = forcePasswordChange;
+    const csrfToken = nextAccountCsrf(req);
+
+    res.set("cache-control", "no-store");
+    res.status(error ? 400 : 200).send(
+      renderAccountPage({
+        nextPath,
+        csrfToken,
+        profile,
+        username: req.session.user,
+        forcePasswordChange,
+        flashMessage: message,
+        flashError: error,
+      }),
+    );
+  }
+
   app.get("/healthz", (req, res) => {
     res.status(200).json({ ok: true });
   });
@@ -887,11 +1226,30 @@ export function createApp(config, options = {}) {
     }
 
     if (req.session?.authenticated) {
-      const nextPath = safeNextPath(req.query.next, "/");
+      const requestedNextPath = safeNextPath(req.query.next, "/");
+      req.session.postAuthNextPath = requestedNextPath;
+      let profile = null;
+      try {
+        profile = await loadActiveSessionProfile(req);
+      } catch (error) {
+        logger.warn("auth.login.profile_reload_failed", {
+          ...collectRequestContext(req),
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+      const forcePasswordChange = Boolean(
+        req.session.forcePasswordChange || profile?.requirePasswordChange || !profile?.firstLoginCompletedAt,
+      );
+      req.session.forcePasswordChange = forcePasswordChange;
+      const nextPath = forcePasswordChange ? makeAccountPath(requestedNextPath) : requestedNextPath;
+      const accountPath = makeAccountPath(requestedNextPath);
       if (logger.debugEnabled) {
         logger.debug("auth.login.already_authenticated", {
           ...collectRequestContext(req),
           nextPath,
+          forcePasswordChange,
         });
       }
 
@@ -900,7 +1258,9 @@ export function createApp(config, options = {}) {
       return res.status(200).send(
         renderLoginSuccessPage({
           nextPath,
+          accountPath,
           theme,
+          forcePasswordChange,
         }),
       );
     }
@@ -990,6 +1350,7 @@ export function createApp(config, options = {}) {
         managedProfile = await blastdoorApi.upsertUserProfile({
           username: userRecord.username,
           status: userRecord.disabled ? "deactivated" : "active",
+          firstLoginCompletedAt: new Date().toISOString(),
         });
       }
     } catch (error) {
@@ -1056,6 +1417,27 @@ export function createApp(config, options = {}) {
     }
 
     let loginProfile = managedProfile;
+    let requirePasswordChange = Boolean(
+      tempCodeValid || managedProfile?.requirePasswordChange || !managedProfile?.firstLoginCompletedAt,
+    );
+    if (tempCodeValid && !managedProfile?.requirePasswordChange) {
+      try {
+        loginProfile = await blastdoorApi.upsertUserProfile({
+          username: userRecord?.username || username,
+          requirePasswordChange: true,
+        });
+        requirePasswordChange = true;
+      } catch (error) {
+        logger.warn("auth.login.require_password_change_mark_failed", {
+          ...collectRequestContext(req),
+          usernameFingerprint: fingerprintIdentifier(username),
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+    }
+
     try {
       loginProfile = await blastdoorApi.recordSuccessfulLogin(userRecord?.username || username, req.ip);
     } catch (error) {
@@ -1083,6 +1465,11 @@ export function createApp(config, options = {}) {
       req.session.authenticated = true;
       req.session.user = userRecord?.username || username;
       req.session.userSessionVersion = Number.parseInt(String(loginProfile?.sessionVersion || 1), 10) || 1;
+      req.session.forcePasswordChange = requirePasswordChange;
+      req.session.postAuthNextPath = nextPath;
+
+      const transitionNextPath = requirePasswordChange ? makeAccountPath(nextPath) : nextPath;
+      const accountPath = makeAccountPath(nextPath);
 
       return req.session.save((saveErr) => {
         if (saveErr) {
@@ -1107,7 +1494,7 @@ export function createApp(config, options = {}) {
         const accept = req.get("accept") || "";
         const wantsHtml = accept.includes("text/html");
         if (!wantsHtml) {
-          return res.status(200).json({ ok: true, nextPath });
+          return res.status(200).json({ ok: true, nextPath: transitionNextPath, accountPath, requirePasswordChange });
         }
 
         return resolveLoginTheme()
@@ -1115,8 +1502,10 @@ export function createApp(config, options = {}) {
             res.set("cache-control", "no-store");
             res.status(200).send(
               renderLoginSuccessPage({
-                nextPath,
+                nextPath: transitionNextPath,
+                accountPath,
                 theme,
+                forcePasswordChange: requirePasswordChange,
               }),
             );
           })
@@ -1124,7 +1513,7 @@ export function createApp(config, options = {}) {
             res.set("cache-control", "no-store");
             res.status(200).send(
               renderLoginSuccessPage({
-                nextPath,
+                nextPath: transitionNextPath,
                 theme: {
                   id: "",
                   name: "Default",
@@ -1137,6 +1526,8 @@ export function createApp(config, options = {}) {
                   createdAt: "",
                   updatedAt: "",
                 },
+                accountPath,
+                forcePasswordChange: requirePasswordChange,
               }),
             );
           });
@@ -1144,6 +1535,155 @@ export function createApp(config, options = {}) {
     });
     },
   );
+
+  const accountReadLimiter = rateLimit({
+    windowMs: config.loginRateLimitWindowMs,
+    max: Math.max(config.loginRateLimitMax * 20, 120),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many account page requests. Try again shortly.",
+  });
+
+  const accountWriteLimiter = rateLimit({
+    windowMs: config.loginRateLimitWindowMs,
+    max: Math.max(config.loginRateLimitMax * 4, 24),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many account update requests. Try again shortly.",
+  });
+
+  app.get("/account", accountReadLimiter, authGuard, async (req, res) => {
+    try {
+      await renderAccount(req, res);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await renderAccount(req, res, "", message);
+    }
+  });
+
+  app.post("/account/password", accountWriteLimiter, authGuard, async (req, res) => {
+    try {
+      if (!consumeAccountCsrf(req)) {
+        throw new Error("Invalid account form token. Refresh and try again.");
+      }
+
+      const username = normalizeOptionalText(req.session?.user, 128);
+      if (!username) {
+        throw new Error("Not authenticated.");
+      }
+
+      const currentPassword = normalizeOptionalText(req.body?.currentPassword, 1024);
+      const newPassword = normalizeOptionalText(req.body?.newPassword, 1024);
+      const confirmPassword = normalizeOptionalText(req.body?.confirmPassword, 1024);
+      if (!newPassword || newPassword.length < 12) {
+        throw new Error("New password must be at least 12 characters.");
+      }
+      if (newPassword !== confirmPassword) {
+        throw new Error("New password confirmation does not match.");
+      }
+
+      const userRecord = await blastdoorApi.getUserCredential(username);
+      if (!userRecord) {
+        throw new Error("User credential record not found.");
+      }
+
+      const forcePasswordChange = Boolean(req.session.forcePasswordChange);
+      if (!forcePasswordChange && !verifyPassword(currentPassword, userRecord.passwordHash)) {
+        throw new Error("Current password is incorrect.");
+      }
+
+      await blastdoorApi.upsertCredentialUser({
+        username: userRecord.username,
+        passwordHash: createPasswordHash(newPassword),
+        totpSecret: userRecord.totpSecret || null,
+        disabled: Boolean(userRecord.disabled),
+      });
+
+      const profile = await blastdoorApi.upsertUserProfile({
+        username: userRecord.username,
+        requirePasswordChange: false,
+        firstLoginCompletedAt: new Date().toISOString(),
+      });
+
+      req.session.forcePasswordChange = false;
+      req.session.userSessionVersion = Number.parseInt(String(profile?.sessionVersion || req.session.userSessionVersion || 1), 10);
+      await renderAccount(req, res, "Password updated. You can now continue to Foundry.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await renderAccount(req, res, "", message);
+    }
+  });
+
+  app.post("/account/profile", accountWriteLimiter, authGuard, async (req, res) => {
+    try {
+      if (!consumeAccountCsrf(req)) {
+        throw new Error("Invalid account form token. Refresh and try again.");
+      }
+
+      const username = normalizeOptionalText(req.session?.user, 128);
+      if (!username) {
+        throw new Error("Not authenticated.");
+      }
+
+      const friendlyName = normalizeOptionalText(req.body?.friendlyName, 160);
+      const email = normalizeEmail(req.body?.email);
+      const contactInfo = normalizeOptionalText(req.body?.contactInfo, 1024);
+      const avatarUrl = normalizeOptionalText(req.body?.avatarUrl, 1024);
+      const displayInfo = normalizeOptionalText(req.body?.displayInfo, 2048);
+
+      await blastdoorApi.upsertUserProfile({
+        username,
+        friendlyName,
+        email,
+        contactInfo,
+        avatarUrl,
+        displayInfo,
+      });
+
+      await renderAccount(req, res, "Profile updated.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await renderAccount(req, res, "", message);
+    }
+  });
+
+  app.post("/account/message-admin", accountWriteLimiter, authGuard, async (req, res) => {
+    try {
+      if (!consumeAccountCsrf(req)) {
+        throw new Error("Invalid account form token. Refresh and try again.");
+      }
+
+      const username = normalizeOptionalText(req.session?.user, 128);
+      if (!username) {
+        throw new Error("Not authenticated.");
+      }
+
+      const subject = normalizeOptionalText(req.body?.subject, 160);
+      const message = normalizeOptionalText(req.body?.message, 2000);
+      if (!message) {
+        throw new Error("Message cannot be empty.");
+      }
+
+      const profile = await blastdoorApi.getUserProfile(username);
+      const result = await emailService.sendAdminMessage({
+        fromUsername: username,
+        fromEmail: profile?.email || "",
+        subject,
+        message,
+      });
+
+      if (!result?.ok) {
+        const reason = result?.reason || "Email is not configured.";
+        await renderAccount(req, res, "", `Admin message not sent: ${reason}`);
+        return;
+      }
+
+      await renderAccount(req, res, "Message sent to admin.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await renderAccount(req, res, "", message);
+    }
+  });
 
   function clearSession(req, res) {
     req.session.destroy(() => {
@@ -1208,6 +1748,7 @@ export function createApp(config, options = {}) {
     proxy,
     sessionMiddleware,
     blastdoorApi,
+    emailService,
     blastDoorsStateController,
     runtimeStatePath,
   };
@@ -1322,10 +1863,11 @@ export function createServer(config, options = {}) {
     logFile: config.debugLogFile || "logs/blastdoor-debug.log",
   });
 
-  const { app, proxy, sessionMiddleware, blastdoorApi, blastDoorsStateController, runtimeStatePath } = createApp(
-    config,
-    { ...options, logger },
-  );
+  const { app, proxy, sessionMiddleware, blastdoorApi, emailService, blastDoorsStateController, runtimeStatePath } =
+    createApp(config, {
+      ...options,
+      logger,
+    });
   const configStore = options.configStore || createConfigStore(config, options);
 
   void persistConfigSnapshot(config, configStore, logger);
@@ -1381,6 +1923,8 @@ export function createServer(config, options = {}) {
       tlsEnabled: Boolean(config.tlsEnabled),
       tlsCertFile: config.tlsEnabled ? config.tlsCertFile || null : null,
       tlsKeyFile: config.tlsEnabled ? config.tlsKeyFile || null : null,
+      emailProvider: config.emailProvider || "disabled",
+      emailAdminConfigured: Boolean(config.emailAdminTo),
       runtimeStatePath,
       debugMode: Boolean(config.debugMode),
       debugLogFile: config.debugLogFile || null,
@@ -1395,6 +1939,15 @@ export function createServer(config, options = {}) {
     if (typeof blastdoorApi?.close === "function") {
       Promise.resolve(blastdoorApi.close()).catch((error) => {
         logger.warn("blastdoor_api.close_failed", {
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      });
+    }
+    if (typeof emailService?.close === "function") {
+      Promise.resolve(emailService.close()).catch((error) => {
+        logger.warn("email_service.close_failed", {
           error: {
             message: error instanceof Error ? error.message : String(error),
           },
@@ -1460,6 +2013,16 @@ async function persistConfigSnapshot(config, configStore, logger) {
     TLS_KEY_FILE: String(config.tlsKeyFile || ""),
     TLS_CA_FILE: String(config.tlsCaFile || ""),
     TLS_PASSPHRASE: String(config.tlsPassphrase || ""),
+    EMAIL_PROVIDER: String(config.emailProvider || "disabled"),
+    EMAIL_FROM: String(config.emailFrom || ""),
+    EMAIL_ADMIN_TO: String(config.emailAdminTo || ""),
+    SMTP_HOST: String(config.smtpHost || ""),
+    SMTP_PORT: String(config.smtpPort || 587),
+    SMTP_SECURE: String(Boolean(config.smtpSecure)),
+    SMTP_USER: String(config.smtpUser || ""),
+    SMTP_PASS: String(config.smtpPass || ""),
+    SMTP_IGNORE_TLS: String(Boolean(config.smtpIgnoreTls)),
+    PUBLIC_BASE_URL: String(config.publicBaseUrl || ""),
     DEBUG_MODE: String(Boolean(config.debugMode)),
     DEBUG_LOG_FILE: String(config.debugLogFile || ""),
   };

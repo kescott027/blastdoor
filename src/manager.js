@@ -13,6 +13,7 @@ import { createPasswordHash } from "./security.js";
 import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
+import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
 import {
   createThemeId,
   mapThemeForClient,
@@ -69,6 +70,16 @@ const CONFIG_FIELDS = [
   "TLS_KEY_FILE",
   "TLS_CA_FILE",
   "TLS_PASSPHRASE",
+  "EMAIL_PROVIDER",
+  "EMAIL_FROM",
+  "EMAIL_ADMIN_TO",
+  "SMTP_HOST",
+  "SMTP_PORT",
+  "SMTP_SECURE",
+  "SMTP_USER",
+  "SMTP_PASS",
+  "SMTP_IGNORE_TLS",
+  "PUBLIC_BASE_URL",
   "DEBUG_MODE",
   "DEBUG_LOG_FILE",
 ];
@@ -115,6 +126,16 @@ const CONFIG_DEFAULTS = {
   TLS_KEY_FILE: "",
   TLS_CA_FILE: "",
   TLS_PASSPHRASE: "",
+  EMAIL_PROVIDER: "disabled",
+  EMAIL_FROM: "",
+  EMAIL_ADMIN_TO: "",
+  SMTP_HOST: "",
+  SMTP_PORT: "587",
+  SMTP_SECURE: "false",
+  SMTP_USER: "",
+  SMTP_PASS: "",
+  SMTP_IGNORE_TLS: "false",
+  PUBLIC_BASE_URL: "",
   DEBUG_MODE: "true",
   DEBUG_LOG_FILE: "logs/blastdoor-debug.log",
 };
@@ -125,6 +146,7 @@ const SENSITIVE_CONFIG_KEYS = new Set([
   "TOTP_SECRET",
   "TLS_PASSPHRASE",
   "BLASTDOOR_API_TOKEN",
+  "SMTP_PASS",
 ]);
 const REDACTED_MARKER = "[REDACTED]";
 const MANAGED_USER_STATUSES = new Set(["active", "deactivated", "banned"]);
@@ -282,6 +304,21 @@ function sanitizeEmail(value) {
 
 function sanitizeLongText(value, maxLength = 4096) {
   return normalizeString(value, "").slice(0, maxLength);
+}
+
+function resolveGatewayBaseUrl(config) {
+  const explicit = normalizeString(config.PUBLIC_BASE_URL, "").replace(/\/+$/, "");
+  if (explicit) {
+    return explicit;
+  }
+
+  const protocol = parseBooleanLike(config.TLS_ENABLED, false) ? "https" : "http";
+  let host = normalizeString(config.HOST, "127.0.0.1");
+  if (!host || host === "0.0.0.0" || host === "::") {
+    host = "localhost";
+  }
+  const port = Number.parseInt(config.PORT || CONFIG_DEFAULTS.PORT, 10);
+  return `${protocol}://${host}:${port}`;
 }
 
 function normalizeTlsChallengeMethod(value, fallback = "webroot") {
@@ -1492,6 +1529,9 @@ export function createManagerApp(options = {}) {
       if (incoming.BLASTDOOR_API_TOKEN === "********") {
         incoming.BLASTDOOR_API_TOKEN = existing.BLASTDOOR_API_TOKEN || "";
       }
+      if (incoming.SMTP_PASS === "********") {
+        incoming.SMTP_PASS = existing.SMTP_PASS || "";
+      }
 
       const wasBlastDoorsClosed = parseBooleanLike(existing.BLAST_DOORS_CLOSED, false);
       const willBlastDoorsClose = parseBooleanLike(incoming.BLAST_DOORS_CLOSED, false);
@@ -1859,7 +1899,11 @@ export function createManagerApp(options = {}) {
       const ttlMinutes = Number.parseInt(normalizeString(req.body?.ttlMinutes, "30"), 10);
 
       let issuedCode = null;
-      await withBlastdoorApi(async ({ blastdoorApi }) => {
+      let profileEmail = "";
+      let emailSent = false;
+      let emailWarning = "";
+
+      await withBlastdoorApi(async ({ configFromEnv, blastdoorApi }) => {
         const users = await blastdoorApi.listCredentialUsers();
         const existingUser = users.find((entry) => entry.username === username);
         if (!existingUser) {
@@ -1867,6 +1911,35 @@ export function createManagerApp(options = {}) {
         }
 
         issuedCode = await blastdoorApi.issueTemporaryLoginCode(username, { ttlMinutes, delivery });
+        const profile = await blastdoorApi.getUserProfile(username);
+        profileEmail = normalizeString(profile?.email, "");
+
+        if (delivery !== "email") {
+          return;
+        }
+
+        if (!profileEmail) {
+          emailWarning = "User has no email set in profile. Copy this temporary code and deliver it securely.";
+          return;
+        }
+
+        const emailService = createEmailService(loadEmailConfigFromEnv(configFromEnv));
+        try {
+          const baseUrl = resolveGatewayBaseUrl(configFromEnv);
+          const result = await emailService.sendTemporaryLoginCode({
+            to: profileEmail,
+            username,
+            code: issuedCode?.code || "",
+            expiresAt: issuedCode?.expiresAt || "",
+            loginUrlPath: `${baseUrl}/login?next=%2F`,
+          });
+          emailSent = Boolean(result?.ok);
+          if (!result?.ok) {
+            emailWarning = `Email dispatch unavailable: ${result?.reason || "provider not configured"}.`;
+          }
+        } finally {
+          await emailService.close();
+        }
       });
 
       res.json({
@@ -1875,10 +1948,9 @@ export function createManagerApp(options = {}) {
         delivery,
         code: issuedCode?.code || "",
         expiresAt: issuedCode?.expiresAt || "",
-        warning:
-          delivery === "email"
-            ? "Email dispatch is not configured. Copy this temporary code and deliver it securely."
-            : "",
+        emailSent,
+        emailTo: profileEmail,
+        warning: delivery === "email" ? emailWarning : "",
       });
     } catch (error) {
       res.status(400).json({
