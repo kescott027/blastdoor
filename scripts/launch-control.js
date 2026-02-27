@@ -121,11 +121,74 @@ function streamPrefixed(label, chunk) {
 }
 
 function spawnDetached(command, args) {
-  const child = spawn(command, args, {
-    detached: true,
-    stdio: "ignore",
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(command, args, {
+        detached: true,
+        stdio: "ignore",
+      });
+    } catch (spawnError) {
+      reject(spawnError);
+      return;
+    }
+
+    child.once("error", (errorEvent) => {
+      reject(errorEvent);
+    });
+
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
   });
-  child.unref();
+}
+
+function buildAdminLaunchCommands(url) {
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) {
+    return [
+      {
+        label: "powershell.exe",
+        command: "powershell.exe",
+        args: ["-NoProfile", "-Command", `Start-Process '${url}'`],
+      },
+      {
+        label: "Windows PowerShell absolute path",
+        command: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        args: ["-NoProfile", "-Command", `Start-Process '${url}'`],
+      },
+      {
+        label: "cmd.exe",
+        command: "cmd.exe",
+        args: ["/c", "start", "", url],
+      },
+      {
+        label: "cmd.exe absolute path",
+        command: "/mnt/c/Windows/System32/cmd.exe",
+        args: ["/c", "start", "", url],
+      },
+    ];
+  }
+
+  if (process.platform === "darwin") {
+    return [{ label: "open", command: "open", args: [url] }];
+  }
+
+  if (process.platform === "win32") {
+    return [{ label: "cmd", command: "cmd", args: ["/c", "start", "", url] }];
+  }
+
+  return [{ label: "xdg-open", command: "xdg-open", args: [url] }];
+}
+
+function renderAdminLaunchHint(url, lastError) {
+  const prefix = `Could not auto-open browser. Open manually: ${url}`;
+  if (!(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP)) {
+    return `${prefix}.`;
+  }
+
+  const reason = lastError?.code || lastError?.message || "unknown error";
+  return `${prefix}. WSL detected and Windows launcher was unavailable (${reason}). Verify Windows interop and PATH for powershell.exe/cmd.exe.`;
 }
 
 async function apiRequest(method, routePath, body = null) {
@@ -355,33 +418,28 @@ function toggleDebugStream() {
   startDebugStream();
 }
 
-function openAdminPanel() {
+async function openAdminPanel() {
   const url = `${MANAGER_URL}/manager/`;
-  try {
-    if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) {
-      spawnDetached("powershell.exe", ["-NoProfile", "-Command", `Start-Process '${url}'`]);
-      info(`Opened admin panel in Windows browser: ${url}`);
-      return;
-    }
+  const launchers = buildAdminLaunchCommands(url);
+  let lastError = null;
 
-    if (process.platform === "darwin") {
-      spawnDetached("open", [url]);
-      info(`Opened admin panel: ${url}`);
+  for (const launcher of launchers) {
+    try {
+      await spawnDetached(launcher.command, launcher.args);
+      info(`Opened admin panel via ${launcher.label}: ${url}`);
       return;
-    }
+    } catch (launchError) {
+      lastError = launchError;
+      if (launchError && launchError.code === "ENOENT") {
+        continue;
+      }
 
-    if (process.platform === "win32") {
-      spawnDetached("cmd", ["/c", "start", "", url]);
-      info(`Opened admin panel: ${url}`);
-      return;
+      warn(`Browser launcher ${launcher.label} failed: ${launchError.message}`);
+      break;
     }
-
-    spawnDetached("xdg-open", [url]);
-    info(`Opened admin panel: ${url}`);
-  } catch (openError) {
-    warn(`Could not auto-open browser: ${openError.message}`);
-    info(`Open manually: ${url}`);
   }
+
+  warn(renderAdminLaunchHint(url, lastError));
 }
 
 async function validatePersistenceIfNeeded() {
@@ -586,8 +644,7 @@ function bindKeyControls() {
     }
 
     if (pressed === "A") {
-      openAdminPanel();
-      printControls();
+      void runAction("open admin panel", openAdminPanel);
       return;
     }
 
@@ -616,7 +673,7 @@ async function main() {
     }
   }, 30000);
 
-  openAdminPanel();
+  void openAdminPanel();
 }
 
 process.on("SIGTERM", () => {
