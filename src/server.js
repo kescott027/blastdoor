@@ -1536,7 +1536,23 @@ export function createApp(config, options = {}) {
     },
   );
 
-  app.get("/account", authGuard, async (req, res) => {
+  const accountReadLimiter = rateLimit({
+    windowMs: config.loginRateLimitWindowMs,
+    max: Math.max(config.loginRateLimitMax * 20, 120),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many account page requests. Try again shortly.",
+  });
+
+  const accountWriteLimiter = rateLimit({
+    windowMs: config.loginRateLimitWindowMs,
+    max: Math.max(config.loginRateLimitMax * 4, 24),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many account update requests. Try again shortly.",
+  });
+
+  app.get("/account", accountReadLimiter, authGuard, async (req, res) => {
     try {
       await renderAccount(req, res);
     } catch (error) {
@@ -1545,7 +1561,7 @@ export function createApp(config, options = {}) {
     }
   });
 
-  app.post("/account/password", authGuard, async (req, res) => {
+  app.post("/account/password", accountWriteLimiter, authGuard, async (req, res) => {
     try {
       if (!consumeAccountCsrf(req)) {
         throw new Error("Invalid account form token. Refresh and try again.");
@@ -1598,7 +1614,7 @@ export function createApp(config, options = {}) {
     }
   });
 
-  app.post("/account/profile", authGuard, async (req, res) => {
+  app.post("/account/profile", accountWriteLimiter, authGuard, async (req, res) => {
     try {
       if (!consumeAccountCsrf(req)) {
         throw new Error("Invalid account form token. Refresh and try again.");
@@ -1631,7 +1647,7 @@ export function createApp(config, options = {}) {
     }
   });
 
-  app.post("/account/message-admin", authGuard, async (req, res) => {
+  app.post("/account/message-admin", accountWriteLimiter, authGuard, async (req, res) => {
     try {
       if (!consumeAccountCsrf(req)) {
         throw new Error("Invalid account form token. Refresh and try again.");
