@@ -17,15 +17,33 @@ const appearanceStatusMessage = document.getElementById("appearanceStatusMessage
 const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
 const appearanceForm = document.getElementById("appearanceForm");
 const appearanceThemeName = document.getElementById("appearanceThemeName");
-const appearanceLogoSelect = document.getElementById("appearanceLogoSelect");
-const appearanceClosedBgSelect = document.getElementById("appearanceClosedBgSelect");
-const appearanceOpenBgSelect = document.getElementById("appearanceOpenBgSelect");
+const appearanceLogoDisplay = document.getElementById("appearanceLogoDisplay");
+const appearanceLogoPath = document.getElementById("appearanceLogoPath");
+const appearanceClosedBgDisplay = document.getElementById("appearanceClosedBgDisplay");
+const appearanceClosedBgPath = document.getElementById("appearanceClosedBgPath");
+const appearanceOpenBgDisplay = document.getElementById("appearanceOpenBgDisplay");
+const appearanceOpenBgPath = document.getElementById("appearanceOpenBgPath");
+const appearanceChooseLogoBtn = document.getElementById("appearanceChooseLogoBtn");
+const appearanceChooseClosedBgBtn = document.getElementById("appearanceChooseClosedBgBtn");
+const appearanceChooseOpenBgBtn = document.getElementById("appearanceChooseOpenBgBtn");
+const appearanceAssetChooser = document.getElementById("appearanceAssetChooser");
+const appearanceAssetChooserTitle = document.getElementById("appearanceAssetChooserTitle");
+const appearanceAssetChooserList = document.getElementById("appearanceAssetChooserList");
+const appearanceAssetSelectBtn = document.getElementById("appearanceAssetSelectBtn");
+const appearanceAssetCancelBtn = document.getElementById("appearanceAssetCancelBtn");
 const appearanceMakeActive = document.getElementById("appearanceMakeActive");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
 
 let latestDiagnostics = null;
 let latestTroubleshootReport = null;
+let latestThemeAssets = { logos: [], backgrounds: [] };
+let appearanceSelection = {
+  logoPath: "",
+  closedBackgroundPath: "",
+  openBackgroundPath: "",
+};
+let appearanceAssetChooserState = null;
 
 function setMessage(text, isError = false) {
   statusMessage.textContent = text;
@@ -300,20 +318,8 @@ function optionMarkup(value, label, selected = false) {
   return option;
 }
 
-function fillAssetSelect(selectEl, assets, { allowEmpty, emptyLabel, required }) {
-  selectEl.innerHTML = "";
-  if (allowEmpty) {
-    selectEl.append(optionMarkup("", emptyLabel, true));
-  }
-
-  for (const asset of assets) {
-    selectEl.append(optionMarkup(asset.path, asset.name, !allowEmpty && selectEl.options.length === 0));
-  }
-
-  selectEl.required = Boolean(required);
-  if (!allowEmpty && selectEl.options.length > 0 && !selectEl.value) {
-    selectEl.value = selectEl.options[0].value;
-  }
+function sortAssetsByName(assets) {
+  return [...assets].sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
 }
 
 function fillThemeSelect(themes, activeThemeId) {
@@ -331,23 +337,133 @@ function fillThemeSelect(themes, activeThemeId) {
   }
 }
 
+function setAppearanceSelection(nextSelection) {
+  appearanceSelection = {
+    logoPath: String(nextSelection?.logoPath || ""),
+    closedBackgroundPath: String(nextSelection?.closedBackgroundPath || ""),
+    openBackgroundPath: String(nextSelection?.openBackgroundPath || ""),
+  };
+}
+
+function renderAppearanceSelection() {
+  const logo = appearanceSelection.logoPath || "";
+  const closed = appearanceSelection.closedBackgroundPath || "";
+  const open = appearanceSelection.openBackgroundPath || "";
+
+  appearanceLogoPath.value = logo;
+  appearanceClosedBgPath.value = closed;
+  appearanceOpenBgPath.value = open;
+
+  appearanceLogoDisplay.value = logo || "None";
+  appearanceClosedBgDisplay.value = closed || "None";
+  appearanceOpenBgDisplay.value = open || "None";
+}
+
+function closeAppearanceAssetPicker() {
+  appearanceAssetChooserState = null;
+  appearanceAssetChooserList.innerHTML = "";
+  appearanceAssetChooser.hidden = true;
+  appearanceAssetChooser.classList.add("hidden");
+}
+
+function openAppearanceAssetPicker({ key, title, assets, allowNone, noneLabel }) {
+  const sortedAssets = sortAssetsByName(assets || []);
+  const options = [];
+  if (allowNone) {
+    options.push({
+      path: "",
+      name: noneLabel,
+      url: "",
+      isEmpty: true,
+    });
+  }
+
+  for (const asset of sortedAssets) {
+    options.push({
+      path: String(asset.path || ""),
+      name: String(asset.name || asset.path || ""),
+      url: String(asset.url || ""),
+      isEmpty: false,
+    });
+  }
+
+  if (!options.length) {
+    setAppearanceMessage("No assets were found for that selection.", true);
+    return;
+  }
+
+  let selectedPath = appearanceSelection[key] || "";
+  const hasSelectedPath = options.some((option) => option.path === selectedPath);
+  if (!hasSelectedPath) {
+    selectedPath = options[0].path;
+  }
+
+  appearanceAssetChooserState = { key };
+  appearanceAssetChooserTitle.textContent = title;
+  appearanceAssetChooserList.innerHTML = "";
+
+  for (let index = 0; index < options.length; index += 1) {
+    const option = options[index];
+    const row = document.createElement("label");
+    row.className = "asset-option";
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "appearanceAssetPickerChoice";
+    radio.value = option.path;
+    radio.checked = option.path === selectedPath;
+    row.append(radio);
+
+    if (option.url) {
+      const preview = document.createElement("img");
+      preview.className = "asset-option-preview";
+      preview.src = option.url;
+      preview.alt = option.name;
+      row.append(preview);
+    } else {
+      const emptyPreview = document.createElement("span");
+      emptyPreview.className = "asset-option-preview asset-option-preview-empty";
+      emptyPreview.textContent = "None";
+      row.append(emptyPreview);
+    }
+
+    const details = document.createElement("span");
+    details.className = "asset-option-details";
+    details.textContent = option.isEmpty ? option.name : `${option.name} (${option.path})`;
+    row.append(details);
+
+    appearanceAssetChooserList.append(row);
+  }
+
+  appearanceAssetChooser.hidden = false;
+  appearanceAssetChooser.classList.remove("hidden");
+}
+
 function renderThemeCatalog(payload) {
+  latestThemeAssets = {
+    logos: sortAssetsByName(payload.assets?.logos || []),
+    backgrounds: sortAssetsByName(payload.assets?.backgrounds || []),
+  };
+
   fillThemeSelect(payload.themes || [], payload.activeThemeId || "");
-  fillAssetSelect(appearanceLogoSelect, payload.assets?.logos || [], {
-    allowEmpty: true,
-    emptyLabel: "No logo",
-    required: false,
+
+  const validLogo = latestThemeAssets.logos.some((asset) => asset.path === appearanceSelection.logoPath)
+    ? appearanceSelection.logoPath
+    : "";
+  const validClosed = latestThemeAssets.backgrounds.some((asset) => asset.path === appearanceSelection.closedBackgroundPath)
+    ? appearanceSelection.closedBackgroundPath
+    : "";
+  const validOpen = latestThemeAssets.backgrounds.some((asset) => asset.path === appearanceSelection.openBackgroundPath)
+    ? appearanceSelection.openBackgroundPath
+    : "";
+
+  setAppearanceSelection({
+    logoPath: validLogo,
+    closedBackgroundPath: validClosed,
+    openBackgroundPath: validOpen,
   });
-  fillAssetSelect(appearanceClosedBgSelect, payload.assets?.backgrounds || [], {
-    allowEmpty: false,
-    emptyLabel: "",
-    required: true,
-  });
-  fillAssetSelect(appearanceOpenBgSelect, payload.assets?.backgrounds || [], {
-    allowEmpty: true,
-    emptyLabel: "Same as closed background",
-    required: false,
-  });
+  renderAppearanceSelection();
+  closeAppearanceAssetPicker();
 }
 
 async function refreshThemes() {
@@ -361,16 +477,21 @@ function openAppearanceModal() {
 }
 
 function closeAppearanceModal() {
+  closeAppearanceAssetPicker();
   appearanceModal.hidden = true;
   appearanceModal.classList.add("hidden");
 }
 
 function buildAppearanceCreatePayload() {
+  if (!appearanceSelection.closedBackgroundPath) {
+    throw new Error("Choose a closed background before saving the theme.");
+  }
+
   return {
     name: String(appearanceThemeName.value || ""),
-    logoPath: String(appearanceLogoSelect.value || ""),
-    closedBackgroundPath: String(appearanceClosedBgSelect.value || ""),
-    openBackgroundPath: String(appearanceOpenBgSelect.value || ""),
+    logoPath: String(appearanceSelection.logoPath || ""),
+    closedBackgroundPath: String(appearanceSelection.closedBackgroundPath || ""),
+    openBackgroundPath: String(appearanceSelection.openBackgroundPath || ""),
     makeActive: toBooleanString(appearanceMakeActive.checked),
   };
 }
@@ -483,6 +604,12 @@ document.getElementById("appearanceBtn").addEventListener("click", async () => {
     return;
   }
 
+  setAppearanceSelection({
+    logoPath: "",
+    closedBackgroundPath: "",
+    openBackgroundPath: "",
+  });
+  renderAppearanceSelection();
   openAppearanceModal();
   setAppearanceMessage("Loading themes...");
   try {
@@ -499,6 +626,61 @@ document.getElementById("appearanceCloseBtn").addEventListener("click", () => {
 
 document.getElementById("appearanceCancelBtn").addEventListener("click", () => {
   closeAppearanceModal();
+});
+
+appearanceChooseLogoBtn.addEventListener("click", () => {
+  openAppearanceAssetPicker({
+    key: "logoPath",
+    title: "Choose Logo",
+    assets: latestThemeAssets.logos,
+    allowNone: true,
+    noneLabel: "None",
+  });
+});
+
+appearanceChooseClosedBgBtn.addEventListener("click", () => {
+  openAppearanceAssetPicker({
+    key: "closedBackgroundPath",
+    title: "Choose Closed Background",
+    assets: latestThemeAssets.backgrounds,
+    allowNone: false,
+    noneLabel: "",
+  });
+});
+
+appearanceChooseOpenBgBtn.addEventListener("click", () => {
+  openAppearanceAssetPicker({
+    key: "openBackgroundPath",
+    title: "Choose Open Background",
+    assets: latestThemeAssets.backgrounds,
+    allowNone: true,
+    noneLabel: "None",
+  });
+});
+
+appearanceAssetSelectBtn.addEventListener("click", () => {
+  if (!appearanceAssetChooserState?.key) {
+    closeAppearanceAssetPicker();
+    return;
+  }
+
+  const selected = appearanceAssetChooserList.querySelector("input[name='appearanceAssetPickerChoice']:checked");
+  if (!selected) {
+    setAppearanceMessage("Choose an asset before confirming.", true);
+    return;
+  }
+
+  setAppearanceSelection({
+    ...appearanceSelection,
+    [appearanceAssetChooserState.key]: String(selected.value || ""),
+  });
+  renderAppearanceSelection();
+  closeAppearanceAssetPicker();
+  setAppearanceMessage("Asset selection updated.");
+});
+
+appearanceAssetCancelBtn.addEventListener("click", () => {
+  closeAppearanceAssetPicker();
 });
 
 document.getElementById("appearanceApplyBtn").addEventListener("click", async () => {
@@ -522,6 +704,12 @@ appearanceForm.addEventListener("submit", async (event) => {
     const created = await api("POST", "/themes/create", payload);
     renderThemeCatalog(created);
     appearanceThemeName.value = "";
+    setAppearanceSelection({
+      logoPath: "",
+      closedBackgroundPath: "",
+      openBackgroundPath: "",
+    });
+    renderAppearanceSelection();
     appearanceMakeActive.checked = true;
     setAppearanceMessage("Theme saved.");
   } catch (error) {
