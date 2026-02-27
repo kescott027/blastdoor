@@ -397,7 +397,6 @@ function renderLoginSuccessPage({ nextPath, theme }) {
   const openBgStyle = theme.openBackgroundUrl
     ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
     : "";
-  const encodedNextPath = JSON.stringify(nextPath);
   const themeStyleVars = renderThemeStyleVars(theme);
   const loginBoxMode = normalizeLoginBoxMode(theme?.loginBoxMode);
 
@@ -426,12 +425,19 @@ function renderLoginSuccessPage({ nextPath, theme }) {
       </section>
     </main>
     <script>
-      const nextPath = ${encodedNextPath};
       requestAnimationFrame(() => {
         document.body.classList.add("auth-success-active");
       });
       setTimeout(() => {
-        window.location.assign(nextPath);
+        const continueLink = document.getElementById("continueLink");
+        if (!continueLink) {
+          return;
+        }
+
+        const href = continueLink.getAttribute("href");
+        if (href) {
+          window.location.assign(href);
+        }
       }, 1500);
     </script>
   </body>
@@ -759,7 +765,14 @@ export function createApp(config, options = {}) {
         });
       }
 
-      return res.redirect(nextPath);
+      const theme = await resolveLoginTheme();
+      res.set("cache-control", "no-store");
+      return res.status(200).send(
+        renderLoginSuccessPage({
+          nextPath,
+          theme,
+        }),
+      );
     }
 
     req.session.loginCsrf = createCsrfToken();
@@ -902,7 +915,7 @@ export function createApp(config, options = {}) {
         const accept = req.get("accept") || "";
         const wantsHtml = accept.includes("text/html");
         if (!wantsHtml) {
-          return res.redirect(nextPath);
+          return res.status(200).json({ ok: true, nextPath });
         }
 
         return resolveLoginTheme()
@@ -916,7 +929,21 @@ export function createApp(config, options = {}) {
             );
           })
           .catch(() => {
-            res.redirect(nextPath);
+            res.set("cache-control", "no-store");
+            res.status(200).send(
+              renderLoginSuccessPage({
+                nextPath,
+                theme: mapThemeForClient({
+                  id: "",
+                  name: "Default",
+                  logoPath: "",
+                  closedBackgroundPath: "",
+                  openBackgroundPath: "",
+                  createdAt: "",
+                  updatedAt: "",
+                }),
+              }),
+            );
           });
       });
     });

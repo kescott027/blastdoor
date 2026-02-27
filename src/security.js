@@ -54,11 +54,28 @@ export function safeNextPath(candidate, fallback = "/") {
     return fallback;
   }
 
-  if (!candidate.startsWith("/") || candidate.startsWith("//")) {
+  const trimmed = candidate.trim();
+
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) {
     return fallback;
   }
 
-  return candidate;
+  if (trimmed.includes("..") || trimmed.includes("\\") || hasControlCharacters(trimmed)) {
+    return fallback;
+  }
+
+  return trimmed;
+}
+
+function hasControlCharacters(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if ((code >= 0 && code <= 31) || code === 127) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function isSameOrigin(req) {
