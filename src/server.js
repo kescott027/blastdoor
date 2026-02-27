@@ -6,7 +6,10 @@ import rateLimit from "express-rate-limit";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { authenticator } from "otplib";
 import { createHash, randomUUID } from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,9 +23,7 @@ import {
 } from "./security.js";
 import { createLogger } from "./logger.js";
 import { createConfigStore } from "./config-store.js";
-import { createPasswordStore } from "./password-store.js";
-import { createUserAdminStore } from "./user-admin-store.js";
-import { mapThemeForClient, readThemeStore, resolveActiveTheme } from "./login-theme.js";
+import { createBlastdoorApi } from "./blastdoor-api.js";
 import { createBlastDoorsStateController } from "./blastdoors-state.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -209,10 +210,28 @@ export function loadConfigFromEnv(env = process.env) {
     debugLogFile: env.DEBUG_LOG_FILE || "logs/blastdoor-debug.log",
     allowedOrigins: env.ALLOWED_ORIGINS || "",
     allowNullOrigin: parseBoolean(env.ALLOW_NULL_ORIGIN, false),
+    graphicsCacheEnabled: parseBoolean(env.GRAPHICS_CACHE_ENABLED, true),
+    blastdoorApiUrl: env.BLASTDOOR_API_URL || "",
+    blastdoorApiToken: env.BLASTDOOR_API_TOKEN || "",
+    blastdoorApiTimeoutMs: Number.parseInt(env.BLASTDOOR_API_TIMEOUT_MS || "2500", 10),
+    blastdoorApiRetryMaxAttempts: Number.parseInt(env.BLASTDOOR_API_RETRY_MAX_ATTEMPTS || "3", 10),
+    blastdoorApiRetryBaseDelayMs: Number.parseInt(env.BLASTDOOR_API_RETRY_BASE_DELAY_MS || "120", 10),
+    blastdoorApiRetryMaxDelayMs: Number.parseInt(env.BLASTDOOR_API_RETRY_MAX_DELAY_MS || "1200", 10),
+    blastdoorApiCircuitFailureThreshold: Number.parseInt(env.BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD || "5", 10),
+    blastdoorApiCircuitResetMs: Number.parseInt(env.BLASTDOOR_API_CIRCUIT_RESET_MS || "10000", 10),
     configStoreMode: String(env.CONFIG_STORE_MODE || "env").toLowerCase(),
     databaseFile: env.DATABASE_FILE || "data/blastdoor.sqlite",
     postgresUrl: env.POSTGRES_URL || "",
     postgresSsl: parseBoolean(env.POSTGRES_SSL, false),
+    tlsEnabled: parseBoolean(env.TLS_ENABLED, false),
+    tlsDomain: env.TLS_DOMAIN || "",
+    tlsEmail: env.TLS_EMAIL || "",
+    tlsChallengeMethod: env.TLS_CHALLENGE_METHOD || "webroot",
+    tlsWebrootPath: env.TLS_WEBROOT_PATH || "",
+    tlsCertFile: env.TLS_CERT_FILE || "",
+    tlsKeyFile: env.TLS_KEY_FILE || "",
+    tlsCaFile: env.TLS_CA_FILE || "",
+    tlsPassphrase: env.TLS_PASSPHRASE || "",
     passwordStoreMode,
     passwordStoreFile: env.PASSWORD_STORE_FILE || "mock/password-store.json",
     blastDoorsClosed: parseBoolean(env.BLAST_DOORS_CLOSED, false),
@@ -260,6 +279,50 @@ export function validateConfig(config) {
 
   if (!Number.isInteger(config.loginRateLimitMax) || config.loginRateLimitMax < 1) {
     throw new Error("LOGIN_RATE_LIMIT_MAX must be a positive integer.");
+  }
+
+  const blastdoorApiTimeoutMs = Number.parseInt(String(config.blastdoorApiTimeoutMs ?? "2500"), 10);
+  if (!Number.isInteger(blastdoorApiTimeoutMs) || blastdoorApiTimeoutMs < 100) {
+    throw new Error("BLASTDOOR_API_TIMEOUT_MS must be at least 100.");
+  }
+
+  const blastdoorApiRetryMaxAttempts = Number.parseInt(String(config.blastdoorApiRetryMaxAttempts ?? "3"), 10);
+  if (!Number.isInteger(blastdoorApiRetryMaxAttempts) || blastdoorApiRetryMaxAttempts < 1) {
+    throw new Error("BLASTDOOR_API_RETRY_MAX_ATTEMPTS must be a positive integer.");
+  }
+
+  const blastdoorApiRetryBaseDelayMs = Number.parseInt(String(config.blastdoorApiRetryBaseDelayMs ?? "120"), 10);
+  if (!Number.isInteger(blastdoorApiRetryBaseDelayMs) || blastdoorApiRetryBaseDelayMs < 1) {
+    throw new Error("BLASTDOOR_API_RETRY_BASE_DELAY_MS must be a positive integer.");
+  }
+
+  const blastdoorApiRetryMaxDelayMs = Number.parseInt(String(config.blastdoorApiRetryMaxDelayMs ?? "1200"), 10);
+  if (!Number.isInteger(blastdoorApiRetryMaxDelayMs) || blastdoorApiRetryMaxDelayMs < blastdoorApiRetryBaseDelayMs) {
+    throw new Error("BLASTDOOR_API_RETRY_MAX_DELAY_MS must be >= BLASTDOOR_API_RETRY_BASE_DELAY_MS.");
+  }
+
+  const blastdoorApiCircuitFailureThreshold = Number.parseInt(
+    String(config.blastdoorApiCircuitFailureThreshold ?? "5"),
+    10,
+  );
+  if (!Number.isInteger(blastdoorApiCircuitFailureThreshold) || blastdoorApiCircuitFailureThreshold < 1) {
+    throw new Error("BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD must be a positive integer.");
+  }
+
+  const blastdoorApiCircuitResetMs = Number.parseInt(String(config.blastdoorApiCircuitResetMs ?? "10000"), 10);
+  if (!Number.isInteger(blastdoorApiCircuitResetMs) || blastdoorApiCircuitResetMs < 100) {
+    throw new Error("BLASTDOOR_API_CIRCUIT_RESET_MS must be at least 100.");
+  }
+
+  const tlsChallengeMethod = String(config.tlsChallengeMethod || "webroot").toLowerCase();
+  if (!["webroot", "standalone"].includes(tlsChallengeMethod)) {
+    throw new Error("TLS_CHALLENGE_METHOD must be one of: webroot, standalone.");
+  }
+
+  if (config.tlsEnabled) {
+    if (!config.tlsCertFile || !config.tlsKeyFile) {
+      throw new Error("TLS_CERT_FILE and TLS_KEY_FILE are required when TLS_ENABLED=true.");
+    }
   }
 
   if (config.requireTotp && !config.totpSecret && passwordStoreMode === "env") {
@@ -560,7 +623,6 @@ function normalizeManagedUserStatus(value) {
 export function createApp(config, options = {}) {
   validateConfig(config);
   const logger = options.logger || createNoopLogger();
-  const passwordStore = options.passwordStore || createPasswordStore(config, { ...options, logger });
 
   if (config.requireTotp) {
     authenticator.options = { window: 1, step: 30 };
@@ -571,7 +633,16 @@ export function createApp(config, options = {}) {
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
   const runtimeStatePath = options.runtimeStatePath || path.join(process.cwd(), "data", "runtime-state.json");
   const userProfileStorePath = options.userProfileStorePath || path.join(process.cwd(), "data", "user-profiles.json");
-  const userAdminStore = options.userAdminStore || createUserAdminStore({ filePath: userProfileStorePath });
+  const blastdoorApi =
+    options.blastdoorApi ||
+    createBlastdoorApi({
+      config,
+      graphicsDir,
+      themeStorePath,
+      userProfileStorePath,
+      logger,
+      postgresPoolFactory: options.postgresPoolFactory,
+    });
   const blastDoorsStateController =
     options.blastDoorsStateController ||
     createBlastDoorsStateController({
@@ -598,35 +669,25 @@ export function createApp(config, options = {}) {
 
   async function resolveLoginTheme() {
     try {
-      const themeStore = await readThemeStore(themeStorePath);
-      const activeTheme = resolveActiveTheme(themeStore);
-      if (!activeTheme) {
-        return mapThemeForClient({
-          id: "",
-          name: "Default",
-          logoPath: "",
-          closedBackgroundPath: "",
-          openBackgroundPath: "",
-          createdAt: "",
-          updatedAt: "",
-        });
-      }
-      return mapThemeForClient(activeTheme);
+      return await blastdoorApi.getActiveTheme();
     } catch (error) {
       logger.warn("theme.load_failed", {
         error: {
           message: error instanceof Error ? error.message : String(error),
         },
       });
-      return mapThemeForClient({
+      return await blastdoorApi.getActiveTheme().catch(() => ({
         id: "",
         name: "Default",
         logoPath: "",
+        logoUrl: "",
         closedBackgroundPath: "",
+        closedBackgroundUrl: "",
         openBackgroundPath: "",
+        openBackgroundUrl: "",
         createdAt: "",
         updatedAt: "",
-      });
+      }));
     }
   }
 
@@ -718,8 +779,13 @@ export function createApp(config, options = {}) {
     "/graphics",
     express.static(graphicsDir, {
       etag: true,
-      immutable: true,
-      maxAge: "1h",
+      immutable: Boolean(config.graphicsCacheEnabled),
+      maxAge: config.graphicsCacheEnabled ? "1h" : 0,
+      setHeaders(res) {
+        if (!config.graphicsCacheEnabled) {
+          res.setHeader("Cache-Control", "no-store");
+        }
+      },
     }),
   );
 
@@ -743,7 +809,7 @@ export function createApp(config, options = {}) {
       }
 
       try {
-        const profile = await userAdminStore.getProfile(sessionUser);
+        const profile = await blastdoorApi.getUserProfile(sessionUser);
         const profileStatus = normalizeManagedUserStatus(profile?.status);
         const profileSessionVersion = Number.parseInt(String(profile?.sessionVersion || 1), 10) || 1;
         const sessionVersion = Number.parseInt(String(req.session.userSessionVersion || 1), 10) || 1;
@@ -906,7 +972,7 @@ export function createApp(config, options = {}) {
 
     let userRecord = null;
     try {
-      userRecord = await passwordStore.getUserByUsername(username);
+      userRecord = await blastdoorApi.getUserCredential(username);
     } catch (error) {
       logger.error("auth.login.password_store_error", {
         ...collectRequestContext(req),
@@ -919,9 +985,9 @@ export function createApp(config, options = {}) {
 
     let managedProfile;
     try {
-      managedProfile = await userAdminStore.getRawProfile(username);
+      managedProfile = await blastdoorApi.getRawUserProfile(username);
       if (!managedProfile && userRecord?.username) {
-        managedProfile = await userAdminStore.upsertProfile({
+        managedProfile = await blastdoorApi.upsertUserProfile({
           username: userRecord.username,
           status: userRecord.disabled ? "deactivated" : "active",
         });
@@ -943,7 +1009,7 @@ export function createApp(config, options = {}) {
     let tempCodeValid = false;
     if (userRecord && !passwordValid && password.trim()) {
       try {
-        tempCodeValid = await userAdminStore.verifyTemporaryLoginCode(username, password, { consume: true });
+        tempCodeValid = await blastdoorApi.verifyTemporaryLoginCode(username, password, { consume: true });
       } catch (error) {
         logger.warn("auth.login.temp_code_verify_failed", {
           ...collectRequestContext(req),
@@ -991,7 +1057,7 @@ export function createApp(config, options = {}) {
 
     let loginProfile = managedProfile;
     try {
-      loginProfile = await userAdminStore.recordSuccessfulLogin(userRecord?.username || username, req.ip);
+      loginProfile = await blastdoorApi.recordSuccessfulLogin(userRecord?.username || username, req.ip);
     } catch (error) {
       logger.warn("auth.login.profile_update_failed", {
         ...collectRequestContext(req),
@@ -1059,15 +1125,18 @@ export function createApp(config, options = {}) {
             res.status(200).send(
               renderLoginSuccessPage({
                 nextPath,
-                theme: mapThemeForClient({
+                theme: {
                   id: "",
                   name: "Default",
                   logoPath: "",
+                  logoUrl: "",
                   closedBackgroundPath: "",
+                  closedBackgroundUrl: "",
                   openBackgroundPath: "",
+                  openBackgroundUrl: "",
                   createdAt: "",
                   updatedAt: "",
-                }),
+                },
               }),
             );
           });
@@ -1138,8 +1207,7 @@ export function createApp(config, options = {}) {
     app,
     proxy,
     sessionMiddleware,
-    passwordStore,
-    userAdminStore,
+    blastdoorApi,
     blastDoorsStateController,
     runtimeStatePath,
   };
@@ -1254,14 +1322,40 @@ export function createServer(config, options = {}) {
     logFile: config.debugLogFile || "logs/blastdoor-debug.log",
   });
 
-  const { app, proxy, sessionMiddleware, passwordStore, userAdminStore, blastDoorsStateController, runtimeStatePath } = createApp(
+  const { app, proxy, sessionMiddleware, blastdoorApi, blastDoorsStateController, runtimeStatePath } = createApp(
     config,
     { ...options, logger },
   );
   const configStore = options.configStore || createConfigStore(config, options);
 
   void persistConfigSnapshot(config, configStore, logger);
-  const server = app.listen(config.port, config.host, () => {
+  let server;
+  if (config.tlsEnabled) {
+    try {
+      const keyPath = path.resolve(config.tlsKeyFile);
+      const certPath = path.resolve(config.tlsCertFile);
+      const tlsOptions = {
+        key: fsSync.readFileSync(keyPath),
+        cert: fsSync.readFileSync(certPath),
+      };
+      if (config.tlsCaFile) {
+        tlsOptions.ca = fsSync.readFileSync(path.resolve(config.tlsCaFile));
+      }
+      if (config.tlsPassphrase) {
+        tlsOptions.passphrase = config.tlsPassphrase;
+      }
+      server = https.createServer(tlsOptions, app);
+    } catch (error) {
+      throw new Error(
+        `Failed to initialize TLS. Check TLS_CERT_FILE/TLS_KEY_FILE paths and permissions: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+  } else {
+    server = http.createServer(app);
+  }
+
+  server.listen(config.port, config.host, () => {
     if (options.silent) {
       return;
     }
@@ -1281,8 +1375,12 @@ export function createServer(config, options = {}) {
         config.passwordStoreMode === "postgres" || config.configStoreMode === "postgres"
           ? Boolean(config.postgresUrl)
           : false,
+      blastdoorApiUrl: config.blastdoorApiUrl || null,
       allowNullOrigin: Boolean(config.allowNullOrigin),
       blastDoorsClosed: Boolean(config.blastDoorsClosed),
+      tlsEnabled: Boolean(config.tlsEnabled),
+      tlsCertFile: config.tlsEnabled ? config.tlsCertFile || null : null,
+      tlsKeyFile: config.tlsEnabled ? config.tlsKeyFile || null : null,
       runtimeStatePath,
       debugMode: Boolean(config.debugMode),
       debugLogFile: config.debugLogFile || null,
@@ -1294,18 +1392,9 @@ export function createServer(config, options = {}) {
     isBlastDoorsClosed: () => blastDoorsStateController.getClosed(),
   });
   server.on("close", () => {
-    if (typeof passwordStore?.close === "function") {
-      Promise.resolve(passwordStore.close()).catch((error) => {
-        logger.warn("password_store.close_failed", {
-          error: {
-            message: error instanceof Error ? error.message : String(error),
-          },
-        });
-      });
-    }
-    if (typeof userAdminStore?.close === "function") {
-      Promise.resolve(userAdminStore.close()).catch((error) => {
-        logger.warn("user_profile_store.close_failed", {
+    if (typeof blastdoorApi?.close === "function") {
+      Promise.resolve(blastdoorApi.close()).catch((error) => {
+        logger.warn("blastdoor_api.close_failed", {
           error: {
             message: error instanceof Error ? error.message : String(error),
           },
@@ -1352,7 +1441,25 @@ async function persistConfigSnapshot(config, configStore, logger) {
     PROXY_TLS_VERIFY: String(Boolean(config.proxyTlsVerify)),
     ALLOWED_ORIGINS: String(config.allowedOrigins || ""),
     ALLOW_NULL_ORIGIN: String(Boolean(config.allowNullOrigin)),
+    GRAPHICS_CACHE_ENABLED: String(Boolean(config.graphicsCacheEnabled)),
+    BLASTDOOR_API_URL: String(config.blastdoorApiUrl || ""),
+    BLASTDOOR_API_TOKEN: String(config.blastdoorApiToken || ""),
+    BLASTDOOR_API_TIMEOUT_MS: String(config.blastdoorApiTimeoutMs || 2500),
+    BLASTDOOR_API_RETRY_MAX_ATTEMPTS: String(config.blastdoorApiRetryMaxAttempts || 3),
+    BLASTDOOR_API_RETRY_BASE_DELAY_MS: String(config.blastdoorApiRetryBaseDelayMs || 120),
+    BLASTDOOR_API_RETRY_MAX_DELAY_MS: String(config.blastdoorApiRetryMaxDelayMs || 1200),
+    BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD: String(config.blastdoorApiCircuitFailureThreshold || 5),
+    BLASTDOOR_API_CIRCUIT_RESET_MS: String(config.blastdoorApiCircuitResetMs || 10000),
     BLAST_DOORS_CLOSED: String(Boolean(config.blastDoorsClosed)),
+    TLS_ENABLED: String(Boolean(config.tlsEnabled)),
+    TLS_DOMAIN: String(config.tlsDomain || ""),
+    TLS_EMAIL: String(config.tlsEmail || ""),
+    TLS_CHALLENGE_METHOD: String(config.tlsChallengeMethod || "webroot"),
+    TLS_WEBROOT_PATH: String(config.tlsWebrootPath || ""),
+    TLS_CERT_FILE: String(config.tlsCertFile || ""),
+    TLS_KEY_FILE: String(config.tlsKeyFile || ""),
+    TLS_CA_FILE: String(config.tlsCaFile || ""),
+    TLS_PASSPHRASE: String(config.tlsPassphrase || ""),
     DEBUG_MODE: String(Boolean(config.debugMode)),
     DEBUG_LOG_FILE: String(config.debugLogFile || ""),
   };

@@ -20,28 +20,139 @@ Secure front-end authentication gateway for a self-hosted Foundry VTT instance.
 3. After successful auth, requests are proxied to your private Foundry URL.
 4. Foundry should not be directly exposed publicly.
 
+### Modular Data Boundary (Phase 1)
+
+Blastdoor now uses a shared data API boundary in `src/blastdoor-api.js`:
+
+- Portal (`src/server.js`) calls this API for auth/profile/theme data.
+- Admin manager (`src/manager.js`) calls this API for user/theme data.
+- Backing store selection (env/file/sqlite/postgres) is isolated behind the API module.
+
+### Standalone blastdoor-api Service
+
+Blastdoor can run a separate API process (`src/api-server.js`) for data access.
+
+- Default bind: `127.0.0.1:8070`
+- Health endpoint: `/healthz`
+- Internal endpoints: `/internal/*`
+- Optional auth token: `BLASTDOOR_API_TOKEN` (`x-blastdoor-api-token` header)
+
+Portal/Admin can use this remote API when `BLASTDOOR_API_URL` is set.
+When `BLASTDOOR_API_URL` is empty, they use in-process local API access.
+
+## Deployment Models
+
+Blastdoor supports two operational models with automated workflows.
+
+Recommended command flow:
+
+```bash
+make install
+make launch
+make monitor
+make debug
+make troubleshoot
+```
+
+`make install` launches a guided GUI wizard and writes:
+
+- `data/installation_config.json` (global install profile)
+- `.env` (standalone runtime)
+- `docker/blastdoor.env` (container runtime)
+
+Re-run `make configure` any time to edit the installation profile. Generic commands (`launch`, `monitor`, `debug`, `troubleshoot`) read `installation_config.json` and execute the correct recipe automatically.
+
+### Basic-Standalone
+
+Use this model for local installs and simpler topologies.
+Data backends can be `env`, `file`, `sqlite`, or `postgres` depending on your `.env`.
+
+Automated workflow:
+
+```bash
+make basic-install
+make basic-configure
+make basic-launch
+```
+
+Monitoring:
+
+```bash
+make basic-monitor
+```
+
+Troubleshooting:
+
+```bash
+make basic-troubleshoot
+```
+
+### Standard-Resilient
+
+Use this model for orchestrated container deployment with layered services:
+`caddy` (TLS edge) -> `blastdoor` (portal/proxy) -> `blastdoor-api` (data API) -> `postgres`.
+
+Automated workflow:
+
+```bash
+make resilient-install
+make resilient-configure
+make resilient-up
+```
+
+Monitoring:
+
+```bash
+make resilient-monitor
+```
+
+Troubleshooting:
+
+```bash
+make resilient-troubleshoot
+```
+
 ## Quick start
 
 Node.js 22+ is required.
 
-1. Create and configure your env file:
+1. Run guided first-time install:
 
 ```bash
-make setup-env
+make install
 ```
 
-`make setup-env` now auto-checks dependencies and runs `npm install` when `node_modules` (or required packages like `otplib`/`pg`) are missing.
-It then launches the interactive setup wizard.
-For `DB_BACKEND`, you can type `A` for SQLite or `B` for PostgreSQL.
+The installer GUI asks for:
 
-2. Generate secrets and password hash manually (optional helper path):
+- install model (`local` or `container`)
+- platform (`WSL`, `Mac`, `Linux`)
+- database (`sqlite` or `postgres`)
+- object storage (`local`, `gdrive`, `s3`)
+- Foundry location (`local` or `external`, with external host + port)
+- global service topology (portal/admin/api host + port)
+
+2. Launch with profile-aware command:
+
+```bash
+make launch
+```
+
+3. Re-open installer for edits:
+
+```bash
+make configure
+```
+
+Legacy `.env`-only wizard is still available with `make setup-env`. It auto-checks dependencies and runs `npm install` when required packages are missing.
+
+4. Generate secrets and password hash manually (optional helper path):
 
 ```bash
 npm run gen-secret
 npm run hash-password -- 'replace-with-long-random-password'
 ```
 
-3. During setup, Blastdoor offers:
+5. During setup, Blastdoor offers:
 - Option A: SQLite (local file)
 - Option B: PostgreSQL
 
@@ -57,7 +168,7 @@ If PostgreSQL is selected, setup will:
 
 If DB-backed modes are enabled, setup also initializes credentials and config records in the selected database.
 
-4. If you prefer bypassing the wizard, copy `.env.example` to `.env` and fill:
+6. If you prefer bypassing the wizard, copy `.env.example` to `.env` and fill:
 
 - `FOUNDRY_TARGET` (example: `http://127.0.0.1:30000`)
 - `SESSION_SECRET`
@@ -94,6 +205,15 @@ Optional tuning values:
 - `LOGIN_RATE_LIMIT_MAX` (default `8`)
 - `ALLOWED_ORIGINS` (comma-separated origins to trust for login POST origin checks)
 - `ALLOW_NULL_ORIGIN` (allow `Origin: null` requests; default `false`)
+- `GRAPHICS_CACHE_ENABLED` (`true`/`false`; controls cache headers for `/graphics`)
+- `BLASTDOOR_API_URL` (optional external API base URL, example `http://127.0.0.1:8070`)
+- `BLASTDOOR_API_TOKEN` (optional shared token for API calls)
+- `BLASTDOOR_API_TIMEOUT_MS` (default `2500`)
+- `BLASTDOOR_API_RETRY_MAX_ATTEMPTS` (default `3`, total attempts including first call)
+- `BLASTDOOR_API_RETRY_BASE_DELAY_MS` (default `120`)
+- `BLASTDOOR_API_RETRY_MAX_DELAY_MS` (default `1200`)
+- `BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD` (default `5`)
+- `BLASTDOOR_API_CIRCUIT_RESET_MS` (default `10000`)
 
 ### File password store format
 
@@ -124,10 +244,10 @@ Database schema/helpers are implemented in `src/database-store.js` for both SQLi
 - `app_config` table for key/value configuration settings
 - `config_files` table for file snapshots like `.env`
 
-5. Start Blastdoor:
+7. Start Blastdoor directly from `.env` (legacy mode):
 
 ```bash
-npm start
+make launch-env
 ```
 
 Launch the local management console:
@@ -138,10 +258,71 @@ make manager-launch
 
 Default manager URL: `http://127.0.0.1:8090/manager/`
 
+Service Control now includes an **Open Portal** button that opens the configured Blastdoor gateway URL in a new browser tab.
+
+Launch standalone blastdoor-api locally:
+
+```bash
+make api-launch
+```
+
 Manager host/port can be overridden with:
 
 - `MANAGER_HOST` (default `127.0.0.1`)
 - `MANAGER_PORT` (default `8090`)
+
+## Docker Compose Deployment (Caddy TLS + PostgreSQL)
+
+This repo now includes:
+
+- `Dockerfile` for Blastdoor
+- `docker-compose.yml` with `blastdoor`, `blastdoor-api`, `postgres`, and `caddy`
+- `docker/Caddyfile` for TLS termination and reverse proxy
+- `docker/blastdoor.env.example` for stack configuration
+
+Quick start:
+
+1. Create Docker env file:
+
+```bash
+cp docker/blastdoor.env.example docker/blastdoor.env
+```
+
+2. Edit `docker/blastdoor.env`:
+
+- Set `BLASTDOOR_DOMAIN` to your public DNS name.
+- Set `LETSENCRYPT_EMAIL`.
+- Set strong `POSTGRES_PASSWORD`.
+- Set strong `SESSION_SECRET`.
+- Set `FOUNDRY_TARGET` to the Foundry endpoint reachable from the container.
+
+3. Start the stack:
+
+```bash
+make docker-up
+```
+
+4. Tail logs:
+
+```bash
+make docker-logs
+```
+
+5. Stop the stack:
+
+```bash
+make docker-down
+```
+
+Notes:
+
+- Caddy obtains and renews Let's Encrypt certificates automatically when DNS and ports are correct.
+- Required inbound ports for public TLS issuance: `80/tcp` and `443/tcp`.
+- Blastdoor runs behind Caddy with `TRUST_PROXY=1` and `COOKIE_SECURE=true`.
+- Blastdoor gateway talks to the internal `blastdoor-api` container (`BLASTDOOR_API_URL=http://blastdoor-api:8070`).
+- PostgreSQL data persists in Docker volume `postgres-data`.
+- Caddy cert/key state persists in Docker volumes `caddy-data` and `caddy-config`.
+- This compose stack runs Blastdoor directly (`src/server.js`) and does not run the manager UI service.
 
 ## Testing
 
@@ -149,6 +330,30 @@ Run the full test suite:
 
 ```bash
 npm test
+```
+
+Run test coverage with enforced minimum thresholds:
+
+```bash
+npm run test:coverage
+```
+
+or:
+
+```bash
+make coverage
+```
+
+Run Playwright installer integration tests:
+
+```bash
+npm run test:integration
+```
+
+or:
+
+```bash
+make integration-test
 ```
 
 Run lint checks:
@@ -184,6 +389,13 @@ This repo now includes a comprehensive GitHub Actions pipeline:
 - Runs on push + PR
 - Node matrix: `22.x`, `24.x`
 - Performs syntax checks + full test suite
+- Enforces unit/integration coverage thresholds on Node `24.x`
+
+- `Integration Tests` (`.github/workflows/integration.yml`)
+- Runs on push + PR
+- Uses a containerized runner (`node:24-bookworm`)
+- Executes Playwright installer-wizard E2E tests
+- Publishes Playwright report + test artifacts
 
 - `Dependency Review` (`.github/workflows/dependency-review.yml`)
 - Runs on PRs
@@ -202,13 +414,58 @@ This repo now includes a comprehensive GitHub Actions pipeline:
 
 ## Makefile shortcuts
 
+Generic profile-driven commands:
+
+```bash
+make install
+make configure
+make launch
+make monitor
+make debug
+make troubleshoot
+```
+
+`make launch`/`monitor`/`debug`/`troubleshoot` dispatch automatically based on `data/installation_config.json` (`installType=local|container`).
+
+```bash
+make integration-test
+```
+
+Runs Playwright installer workflow tests locally.
+
+Model workflows:
+
+```bash
+make basic-install
+make basic-configure
+make basic-launch
+make basic-monitor
+make basic-troubleshoot
+```
+
+```bash
+make resilient-install
+make resilient-configure
+make resilient-up
+make resilient-monitor
+make resilient-troubleshoot
+make resilient-down
+```
+
 ```bash
 make launch
 ```
 
-Launches Blastdoor using `.env`.
-If `.env` does not exist, it launches the interactive setup wizard first.
-It also auto-installs dependencies if needed.
+Launches by profile:
+
+- `local`: interactive launch console (manager + service controls)
+- `container`: docker compose stack (`caddy`, `blastdoor`, `blastdoor-api`, `postgres`)
+
+```bash
+make launch-env
+```
+
+Launches Blastdoor directly from `.env` (legacy non-console mode).
 
 ```bash
 make manager-launch
@@ -251,6 +508,14 @@ This runs with `DEBUG_MODE=true` and forces auth to:
 
 - Username: `gm` (or `DEBUG_FORCED_USERNAME`)
 - Password: `R@ndomPa55w0rd!` (or `DEBUG_FORCED_PASSWORD`)
+
+Docker stack helpers:
+
+```bash
+make docker-up
+make docker-logs
+make docker-down
+```
 
 Enable verbose debug logging to terminal and logfile:
 

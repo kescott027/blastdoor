@@ -81,6 +81,20 @@ const userLastKnownIp = document.getElementById("userLastKnownIp");
 const userBanReinstateBtn = document.getElementById("userBanReinstateBtn");
 const userTempCodeBox = document.getElementById("userTempCodeBox");
 const userFilterInputs = Array.from(document.querySelectorAll("input[name='userFilter']"));
+const tlsModal = document.getElementById("tlsModal");
+const tlsStatusMessage = document.getElementById("tlsStatusMessage");
+const tlsForm = document.getElementById("tlsForm");
+const tlsEnabled = document.getElementById("tlsEnabled");
+const tlsDomain = document.getElementById("tlsDomain");
+const tlsEmail = document.getElementById("tlsEmail");
+const tlsChallengeMethod = document.getElementById("tlsChallengeMethod");
+const tlsWebrootPath = document.getElementById("tlsWebrootPath");
+const tlsCertFile = document.getElementById("tlsCertFile");
+const tlsKeyFile = document.getElementById("tlsKeyFile");
+const tlsCaFile = document.getElementById("tlsCaFile");
+const tlsPassphrase = document.getElementById("tlsPassphrase");
+const tlsDetectionOutput = document.getElementById("tlsDetectionOutput");
+const tlsPlanOutput = document.getElementById("tlsPlanOutput");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
 const THEME_LAYOUT_DEFAULTS = {
@@ -170,6 +184,7 @@ let appearanceEditingThemeId = "";
 let latestUsers = [];
 let selectedUserUsername = "";
 let userEditorMode = "new";
+let latestTlsPlan = "";
 
 function bindClick(id, handler) {
   const element = document.getElementById(id);
@@ -218,12 +233,34 @@ function setUserMessage(text, isError = false) {
   userStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
+function setTlsMessage(text, isError = false) {
+  if (!tlsStatusMessage) {
+    return;
+  }
+  tlsStatusMessage.textContent = text;
+  tlsStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
 function toBooleanString(value) {
   return value ? "true" : "false";
 }
 
 function parseBooleanish(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function resolvePortalUrl(config = {}) {
+  const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+  const configuredHost = String(config.HOST || "").trim();
+  const configuredPort = String(config.PORT || "").trim();
+  const host =
+    !configuredHost || configuredHost === "0.0.0.0" || configuredHost === "::"
+      ? window.location.hostname || "127.0.0.1"
+      : configuredHost;
+  const shouldIncludePort =
+    configuredPort && !((protocol === "http:" && configuredPort === "80") || (protocol === "https:" && configuredPort === "443"));
+  const portSegment = shouldIncludePort ? `:${configuredPort}` : "";
+  return `${protocol}//${host}${portSegment}/`;
 }
 
 function clampThemeLayoutNumber(value, fallback, min, max) {
@@ -1420,6 +1457,119 @@ async function refreshUsers(showMessage = true) {
   }
 }
 
+function openTlsModal() {
+  if (!tlsModal) {
+    return;
+  }
+  tlsModal.hidden = false;
+  tlsModal.classList.remove("hidden");
+}
+
+function closeTlsModal() {
+  if (!tlsModal) {
+    return;
+  }
+  tlsModal.hidden = true;
+  tlsModal.classList.add("hidden");
+}
+
+function buildTlsPayload() {
+  return {
+    tlsEnabled: Boolean(tlsEnabled?.checked),
+    tlsDomain: String(tlsDomain?.value || ""),
+    tlsEmail: String(tlsEmail?.value || ""),
+    tlsChallengeMethod: String(tlsChallengeMethod?.value || "webroot"),
+    tlsWebrootPath: String(tlsWebrootPath?.value || ""),
+    tlsCertFile: String(tlsCertFile?.value || ""),
+    tlsKeyFile: String(tlsKeyFile?.value || ""),
+    tlsCaFile: String(tlsCaFile?.value || ""),
+    tlsPassphrase: String(tlsPassphrase?.value || ""),
+  };
+}
+
+function fillTlsForm(payload = {}) {
+  if (tlsEnabled) {
+    tlsEnabled.checked = Boolean(payload.tlsEnabled);
+  }
+  if (tlsDomain) {
+    tlsDomain.value = String(payload.tlsDomain || "");
+  }
+  if (tlsEmail) {
+    tlsEmail.value = String(payload.tlsEmail || "");
+  }
+  if (tlsChallengeMethod) {
+    tlsChallengeMethod.value = String(payload.tlsChallengeMethod || "webroot");
+  }
+  if (tlsWebrootPath) {
+    tlsWebrootPath.value = String(payload.tlsWebrootPath || "/var/www/html");
+  }
+  if (tlsCertFile) {
+    tlsCertFile.value = String(payload.tlsCertFile || "");
+  }
+  if (tlsKeyFile) {
+    tlsKeyFile.value = String(payload.tlsKeyFile || "");
+  }
+  if (tlsCaFile) {
+    tlsCaFile.value = String(payload.tlsCaFile || "");
+  }
+  if (tlsPassphrase) {
+    tlsPassphrase.value = "";
+  }
+}
+
+function renderTlsDetection(detection = {}) {
+  if (!tlsDetectionOutput) {
+    return;
+  }
+  const lines = [
+    `certbot available: ${detection.certbotAvailable ? "yes" : "no"}`,
+    `docker available: ${detection.dockerAvailable ? "yes" : "no"}`,
+    `openssl available: ${detection.opensslAvailable ? "yes" : "no"}`,
+    `cert file present: ${detection.certExists ? "yes" : "no"}`,
+    `key file present: ${detection.keyExists ? "yes" : "no"}`,
+    detection.certbotVersion ? `certbot: ${detection.certbotVersion}` : "",
+    detection.dockerVersion ? `docker: ${detection.dockerVersion}` : "",
+    detection.opensslVersion ? `openssl: ${detection.opensslVersion}` : "",
+  ].filter(Boolean);
+  tlsDetectionOutput.textContent = lines.join("\n");
+}
+
+function renderTlsPlan(plan = {}) {
+  if (!tlsPlanOutput) {
+    return;
+  }
+  const lines = [
+    "Steps:",
+    ...(plan.steps || []),
+    "",
+    "Install Hints:",
+    ...(plan.certbotInstallHints || []),
+    "",
+    "Issue Certificate:",
+    ...(plan.commands || []),
+    "",
+    "Blastdoor .env Preview:",
+    ...(plan.envPreview || []),
+    "",
+    "Renewal:",
+    ...(plan.renew || []),
+    "",
+    "Notes:",
+    ...(plan.notes || []),
+  ];
+  latestTlsPlan = lines.join("\n");
+  tlsPlanOutput.textContent = latestTlsPlan;
+}
+
+async function refreshTlsPanel(showMessage = true) {
+  const payload = await api("GET", "/tls");
+  fillTlsForm(payload.tls || {});
+  renderTlsDetection(payload.detection || {});
+  if (showMessage) {
+    setTlsMessage("TLS status loaded.");
+  }
+}
+
 async function refreshAll() {
   try {
     const [configResult, monitorResult] = await Promise.all([api("GET", "/config"), api("GET", "/monitor")]);
@@ -1532,6 +1682,26 @@ bindClick("revokeSessionsBtn", async () => {
 bindClick("refreshBtn", async () => {
   await refreshAll();
   setMessage("Status refreshed.");
+});
+
+bindClick("openPortalBtn", async () => {
+  try {
+    let config = buildConfigPayloadFromForm();
+    if (!config.HOST || !config.PORT) {
+      const configResult = await api("GET", "/config");
+      config = configResult.config || config;
+    }
+
+    const portalUrl = resolvePortalUrl(config);
+    const newWindow = window.open(portalUrl, "_blank", "noopener,noreferrer");
+    if (!newWindow) {
+      throw new Error(`Popup blocked while opening ${portalUrl}`);
+    }
+
+    setMessage(`Opened Blastdoor portal: ${portalUrl}`);
+  } catch (error) {
+    setMessage(error.message || String(error), true);
+  }
 });
 
 bindClick("appearanceBtn", async () => {
@@ -2083,7 +2253,79 @@ if (userForm) {
   });
 }
 
+bindClick("tlsBtn", async () => {
+  if (!tlsModal) {
+    setMessage("TLS panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!tlsModal.hidden) {
+    closeTlsModal();
+    setTlsMessage("TLS panel closed.");
+    return;
+  }
+
+  openTlsModal();
+  setTlsMessage("Loading TLS status...");
+  try {
+    await refreshTlsPanel();
+    if (tlsPlanOutput) {
+      tlsPlanOutput.textContent = "";
+    }
+    latestTlsPlan = "";
+  } catch (error) {
+    setTlsMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("tlsCloseBtn", () => {
+  closeTlsModal();
+});
+
+bindClick("tlsDetectBtn", async () => {
+  try {
+    await refreshTlsPanel();
+  } catch (error) {
+    setTlsMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("tlsPlanBtn", async () => {
+  try {
+    const payload = await api("POST", "/tls/letsencrypt-plan", buildTlsPayload());
+    renderTlsDetection(payload.detection || {});
+    renderTlsPlan(payload.plan || {});
+    setTlsMessage("Let's Encrypt plan generated.");
+  } catch (error) {
+    setTlsMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("tlsCopyPlanBtn", async () => {
+  try {
+    await copyToClipboard(latestTlsPlan || "");
+    setTlsMessage("TLS setup plan copied.");
+  } catch (error) {
+    setTlsMessage(error.message || String(error), true);
+  }
+});
+
+if (tlsForm) {
+  tlsForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await api("POST", "/tls/save", buildTlsPayload());
+      setTlsMessage("TLS configuration saved. Restart Blastdoor to apply certificate changes.");
+      await refreshTlsPanel(false);
+      await refreshAll();
+    } catch (error) {
+      setTlsMessage(error.message || String(error), true);
+    }
+  });
+}
+
 refreshAll();
 setInterval(refreshAll, 3000);
 closeAppearanceModal();
 closeUserModal();
+closeTlsModal();

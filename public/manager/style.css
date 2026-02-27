@@ -667,6 +667,50 @@ textarea:focus {
   margin-top: 0.5rem;
 }
 
+.tls-dock.hidden {
+  display: none;
+}
+
+.tls-dock[hidden] {
+  display: none;
+}
+
+.tls-dock {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 33;
+  width: min(620px, 100vw);
+  height: 100vh;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(8, 11, 20, 0.94);
+  backdrop-filter: blur(8px);
+  box-shadow: -18px 0 50px rgba(0, 0, 0, 0.45);
+}
+
+.tls-dock-panel {
+  height: 100%;
+  overflow: auto;
+  padding: 1rem 1rem 1.8rem;
+}
+
+.tls-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  position: sticky;
+  top: 0;
+  background: linear-gradient(180deg, rgba(8, 11, 20, 0.98), rgba(8, 11, 20, 0.88));
+  padding-bottom: 0.45rem;
+  z-index: 1;
+}
+
+.tls-dock-header h2 {
+  margin: 0;
+}
+
 @media (max-width: 980px) {
   .panel:nth-child(1),
   .panel:nth-child(2),
@@ -690,6 +734,10 @@ textarea:focus {
   }
 
   .user-dock {
+    width: 100vw;
+  }
+
+  .tls-dock {
     width: 100vw;
   }
 }

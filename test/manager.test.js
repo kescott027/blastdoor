@@ -1201,6 +1201,102 @@ test("manager user management supports create update filters and token actions",
   });
 });
 
+test("manager TLS endpoints detect environment, generate plan, and save config", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const certFile = path.join(workspaceDir, "tls", "fullchain.pem");
+    const keyFile = path.join(workspaceDir, "tls", "privkey.pem");
+    await fs.mkdir(path.dirname(certFile), { recursive: true });
+    await fs.writeFile(certFile, "dummy-cert", "utf8");
+    await fs.writeFile(keyFile, "dummy-key", "utf8");
+
+    const commandRunner = async ({ command }) => {
+      if (command === "certbot") {
+        return { ok: true, stdout: "certbot 2.10.0", stderr: "", exitCode: 0 };
+      }
+      if (command === "docker") {
+        return { ok: false, stdout: "", stderr: "command not found", exitCode: 127, error: "not found" };
+      }
+      if (command === "openssl") {
+        return { ok: true, stdout: "OpenSSL 3.0.0", stderr: "", exitCode: 0 };
+      }
+      return { ok: false, stdout: "", stderr: "unsupported", exitCode: 1, error: "unsupported" };
+    };
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      commandRunner,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const tlsStatus = await request(port, { pathname: "/api/tls" });
+      assert.equal(tlsStatus.status, 200);
+      assert.equal(tlsStatus.body.detection.certbotAvailable, true);
+      assert.equal(tlsStatus.body.detection.opensslAvailable, true);
+
+      const plan = await request(port, {
+        method: "POST",
+        pathname: "/api/tls/letsencrypt-plan",
+        body: {
+          tlsDomain: "vtt.example.test",
+          tlsEmail: "admin@example.test",
+          tlsChallengeMethod: "webroot",
+          tlsWebrootPath: "/var/www/html",
+        },
+      });
+      assert.equal(plan.status, 200);
+      assert.equal(Array.isArray(plan.body.plan.commands), true);
+      assert.equal(plan.body.plan.commands.some((entry) => entry.includes("certbot certonly --webroot")), true);
+
+      const save = await request(port, {
+        method: "POST",
+        pathname: "/api/tls/save",
+        body: {
+          tlsEnabled: true,
+          tlsDomain: "vtt.example.test",
+          tlsEmail: "admin@example.test",
+          tlsChallengeMethod: "webroot",
+          tlsWebrootPath: "/var/www/html",
+          tlsCertFile: certFile,
+          tlsKeyFile: keyFile,
+        },
+      });
+      assert.equal(save.status, 200);
+      assert.equal(save.body.tls.tlsEnabled, true);
+      assert.equal(save.body.tls.tlsDomain, "vtt.example.test");
+
+      const envContent = await fs.readFile(envPath, "utf8");
+      assert.match(envContent, /TLS_ENABLED=true/);
+      assert.match(envContent, /TLS_DOMAIN=vtt\.example\.test/);
+      assert.match(envContent, /TLS_CERT_FILE=/);
+      assert.match(envContent, /TLS_KEY_FILE=/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("formatManagerListenError explains when manager port is already in use", () => {
   const message = formatManagerListenError({ code: "EADDRINUSE" }, { host: "127.0.0.1", port: 8090 });
   assert.match(message, /already in use/);

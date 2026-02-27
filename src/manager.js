@@ -11,17 +11,13 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createPasswordHash } from "./security.js";
 import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
-import { createPasswordStore } from "./password-store.js";
-import { createUserAdminStore } from "./user-admin-store.js";
+import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
 import {
   createThemeId,
-  listThemeAssets,
   mapThemeForClient,
   normalizeThemeAssetPath,
   normalizeThemeLayoutSettings,
-  readThemeStore,
-  writeThemeStore,
 } from "./login-theme.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -54,7 +50,25 @@ const CONFIG_FIELDS = [
   "PROXY_TLS_VERIFY",
   "ALLOWED_ORIGINS",
   "ALLOW_NULL_ORIGIN",
+  "GRAPHICS_CACHE_ENABLED",
+  "BLASTDOOR_API_URL",
+  "BLASTDOOR_API_TOKEN",
+  "BLASTDOOR_API_TIMEOUT_MS",
+  "BLASTDOOR_API_RETRY_MAX_ATTEMPTS",
+  "BLASTDOOR_API_RETRY_BASE_DELAY_MS",
+  "BLASTDOOR_API_RETRY_MAX_DELAY_MS",
+  "BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD",
+  "BLASTDOOR_API_CIRCUIT_RESET_MS",
   "BLAST_DOORS_CLOSED",
+  "TLS_ENABLED",
+  "TLS_DOMAIN",
+  "TLS_EMAIL",
+  "TLS_CHALLENGE_METHOD",
+  "TLS_WEBROOT_PATH",
+  "TLS_CERT_FILE",
+  "TLS_KEY_FILE",
+  "TLS_CA_FILE",
+  "TLS_PASSPHRASE",
   "DEBUG_MODE",
   "DEBUG_LOG_FILE",
 ];
@@ -82,12 +96,36 @@ const CONFIG_DEFAULTS = {
   PROXY_TLS_VERIFY: "true",
   ALLOWED_ORIGINS: "",
   ALLOW_NULL_ORIGIN: "true",
+  GRAPHICS_CACHE_ENABLED: "true",
+  BLASTDOOR_API_URL: "",
+  BLASTDOOR_API_TOKEN: "",
+  BLASTDOOR_API_TIMEOUT_MS: "2500",
+  BLASTDOOR_API_RETRY_MAX_ATTEMPTS: "3",
+  BLASTDOOR_API_RETRY_BASE_DELAY_MS: "120",
+  BLASTDOOR_API_RETRY_MAX_DELAY_MS: "1200",
+  BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD: "5",
+  BLASTDOOR_API_CIRCUIT_RESET_MS: "10000",
   BLAST_DOORS_CLOSED: "false",
+  TLS_ENABLED: "false",
+  TLS_DOMAIN: "",
+  TLS_EMAIL: "",
+  TLS_CHALLENGE_METHOD: "webroot",
+  TLS_WEBROOT_PATH: "/var/www/html",
+  TLS_CERT_FILE: "",
+  TLS_KEY_FILE: "",
+  TLS_CA_FILE: "",
+  TLS_PASSPHRASE: "",
   DEBUG_MODE: "true",
   DEBUG_LOG_FILE: "logs/blastdoor-debug.log",
 };
 
-const SENSITIVE_CONFIG_KEYS = new Set(["AUTH_PASSWORD_HASH", "SESSION_SECRET", "TOTP_SECRET"]);
+const SENSITIVE_CONFIG_KEYS = new Set([
+  "AUTH_PASSWORD_HASH",
+  "SESSION_SECRET",
+  "TOTP_SECRET",
+  "TLS_PASSPHRASE",
+  "BLASTDOOR_API_TOKEN",
+]);
 const REDACTED_MARKER = "[REDACTED]";
 const MANAGED_USER_STATUSES = new Set(["active", "deactivated", "banned"]);
 const USER_FILTER_OPTIONS = new Set(["active", "inactive", "authenticated", "all"]);
@@ -159,14 +197,127 @@ function sanitizeLongText(value, maxLength = 4096) {
   return normalizeString(value, "").slice(0, maxLength);
 }
 
-function parseBodyConfig(body) {
+function normalizeTlsChallengeMethod(value, fallback = "webroot") {
+  const normalized = normalizeString(value, fallback).toLowerCase();
+  if (normalized === "standalone") {
+    return "standalone";
+  }
+  return "webroot";
+}
+
+function sanitizeDomain(value) {
+  const domain = normalizeString(value, "").toLowerCase();
+  if (!domain) {
+    return "";
+  }
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) {
+    throw new Error("TLS domain must be a valid hostname.");
+  }
+  return domain;
+}
+
+function resolveDefaultLetsEncryptPaths(domain) {
+  if (!domain) {
+    return {
+      certFile: "",
+      keyFile: "",
+    };
+  }
+  return {
+    certFile: `/etc/letsencrypt/live/${domain}/fullchain.pem`,
+    keyFile: `/etc/letsencrypt/live/${domain}/privkey.pem`,
+  };
+}
+
+function buildLetsEncryptPlan({
+  domain,
+  email,
+  challengeMethod,
+  webrootPath,
+  certFile,
+  keyFile,
+  certbotAvailable,
+  dockerAvailable,
+}) {
+  const steps = [
+    "1) Point your DNS A/AAAA record to this Blastdoor host.",
+    "2) Open inbound ports 80 and 443 on your network/firewall.",
+    "3) Install Certbot or use Docker Certbot.",
+  ];
+
+  const certbotInstallHints = [];
+  if (!certbotAvailable) {
+    certbotInstallHints.push("sudo apt-get update && sudo apt-get install -y certbot");
+  }
+  if (!certbotAvailable && dockerAvailable) {
+    certbotInstallHints.push("docker pull certbot/certbot");
+  }
+
+  const commands = [];
+  if (challengeMethod === "standalone") {
+    commands.push(
+      `sudo certbot certonly --standalone -d ${domain} --email ${email} --agree-tos --non-interactive`,
+    );
+  } else {
+    commands.push(
+      `sudo certbot certonly --webroot -w ${webrootPath} -d ${domain} --email ${email} --agree-tos --non-interactive`,
+    );
+  }
+
+  if (!certbotAvailable && dockerAvailable) {
+    if (challengeMethod === "standalone") {
+      commands.push(
+        `docker run --rm -p 80:80 -v /etc/letsencrypt:/etc/letsencrypt certbot/certbot certonly --standalone -d ${domain} --email ${email} --agree-tos --non-interactive`,
+      );
+    } else {
+      commands.push(
+        `docker run --rm -v /etc/letsencrypt:/etc/letsencrypt -v ${webrootPath}:${webrootPath} certbot/certbot certonly --webroot -w ${webrootPath} -d ${domain} --email ${email} --agree-tos --non-interactive`,
+      );
+    }
+  }
+
+  const envPreview = [
+    "TLS_ENABLED=true",
+    `TLS_DOMAIN=${domain}`,
+    `TLS_EMAIL=${email}`,
+    `TLS_CHALLENGE_METHOD=${challengeMethod}`,
+    `TLS_WEBROOT_PATH=${challengeMethod === "webroot" ? webrootPath : ""}`,
+    `TLS_CERT_FILE=${certFile}`,
+    `TLS_KEY_FILE=${keyFile}`,
+    "COOKIE_SECURE=true",
+  ];
+
+  const renew = [
+    "sudo certbot renew --dry-run",
+    "sudo certbot renew",
+  ];
+
+  return {
+    steps,
+    certbotInstallHints,
+    commands,
+    envPreview,
+    renew,
+    notes: [
+      "After certificate issuance, save TLS config and restart Blastdoor.",
+      "If Blastdoor is not directly internet-facing, use a reverse proxy and terminate TLS there.",
+    ],
+  };
+}
+
+function parseBodyConfig(body, existingConfig = {}) {
   const output = {};
   for (const key of CONFIG_FIELDS) {
     if (key === "AUTH_PASSWORD_HASH") {
       continue;
     }
 
-    output[key] = normalizeString(body[key], CONFIG_DEFAULTS[key] ?? "");
+    if (Object.prototype.hasOwnProperty.call(body, key)) {
+      output[key] = normalizeString(body[key], CONFIG_DEFAULTS[key] ?? "");
+      continue;
+    }
+
+    output[key] = normalizeString(existingConfig[key], CONFIG_DEFAULTS[key] ?? "");
   }
 
   return output;
@@ -269,6 +420,7 @@ function scrubConfigForClient(config) {
     AUTH_PASSWORD_HASH: "",
     SESSION_SECRET: config.SESSION_SECRET ? "********" : "",
     TOTP_SECRET: config.TOTP_SECRET ? "********" : "",
+    BLASTDOOR_API_TOKEN: config.BLASTDOOR_API_TOKEN ? "********" : "",
     hasAuthPasswordHash: Boolean(config.AUTH_PASSWORD_HASH),
   };
 }
@@ -363,7 +515,7 @@ function createDiagnosticsSummary(report) {
     `Debug Mode: ${config.DEBUG_MODE || "false"} (log: ${config.DEBUG_LOG_FILE || "unset"})`,
     `Manager UI: http://${env.managerHost || DEFAULT_MANAGER_HOST}:${env.managerPort || DEFAULT_MANAGER_PORT}/manager/`,
     `Runtime: ${env.platform || "unknown"} ${env.arch || "unknown"}, Node ${env.nodeVersion || "unknown"}${env.isWsl ? `, WSL (${env.wslDistro || "unknown"})` : ""}`,
-    "Redactions: AUTH_PASSWORD_HASH, SESSION_SECRET, TOTP_SECRET, POSTGRES_URL credentials",
+    "Redactions: AUTH_PASSWORD_HASH, SESSION_SECRET, TOTP_SECRET, BLASTDOOR_API_TOKEN, POSTGRES_URL credentials",
   ];
 
   return lines.join("\n");
@@ -1021,37 +1173,34 @@ export function createManagerApp(options = {}) {
     ? options.managerWriteRateLimitMax
     : 120;
 
-  async function withUserManagementStores(handler) {
+  async function withBlastdoorApi(handler) {
     const configFromEnv = await readEnvConfig(envPath);
     const runtimeConfig = loadConfigFromEnv(configFromEnv);
-    const credentialStore = createPasswordStore(runtimeConfig, {
+    const blastdoorApi = createBlastdoorApi({
+      config: runtimeConfig,
+      graphicsDir,
+      themeStorePath,
+      userProfileStorePath,
       postgresPoolFactory,
-    });
-    const userProfileStore = createUserAdminStore({
-      filePath: userProfileStorePath,
     });
 
     try {
       return await handler({
         configFromEnv,
         runtimeConfig,
-        credentialStore,
-        userProfileStore,
+        blastdoorApi,
       });
     } finally {
-      if (typeof credentialStore?.close === "function") {
-        await credentialStore.close();
-      }
-      if (typeof userProfileStore?.close === "function") {
-        await userProfileStore.close();
+      if (typeof blastdoorApi?.close === "function") {
+        await blastdoorApi.close();
       }
     }
   }
 
   async function buildManagedUserList({ filter = "active" } = {}) {
-    return withUserManagementStores(async ({ configFromEnv, credentialStore, userProfileStore }) => {
-      const credentials = await credentialStore.listUsers();
-      const profiles = await userProfileStore.listProfiles({
+    return withBlastdoorApi(async ({ configFromEnv, blastdoorApi }) => {
+      const credentials = await blastdoorApi.listCredentialUsers();
+      const profiles = await blastdoorApi.listUserProfiles({
         sessionMaxAgeHours: Number.parseInt(configFromEnv.SESSION_MAX_AGE_HOURS || "12", 10),
       });
       const profileByUsername = new Map(profiles.map((entry) => [entry.username, entry]));
@@ -1106,6 +1255,76 @@ export function createManagerApp(options = {}) {
         },
       };
     });
+  }
+
+  async function detectTlsEnvironment(configFromEnv) {
+    const checks = await Promise.all([
+      commandRunner({ command: "certbot", args: ["--version"], cwd: workspaceDir, timeoutMs: 4000 }),
+      commandRunner({ command: "docker", args: ["--version"], cwd: workspaceDir, timeoutMs: 4000 }),
+      commandRunner({ command: "openssl", args: ["version"], cwd: workspaceDir, timeoutMs: 4000 }),
+    ]);
+    const [certbotCheck, dockerCheck, opensslCheck] = checks;
+
+    const certFile = normalizeString(configFromEnv.TLS_CERT_FILE, "");
+    const keyFile = normalizeString(configFromEnv.TLS_KEY_FILE, "");
+    let certExists = false;
+    let keyExists = false;
+    if (certFile) {
+      try {
+        await fs.access(path.resolve(certFile));
+        certExists = true;
+      } catch {
+        certExists = false;
+      }
+    }
+    if (keyFile) {
+      try {
+        await fs.access(path.resolve(keyFile));
+        keyExists = true;
+      } catch {
+        keyExists = false;
+      }
+    }
+
+    return {
+      certbotAvailable: Boolean(certbotCheck?.ok),
+      dockerAvailable: Boolean(dockerCheck?.ok),
+      opensslAvailable: Boolean(opensslCheck?.ok),
+      certExists,
+      keyExists,
+      certbotVersion: normalizeString(certbotCheck?.stdout || certbotCheck?.stderr, ""),
+      dockerVersion: normalizeString(dockerCheck?.stdout || dockerCheck?.stderr, ""),
+      opensslVersion: normalizeString(opensslCheck?.stdout || opensslCheck?.stderr, ""),
+    };
+  }
+
+  function normalizeTlsConfigBody(input, existingConfig) {
+    const tlsEnabled = parseBooleanLikeBody(input?.tlsEnabled);
+    const domain = sanitizeDomain(input?.tlsDomain || existingConfig.TLS_DOMAIN);
+    const email = sanitizeEmail(input?.tlsEmail || existingConfig.TLS_EMAIL);
+    const challengeMethod = normalizeTlsChallengeMethod(input?.tlsChallengeMethod || existingConfig.TLS_CHALLENGE_METHOD);
+    const webrootPath = normalizeString(input?.tlsWebrootPath || existingConfig.TLS_WEBROOT_PATH, "/var/www/html");
+    const defaults = resolveDefaultLetsEncryptPaths(domain);
+    const certFile = normalizeString(input?.tlsCertFile || existingConfig.TLS_CERT_FILE || defaults.certFile);
+    const keyFile = normalizeString(input?.tlsKeyFile || existingConfig.TLS_KEY_FILE || defaults.keyFile);
+    const caFile = normalizeString(input?.tlsCaFile || existingConfig.TLS_CA_FILE);
+    const passphrase = normalizeString(input?.tlsPassphrase || existingConfig.TLS_PASSPHRASE);
+
+    if (tlsEnabled && (!certFile || !keyFile)) {
+      throw new Error("TLS cert/key file paths are required when TLS is enabled.");
+    }
+
+    return {
+      TLS_ENABLED: tlsEnabled ? "true" : "false",
+      TLS_DOMAIN: domain,
+      TLS_EMAIL: email,
+      TLS_CHALLENGE_METHOD: challengeMethod,
+      TLS_WEBROOT_PATH: challengeMethod === "webroot" ? webrootPath : "",
+      TLS_CERT_FILE: certFile,
+      TLS_KEY_FILE: keyFile,
+      TLS_CA_FILE: caFile,
+      TLS_PASSPHRASE: passphrase,
+    };
   }
 
   const app = express();
@@ -1168,7 +1387,7 @@ export function createManagerApp(options = {}) {
   registerApiPost("/config", async (req, res) => {
     try {
       const existing = await readEnvConfig(envPath);
-      const incoming = parseBodyConfig(req.body || {});
+      const incoming = parseBodyConfig(req.body || {}, existing);
 
       const passwordInput = normalizeString(req.body?.AUTH_PASSWORD || "");
       if (passwordInput.length > 0) {
@@ -1182,6 +1401,9 @@ export function createManagerApp(options = {}) {
       }
       if (incoming.TOTP_SECRET === "********") {
         incoming.TOTP_SECRET = existing.TOTP_SECRET || "";
+      }
+      if (incoming.BLASTDOOR_API_TOKEN === "********") {
+        incoming.BLASTDOOR_API_TOKEN = existing.BLASTDOOR_API_TOKEN || "";
       }
 
       const wasBlastDoorsClosed = parseBooleanLike(existing.BLAST_DOORS_CLOSED, false);
@@ -1215,6 +1437,115 @@ export function createManagerApp(options = {}) {
           serviceRestarted,
           sessionSecretRotated,
         },
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/tls", async (_req, res) => {
+    try {
+      const config = await readEnvConfig(envPath);
+      const detection = await detectTlsEnvironment(config);
+      const tlsConfig = {
+        tlsEnabled: parseBooleanLike(config.TLS_ENABLED, false),
+        tlsDomain: normalizeString(config.TLS_DOMAIN, ""),
+        tlsEmail: normalizeString(config.TLS_EMAIL, ""),
+        tlsChallengeMethod: normalizeTlsChallengeMethod(config.TLS_CHALLENGE_METHOD, "webroot"),
+        tlsWebrootPath: normalizeString(config.TLS_WEBROOT_PATH, "/var/www/html"),
+        tlsCertFile: normalizeString(config.TLS_CERT_FILE, ""),
+        tlsKeyFile: normalizeString(config.TLS_KEY_FILE, ""),
+        tlsCaFile: normalizeString(config.TLS_CA_FILE, ""),
+        tlsPassphraseSet: Boolean(normalizeString(config.TLS_PASSPHRASE, "")),
+      };
+      res.json({
+        ok: true,
+        tls: tlsConfig,
+        detection,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/tls/save", async (req, res) => {
+    try {
+      const config = await readEnvConfig(envPath);
+      const tlsConfig = normalizeTlsConfigBody(req.body || {}, config);
+
+      if (tlsConfig.TLS_ENABLED === "true") {
+        try {
+          await fs.access(path.resolve(tlsConfig.TLS_CERT_FILE));
+          await fs.access(path.resolve(tlsConfig.TLS_KEY_FILE));
+        } catch (error) {
+          throw new Error(
+            `TLS is enabled but certificate/key files are not accessible: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
+        }
+      }
+
+      const merged = {
+        ...config,
+        ...tlsConfig,
+      };
+      validateConfig(loadConfigFromEnv(merged));
+      await writeEnvConfig(envPath, merged);
+
+      res.json({
+        ok: true,
+        tls: {
+          tlsEnabled: parseBooleanLike(merged.TLS_ENABLED, false),
+          tlsDomain: merged.TLS_DOMAIN || "",
+          tlsEmail: merged.TLS_EMAIL || "",
+          tlsChallengeMethod: normalizeTlsChallengeMethod(merged.TLS_CHALLENGE_METHOD, "webroot"),
+          tlsWebrootPath: merged.TLS_WEBROOT_PATH || "",
+          tlsCertFile: merged.TLS_CERT_FILE || "",
+          tlsKeyFile: merged.TLS_KEY_FILE || "",
+          tlsCaFile: merged.TLS_CA_FILE || "",
+          tlsPassphraseSet: Boolean(merged.TLS_PASSPHRASE),
+        },
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/tls/letsencrypt-plan", async (req, res) => {
+    try {
+      const config = await readEnvConfig(envPath);
+      const tlsInput = normalizeTlsConfigBody(
+        {
+          ...config,
+          ...(req.body || {}),
+          tlsEnabled: false,
+        },
+        config,
+      );
+      const detection = await detectTlsEnvironment({
+        ...config,
+        ...tlsInput,
+      });
+      const plan = buildLetsEncryptPlan({
+        domain: tlsInput.TLS_DOMAIN,
+        email: tlsInput.TLS_EMAIL,
+        challengeMethod: tlsInput.TLS_CHALLENGE_METHOD,
+        webrootPath: tlsInput.TLS_WEBROOT_PATH || "/var/www/html",
+        certFile: tlsInput.TLS_CERT_FILE,
+        keyFile: tlsInput.TLS_KEY_FILE,
+        certbotAvailable: detection.certbotAvailable,
+        dockerAvailable: detection.dockerAvailable,
+      });
+      res.json({
+        ok: true,
+        plan,
+        detection,
       });
     } catch (error) {
       res.status(400).json({
@@ -1316,19 +1647,19 @@ export function createManagerApp(options = {}) {
       const displayInfo = sanitizeLongText(req.body?.displayInfo, 2048);
       const notes = sanitizeLongText(req.body?.notes, 4096);
 
-      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
-        const users = await credentialStore.listUsers();
+      await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const users = await blastdoorApi.listCredentialUsers();
         if (users.some((entry) => entry.username === username)) {
           throw new Error("User already exists.");
         }
 
-        await credentialStore.upsertUser({
+        await blastdoorApi.upsertCredentialUser({
           username,
           passwordHash: createPasswordHash(password),
           totpSecret: null,
           disabled: status !== "active",
         });
-        await userProfileStore.upsertProfile({
+        await blastdoorApi.upsertUserProfile({
           username,
           friendlyName,
           email,
@@ -1361,20 +1692,20 @@ export function createManagerApp(options = {}) {
       const displayInfo = sanitizeLongText(req.body?.displayInfo, 2048);
       const notes = sanitizeLongText(req.body?.notes, 4096);
 
-      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
-        const users = await credentialStore.listUsers();
+      await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const users = await blastdoorApi.listCredentialUsers();
         const existingUser = users.find((entry) => entry.username === username);
         if (!existingUser) {
           throw new Error("User not found.");
         }
 
-        await credentialStore.upsertUser({
+        await blastdoorApi.upsertCredentialUser({
           username,
           passwordHash: password ? createPasswordHash(password) : existingUser.passwordHash,
           totpSecret: existingUser.totpSecret || null,
           disabled: status !== "active",
         });
-        await userProfileStore.upsertProfile({
+        await blastdoorApi.upsertUserProfile({
           username,
           friendlyName,
           email,
@@ -1402,20 +1733,20 @@ export function createManagerApp(options = {}) {
       const username = validateManagedUsername(req.body?.username);
       const status = normalizeUserStatus(req.body?.status, "active");
 
-      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
-        const users = await credentialStore.listUsers();
+      await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const users = await blastdoorApi.listCredentialUsers();
         const existingUser = users.find((entry) => entry.username === username);
         if (!existingUser) {
           throw new Error("User not found.");
         }
 
-        await credentialStore.upsertUser({
+        await blastdoorApi.upsertCredentialUser({
           username,
           passwordHash: existingUser.passwordHash,
           totpSecret: existingUser.totpSecret || null,
           disabled: status !== "active",
         });
-        await userProfileStore.upsertProfile({
+        await blastdoorApi.upsertUserProfile({
           username,
           status,
         });
@@ -1441,14 +1772,14 @@ export function createManagerApp(options = {}) {
       const ttlMinutes = Number.parseInt(normalizeString(req.body?.ttlMinutes, "30"), 10);
 
       let issuedCode = null;
-      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
-        const users = await credentialStore.listUsers();
+      await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const users = await blastdoorApi.listCredentialUsers();
         const existingUser = users.find((entry) => entry.username === username);
         if (!existingUser) {
           throw new Error("User not found.");
         }
 
-        issuedCode = await userProfileStore.issueTemporaryLoginCode(username, { ttlMinutes, delivery });
+        issuedCode = await blastdoorApi.issueTemporaryLoginCode(username, { ttlMinutes, delivery });
       });
 
       res.json({
@@ -1473,14 +1804,14 @@ export function createManagerApp(options = {}) {
     try {
       const username = validateManagedUsername(req.body?.username);
       let profile = null;
-      await withUserManagementStores(async ({ credentialStore, userProfileStore }) => {
-        const users = await credentialStore.listUsers();
+      await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const users = await blastdoorApi.listCredentialUsers();
         const existingUser = users.find((entry) => entry.username === username);
         if (!existingUser) {
           throw new Error("User not found.");
         }
 
-        profile = await userProfileStore.invalidateUserSessions(username);
+        profile = await blastdoorApi.invalidateUserSessions(username);
       });
 
       res.json({
@@ -1520,12 +1851,15 @@ export function createManagerApp(options = {}) {
 
   registerApiGet("/themes", async (_req, res) => {
     try {
-      const [store, assets] = await Promise.all([readThemeStore(themeStorePath), listThemeAssets(graphicsDir)]);
+      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
+        return { store, assets };
+      });
       res.json({
         ok: true,
-        activeThemeId: store.activeThemeId || "",
-        themes: (store.themes || []).map(mapThemeForClient),
-        assets,
+        activeThemeId: payload.store.activeThemeId || "",
+        themes: (payload.store.themes || []).map(mapThemeForClient),
+        assets: payload.assets,
       });
     } catch (error) {
       res.status(500).json({
@@ -1536,67 +1870,70 @@ export function createManagerApp(options = {}) {
 
   registerApiPost("/themes/create", async (req, res) => {
     try {
-      const assets = await listThemeAssets(graphicsDir);
-      const validated = validateThemeAssetSelection(
-        {
-          themeName: req.body?.name,
-          logoPath: req.body?.logoPath,
-          closedBackgroundPath: req.body?.closedBackgroundPath,
-          openBackgroundPath: req.body?.openBackgroundPath,
-          loginBoxWidthPercent: req.body?.loginBoxWidthPercent,
-          loginBoxHeightPercent: req.body?.loginBoxHeightPercent,
-          loginBoxPosXPercent: req.body?.loginBoxPosXPercent,
-          loginBoxPosYPercent: req.body?.loginBoxPosYPercent,
-          loginBoxOpacityPercent: req.body?.loginBoxOpacityPercent,
-          loginBoxHoverOpacityPercent: req.body?.loginBoxHoverOpacityPercent,
-          logoSizePercent: req.body?.logoSizePercent,
-          logoOffsetXPercent: req.body?.logoOffsetXPercent,
-          logoOffsetYPercent: req.body?.logoOffsetYPercent,
-          backgroundZoomPercent: req.body?.backgroundZoomPercent,
-          loginBoxMode: req.body?.loginBoxMode,
-        },
-        assets,
-      );
-      const makeActive = parseBooleanLikeBody(req.body?.makeActive);
+      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const assets = await blastdoorApi.listThemeAssets();
+        const validated = validateThemeAssetSelection(
+          {
+            themeName: req.body?.name,
+            logoPath: req.body?.logoPath,
+            closedBackgroundPath: req.body?.closedBackgroundPath,
+            openBackgroundPath: req.body?.openBackgroundPath,
+            loginBoxWidthPercent: req.body?.loginBoxWidthPercent,
+            loginBoxHeightPercent: req.body?.loginBoxHeightPercent,
+            loginBoxPosXPercent: req.body?.loginBoxPosXPercent,
+            loginBoxPosYPercent: req.body?.loginBoxPosYPercent,
+            loginBoxOpacityPercent: req.body?.loginBoxOpacityPercent,
+            loginBoxHoverOpacityPercent: req.body?.loginBoxHoverOpacityPercent,
+            logoSizePercent: req.body?.logoSizePercent,
+            logoOffsetXPercent: req.body?.logoOffsetXPercent,
+            logoOffsetYPercent: req.body?.logoOffsetYPercent,
+            backgroundZoomPercent: req.body?.backgroundZoomPercent,
+            loginBoxMode: req.body?.loginBoxMode,
+          },
+          assets,
+        );
+        const makeActive = parseBooleanLikeBody(req.body?.makeActive);
 
-      const store = await readThemeStore(themeStorePath);
-      const existingIds = new Set((store.themes || []).map((theme) => theme.id));
-      const id = createThemeId(validated.name, existingIds);
-      const now = new Date().toISOString();
-      const createdTheme = {
-        id,
-        name: validated.name,
-        logoPath: validated.logoPath,
-        closedBackgroundPath: validated.closedBackgroundPath,
-        openBackgroundPath: validated.openBackgroundPath,
-        loginBoxWidthPercent: validated.loginBoxWidthPercent,
-        loginBoxHeightPercent: validated.loginBoxHeightPercent,
-        loginBoxPosXPercent: validated.loginBoxPosXPercent,
-        loginBoxPosYPercent: validated.loginBoxPosYPercent,
-        loginBoxOpacityPercent: validated.loginBoxOpacityPercent,
-        loginBoxHoverOpacityPercent: validated.loginBoxHoverOpacityPercent,
-        logoSizePercent: validated.logoSizePercent,
-        logoOffsetXPercent: validated.logoOffsetXPercent,
-        logoOffsetYPercent: validated.logoOffsetYPercent,
-        backgroundZoomPercent: validated.backgroundZoomPercent,
-        loginBoxMode: validated.loginBoxMode,
-        createdAt: now,
-        updatedAt: now,
-      };
+        const store = await blastdoorApi.readThemeStore();
+        const existingIds = new Set((store.themes || []).map((theme) => theme.id));
+        const id = createThemeId(validated.name, existingIds);
+        const now = new Date().toISOString();
+        const createdTheme = {
+          id,
+          name: validated.name,
+          logoPath: validated.logoPath,
+          closedBackgroundPath: validated.closedBackgroundPath,
+          openBackgroundPath: validated.openBackgroundPath,
+          loginBoxWidthPercent: validated.loginBoxWidthPercent,
+          loginBoxHeightPercent: validated.loginBoxHeightPercent,
+          loginBoxPosXPercent: validated.loginBoxPosXPercent,
+          loginBoxPosYPercent: validated.loginBoxPosYPercent,
+          loginBoxOpacityPercent: validated.loginBoxOpacityPercent,
+          loginBoxHoverOpacityPercent: validated.loginBoxHoverOpacityPercent,
+          logoSizePercent: validated.logoSizePercent,
+          logoOffsetXPercent: validated.logoOffsetXPercent,
+          logoOffsetYPercent: validated.logoOffsetYPercent,
+          backgroundZoomPercent: validated.backgroundZoomPercent,
+          loginBoxMode: validated.loginBoxMode,
+          createdAt: now,
+          updatedAt: now,
+        };
 
-      const nextThemes = [...(store.themes || []), createdTheme];
-      const nextActiveThemeId = makeActive || !store.activeThemeId ? createdTheme.id : store.activeThemeId;
-      const updatedStore = await writeThemeStore(themeStorePath, {
-        activeThemeId: nextActiveThemeId,
-        themes: nextThemes,
+        const nextThemes = [...(store.themes || []), createdTheme];
+        const nextActiveThemeId = makeActive || !store.activeThemeId ? createdTheme.id : store.activeThemeId;
+        const updatedStore = await blastdoorApi.writeThemeStore({
+          activeThemeId: nextActiveThemeId,
+          themes: nextThemes,
+        });
+        return { assets, createdTheme, updatedStore };
       });
 
       res.json({
         ok: true,
-        activeThemeId: updatedStore.activeThemeId || "",
-        createdTheme: mapThemeForClient(createdTheme),
-        themes: (updatedStore.themes || []).map(mapThemeForClient),
-        assets,
+        activeThemeId: payload.updatedStore.activeThemeId || "",
+        createdTheme: mapThemeForClient(payload.createdTheme),
+        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
+        assets: payload.assets,
       });
     } catch (error) {
       res.status(400).json({
@@ -1612,72 +1949,75 @@ export function createManagerApp(options = {}) {
         throw new Error("themeId is required.");
       }
 
-      const assets = await listThemeAssets(graphicsDir);
-      const validated = validateThemeAssetSelection(
-        {
-          themeName: req.body?.name,
-          logoPath: req.body?.logoPath,
-          closedBackgroundPath: req.body?.closedBackgroundPath,
-          openBackgroundPath: req.body?.openBackgroundPath,
-          loginBoxWidthPercent: req.body?.loginBoxWidthPercent,
-          loginBoxHeightPercent: req.body?.loginBoxHeightPercent,
-          loginBoxPosXPercent: req.body?.loginBoxPosXPercent,
-          loginBoxPosYPercent: req.body?.loginBoxPosYPercent,
-          loginBoxOpacityPercent: req.body?.loginBoxOpacityPercent,
-          loginBoxHoverOpacityPercent: req.body?.loginBoxHoverOpacityPercent,
-          logoSizePercent: req.body?.logoSizePercent,
-          logoOffsetXPercent: req.body?.logoOffsetXPercent,
-          logoOffsetYPercent: req.body?.logoOffsetYPercent,
-          backgroundZoomPercent: req.body?.backgroundZoomPercent,
-          loginBoxMode: req.body?.loginBoxMode,
-        },
-        assets,
-        { requireClosedBackground: false },
-      );
-      const makeActive = parseBooleanLikeBody(req.body?.makeActive);
+      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const assets = await blastdoorApi.listThemeAssets();
+        const validated = validateThemeAssetSelection(
+          {
+            themeName: req.body?.name,
+            logoPath: req.body?.logoPath,
+            closedBackgroundPath: req.body?.closedBackgroundPath,
+            openBackgroundPath: req.body?.openBackgroundPath,
+            loginBoxWidthPercent: req.body?.loginBoxWidthPercent,
+            loginBoxHeightPercent: req.body?.loginBoxHeightPercent,
+            loginBoxPosXPercent: req.body?.loginBoxPosXPercent,
+            loginBoxPosYPercent: req.body?.loginBoxPosYPercent,
+            loginBoxOpacityPercent: req.body?.loginBoxOpacityPercent,
+            loginBoxHoverOpacityPercent: req.body?.loginBoxHoverOpacityPercent,
+            logoSizePercent: req.body?.logoSizePercent,
+            logoOffsetXPercent: req.body?.logoOffsetXPercent,
+            logoOffsetYPercent: req.body?.logoOffsetYPercent,
+            backgroundZoomPercent: req.body?.backgroundZoomPercent,
+            loginBoxMode: req.body?.loginBoxMode,
+          },
+          assets,
+          { requireClosedBackground: false },
+        );
+        const makeActive = parseBooleanLikeBody(req.body?.makeActive);
 
-      const store = await readThemeStore(themeStorePath);
-      const themeIndex = (store.themes || []).findIndex((theme) => theme.id === themeId);
-      if (themeIndex < 0) {
-        throw new Error("Requested theme was not found.");
-      }
+        const store = await blastdoorApi.readThemeStore();
+        const themeIndex = (store.themes || []).findIndex((theme) => theme.id === themeId);
+        if (themeIndex < 0) {
+          throw new Error("Requested theme was not found.");
+        }
 
-      const existingTheme = store.themes[themeIndex];
-      const now = new Date().toISOString();
-      const updatedTheme = {
-        ...existingTheme,
-        name: validated.name,
-        logoPath: validated.logoPath,
-        closedBackgroundPath: validated.closedBackgroundPath,
-        openBackgroundPath: validated.openBackgroundPath,
-        loginBoxWidthPercent: validated.loginBoxWidthPercent,
-        loginBoxHeightPercent: validated.loginBoxHeightPercent,
-        loginBoxPosXPercent: validated.loginBoxPosXPercent,
-        loginBoxPosYPercent: validated.loginBoxPosYPercent,
-        loginBoxOpacityPercent: validated.loginBoxOpacityPercent,
-        loginBoxHoverOpacityPercent: validated.loginBoxHoverOpacityPercent,
-        logoSizePercent: validated.logoSizePercent,
-        logoOffsetXPercent: validated.logoOffsetXPercent,
-        logoOffsetYPercent: validated.logoOffsetYPercent,
-        backgroundZoomPercent: validated.backgroundZoomPercent,
-        loginBoxMode: validated.loginBoxMode,
-        updatedAt: now,
-      };
+        const existingTheme = store.themes[themeIndex];
+        const now = new Date().toISOString();
+        const updatedTheme = {
+          ...existingTheme,
+          name: validated.name,
+          logoPath: validated.logoPath,
+          closedBackgroundPath: validated.closedBackgroundPath,
+          openBackgroundPath: validated.openBackgroundPath,
+          loginBoxWidthPercent: validated.loginBoxWidthPercent,
+          loginBoxHeightPercent: validated.loginBoxHeightPercent,
+          loginBoxPosXPercent: validated.loginBoxPosXPercent,
+          loginBoxPosYPercent: validated.loginBoxPosYPercent,
+          loginBoxOpacityPercent: validated.loginBoxOpacityPercent,
+          loginBoxHoverOpacityPercent: validated.loginBoxHoverOpacityPercent,
+          logoSizePercent: validated.logoSizePercent,
+          logoOffsetXPercent: validated.logoOffsetXPercent,
+          logoOffsetYPercent: validated.logoOffsetYPercent,
+          backgroundZoomPercent: validated.backgroundZoomPercent,
+          loginBoxMode: validated.loginBoxMode,
+          updatedAt: now,
+        };
 
-      const nextThemes = [...(store.themes || [])];
-      nextThemes[themeIndex] = updatedTheme;
-      const nextActiveThemeId = makeActive ? themeId : store.activeThemeId;
-      const updatedStore = await writeThemeStore(themeStorePath, {
-        activeThemeId: nextActiveThemeId,
-        themes: nextThemes,
+        const nextThemes = [...(store.themes || [])];
+        nextThemes[themeIndex] = updatedTheme;
+        const nextActiveThemeId = makeActive ? themeId : store.activeThemeId;
+        const updatedStore = await blastdoorApi.writeThemeStore({
+          activeThemeId: nextActiveThemeId,
+          themes: nextThemes,
+        });
+        return { assets, updatedTheme, updatedStore };
       });
 
       res.json({
         ok: true,
-        activeThemeId: updatedStore.activeThemeId || "",
-        updatedTheme: mapThemeForClient(updatedTheme),
-        themes: (updatedStore.themes || []).map(mapThemeForClient),
-        assets,
+        activeThemeId: payload.updatedStore.activeThemeId || "",
+        updatedTheme: mapThemeForClient(payload.updatedTheme),
+        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
+        assets: payload.assets,
       });
     } catch (error) {
       res.status(400).json({
@@ -1698,32 +2038,35 @@ export function createManagerApp(options = {}) {
         throw new Error("Theme name is required.");
       }
 
-      const [store, assets] = await Promise.all([readThemeStore(themeStorePath), listThemeAssets(graphicsDir)]);
-      const themeIndex = (store.themes || []).findIndex((theme) => theme.id === themeId);
-      if (themeIndex < 0) {
-        throw new Error("Requested theme was not found.");
-      }
+      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
+        const themeIndex = (store.themes || []).findIndex((theme) => theme.id === themeId);
+        if (themeIndex < 0) {
+          throw new Error("Requested theme was not found.");
+        }
 
-      const existingTheme = store.themes[themeIndex];
-      const updatedTheme = {
-        ...existingTheme,
-        name,
-        updatedAt: new Date().toISOString(),
-      };
+        const existingTheme = store.themes[themeIndex];
+        const updatedTheme = {
+          ...existingTheme,
+          name,
+          updatedAt: new Date().toISOString(),
+        };
 
-      const nextThemes = [...(store.themes || [])];
-      nextThemes[themeIndex] = updatedTheme;
-      const updatedStore = await writeThemeStore(themeStorePath, {
-        activeThemeId: store.activeThemeId,
-        themes: nextThemes,
+        const nextThemes = [...(store.themes || [])];
+        nextThemes[themeIndex] = updatedTheme;
+        const updatedStore = await blastdoorApi.writeThemeStore({
+          activeThemeId: store.activeThemeId,
+          themes: nextThemes,
+        });
+        return { assets, updatedTheme, updatedStore };
       });
 
       res.json({
         ok: true,
-        activeThemeId: updatedStore.activeThemeId || "",
-        updatedTheme: mapThemeForClient(updatedTheme),
-        themes: (updatedStore.themes || []).map(mapThemeForClient),
-        assets,
+        activeThemeId: payload.updatedStore.activeThemeId || "",
+        updatedTheme: mapThemeForClient(payload.updatedTheme),
+        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
+        assets: payload.assets,
       });
     } catch (error) {
       res.status(400).json({
@@ -1742,29 +2085,32 @@ export function createManagerApp(options = {}) {
         throw new Error("Default theme cannot be deleted.");
       }
 
-      const [store, assets] = await Promise.all([readThemeStore(themeStorePath), listThemeAssets(graphicsDir)]);
-      const existingTheme = (store.themes || []).find((theme) => theme.id === themeId);
-      if (!existingTheme) {
-        throw new Error("Requested theme was not found.");
-      }
+      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
+        const existingTheme = (store.themes || []).find((theme) => theme.id === themeId);
+        if (!existingTheme) {
+          throw new Error("Requested theme was not found.");
+        }
 
-      const nextThemes = (store.themes || []).filter((theme) => theme.id !== themeId);
-      const nextActiveThemeId =
-        store.activeThemeId === themeId
-          ? nextThemes[0]?.id || DEFAULT_THEME_ID
-          : store.activeThemeId;
+        const nextThemes = (store.themes || []).filter((theme) => theme.id !== themeId);
+        const nextActiveThemeId =
+          store.activeThemeId === themeId
+            ? nextThemes[0]?.id || DEFAULT_THEME_ID
+            : store.activeThemeId;
 
-      const updatedStore = await writeThemeStore(themeStorePath, {
-        activeThemeId: nextActiveThemeId,
-        themes: nextThemes,
+        const updatedStore = await blastdoorApi.writeThemeStore({
+          activeThemeId: nextActiveThemeId,
+          themes: nextThemes,
+        });
+        return { assets, updatedStore };
       });
 
       res.json({
         ok: true,
         deletedThemeId: themeId,
-        activeThemeId: updatedStore.activeThemeId || "",
-        themes: (updatedStore.themes || []).map(mapThemeForClient),
-        assets,
+        activeThemeId: payload.updatedStore.activeThemeId || "",
+        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
+        assets: payload.assets,
       });
     } catch (error) {
       res.status(400).json({
@@ -1780,23 +2126,26 @@ export function createManagerApp(options = {}) {
         throw new Error("themeId is required.");
       }
 
-      const [store, assets] = await Promise.all([readThemeStore(themeStorePath), listThemeAssets(graphicsDir)]);
-      const selectedTheme = (store.themes || []).find((theme) => theme.id === themeId);
-      if (!selectedTheme) {
-        throw new Error("Requested theme was not found.");
-      }
+      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
+        const selectedTheme = (store.themes || []).find((theme) => theme.id === themeId);
+        if (!selectedTheme) {
+          throw new Error("Requested theme was not found.");
+        }
 
-      const updatedStore = await writeThemeStore(themeStorePath, {
-        activeThemeId: themeId,
-        themes: store.themes || [],
+        const updatedStore = await blastdoorApi.writeThemeStore({
+          activeThemeId: themeId,
+          themes: store.themes || [],
+        });
+        return { assets, selectedTheme, updatedStore };
       });
 
       res.json({
         ok: true,
-        activeThemeId: updatedStore.activeThemeId || "",
-        activeTheme: mapThemeForClient(selectedTheme),
-        themes: (updatedStore.themes || []).map(mapThemeForClient),
-        assets,
+        activeThemeId: payload.updatedStore.activeThemeId || "",
+        activeTheme: mapThemeForClient(payload.selectedTheme),
+        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
+        assets: payload.assets,
       });
     } catch (error) {
       res.status(400).json({

@@ -1,0 +1,102 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - ./docker/blastdoor.env
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+
+  blastdoor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blastdoor-gateway:latest
+    restart: unless-stopped
+    env_file:
+      - ./docker/blastdoor.env
+    depends_on:
+      blastdoor-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      BLASTDOOR_API_URL: http://blastdoor-api:8070
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./graphics:/app/graphics
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  blastdoor-api:
+    image: blastdoor-gateway:latest
+    restart: unless-stopped
+    env_file:
+      - ./docker/blastdoor.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      BLASTDOOR_API_HOST: 0.0.0.0
+      BLASTDOOR_API_PORT: 8070
+    command: ["node", "src/api-server.js"]
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./graphics:/app/graphics
+    expose:
+      - "8070"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8070/healthz').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    env_file:
+      - ./docker/blastdoor.env
+    depends_on:
+      blastdoor:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

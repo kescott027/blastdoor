@@ -811,6 +811,9 @@ async function main() {
   await startGatewayService();
   startFileWatcher();
   bindKeyControls();
+  if (toBoolean(process.env.LAUNCH_CONTROL_AUTO_DEBUG)) {
+    startDebugStream();
+  }
   renderControlsIfChanged(true);
 
   void openAdminPanel();
