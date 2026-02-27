@@ -15,14 +15,6 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Dependency review
-        id: dependency_review
-        continue-on-error: true
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
-
-      - name: Dependency review unsupported warning
-        if: ${{ steps.dependency_review.outcome == 'failure' }}
-        run: |
-          echo "::warning::Dependency review could not run in this repository. If this is due to disabled Dependency Graph, enable it at:"
-          echo "::warning::https://github.com/${{ github.repository }}/settings/security_analysis"

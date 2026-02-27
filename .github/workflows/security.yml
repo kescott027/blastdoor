@@ -61,9 +61,35 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
+  trivy-image:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build image for scanning
+        run: docker build -t blastdoor-gateway:security-scan .
+
+      - name: Run Trivy image vulnerability scanner
+        uses: aquasecurity/trivy-action@0.34.1
+        with:
+          scan-type: image
+          image-ref: blastdoor-gateway:security-scan
+          format: sarif
+          output: trivy-image-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Upload Trivy image scan results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image-results.sarif
+
   codeql:
-    name: CodeQL (Optional)
-    if: ${{ github.repository_visibility == 'public' || vars.ENABLE_CODEQL == 'true' }}
+    name: CodeQL
     runs-on: ubuntu-latest
     permissions:
       actions: read

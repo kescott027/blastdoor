@@ -429,7 +429,7 @@ This repo now includes a comprehensive GitHub Actions pipeline:
 - `CI` (`.github/workflows/ci.yml`)
 - Runs on push + PR
 - Node matrix: `22.x`, `24.x`
-- Performs syntax checks + full test suite
+- Performs lint + syntax checks + full test suite
 - Enforces unit/integration coverage thresholds on Node `24.x`
 
 - `Integration Tests` (`.github/workflows/integration.yml`)
@@ -441,14 +441,19 @@ This repo now includes a comprehensive GitHub Actions pipeline:
 - `Dependency Review` (`.github/workflows/dependency-review.yml`)
 - Runs on PRs
 - Fails PR if dependency changes introduce `high`/`critical` risk
+- Requires GitHub Dependency Graph to be enabled in repository settings:
+- `https://github.com/<owner>/<repo>/settings/security_analysis`
 
 - `Security Scans` (`.github/workflows/security.yml`)
 - Runs on PRs, pushes to `main`, weekly schedule, and manual dispatch
 - `npm audit` for production deps (`high`+)
 - Trivy filesystem vulnerability scan with SARIF upload to Security tab
-- Optional CodeQL:
-- Auto-enabled for public repos
-- For private repos, set repository variable `ENABLE_CODEQL=true` to enable
+- Trivy container image vulnerability scan with SARIF upload to Security tab
+- CodeQL static analysis (enabled by default in workflow)
+
+- `Secret Scan` (`.github/workflows/secret-scan.yml`)
+- Runs on PRs, pushes to `main`, weekly schedule, and manual dispatch
+- Uses Gitleaks with SARIF upload to Security tab
 
 - Dependabot (`.github/dependabot.yml`)
 - Weekly dependency update PRs for npm and GitHub Actions

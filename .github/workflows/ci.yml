@@ -37,6 +37,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run lint checks
+        if: matrix.node == '24.x'
+        run: npm run lint
+
       - name: Syntax checks
         run: |
           node --check scripts/setup-env.js
