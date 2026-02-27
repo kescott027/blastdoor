@@ -324,7 +324,12 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(before.body.ok, true);
       assert.equal(Array.isArray(before.body.assets.logos), true);
       assert.equal(Array.isArray(before.body.assets.backgrounds), true);
-      assert.equal(before.body.themes.length, 0);
+      assert.equal(before.body.themes.length, 1);
+      assert.equal(before.body.activeThemeId, "blastdoor-default");
+      assert.equal(before.body.themes[0].id, "blastdoor-default");
+      assert.equal(before.body.themes[0].logoUrl, "");
+      assert.equal(before.body.themes[0].closedBackgroundUrl, "");
+      assert.equal(before.body.themes[0].openBackgroundUrl, "");
 
       const created = await request(port, {
         method: "POST",
@@ -340,7 +345,7 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(created.status, 200);
       assert.equal(created.body.ok, true);
       assert.equal(created.body.activeThemeId, created.body.createdTheme.id);
-      assert.equal(created.body.themes.length, 1);
+      assert.equal(created.body.themes.length, 2);
       assert.equal(created.body.createdTheme.logoUrl, "/graphics/logo/crest.png");
 
       const applied = await request(port, {

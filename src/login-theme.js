@@ -3,6 +3,7 @@ import path from "node:path";
 
 const IMAGE_FILE_REGEX = /\.(?:png|jpe?g|webp|gif|svg)$/i;
 const ASSET_TYPES = new Set(["logo", "background"]);
+const DEFAULT_THEME_ID = "blastdoor-default";
 
 function normalizePathLike(value) {
   if (value === undefined || value === null) {
@@ -102,16 +103,32 @@ function dedupeThemes(themes) {
   return output;
 }
 
+function createDefaultTheme() {
+  const now = new Date().toISOString();
+  return {
+    id: DEFAULT_THEME_ID,
+    name: DEFAULT_THEME_ID,
+    logoPath: "",
+    closedBackgroundPath: "",
+    openBackgroundPath: "",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 export function normalizeThemeStorePayload(value) {
   const source = value && typeof value === "object" ? value : {};
   const rawThemes = Array.isArray(source.themes) ? source.themes : [];
   const themes = dedupeThemes(rawThemes.map((theme, index) => normalizeThemeDefinition(theme, index)));
+  if (!themes.some((theme) => theme.id === DEFAULT_THEME_ID)) {
+    themes.unshift(createDefaultTheme());
+  }
 
   const activeThemeId = sanitizeThemeId(source.activeThemeId);
   const activeExists = themes.some((theme) => theme.id === activeThemeId);
 
   return {
-    activeThemeId: activeExists ? activeThemeId : themes[0]?.id || "",
+    activeThemeId: activeExists ? activeThemeId : DEFAULT_THEME_ID,
     themes,
   };
 }
@@ -123,7 +140,7 @@ export async function readThemeStore(themeStorePath) {
     return normalizeThemeStorePayload(parsed);
   } catch (error) {
     if (error && (error.code === "ENOENT" || error.name === "SyntaxError")) {
-      return { activeThemeId: "", themes: [] };
+      return normalizeThemeStorePayload({});
     }
 
     throw new Error(`Failed to read theme store ${themeStorePath}: ${error.message}`, { cause: error });
