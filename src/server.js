@@ -280,6 +280,43 @@ export function validateConfig(config) {
   }
 }
 
+function clampThemePercent(value, fallback, min, max) {
+  const raw = Number.parseFloat(String(value ?? ""));
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, raw));
+}
+
+function normalizeLoginBoxMode(value) {
+  return String(value || "").trim().toLowerCase() === "light" ? "light" : "dark";
+}
+
+function renderThemeStyleVars(theme) {
+  const loginBoxWidthPercent = clampThemePercent(theme?.loginBoxWidthPercent, 100, 20, 100);
+  const loginBoxHeightPercent = clampThemePercent(theme?.loginBoxHeightPercent, 100, 20, 100);
+  const loginBoxPosXPercent = clampThemePercent(theme?.loginBoxPosXPercent, 50, 0, 100);
+  const loginBoxPosYPercent = clampThemePercent(theme?.loginBoxPosYPercent, 50, 0, 100);
+  const logoSizePercent = clampThemePercent(theme?.logoSizePercent, 30, 30, 100);
+  const logoOffsetXPercent = clampThemePercent(theme?.logoOffsetXPercent, 2, 0, 100);
+  const logoOffsetYPercent = clampThemePercent(theme?.logoOffsetYPercent, 2, 0, 100);
+  const backgroundZoomPercent = clampThemePercent(theme?.backgroundZoomPercent, 100, 50, 200);
+
+  const vars = [
+    `--login-box-width-scale:${(loginBoxWidthPercent / 100).toFixed(4)}`,
+    `--login-box-height-scale:${(loginBoxHeightPercent / 100).toFixed(4)}`,
+    `--login-box-shift-x:${(loginBoxPosXPercent - 50).toFixed(2)}vw`,
+    `--login-box-shift-y:${(loginBoxPosYPercent - 50).toFixed(2)}vh`,
+    `--logo-size-scale:${(logoSizePercent / 30).toFixed(4)}`,
+    `--logo-offset-x:${logoOffsetXPercent.toFixed(2)}vw`,
+    `--logo-offset-y:${logoOffsetYPercent.toFixed(2)}vh`,
+    `--background-zoom-scale:${(backgroundZoomPercent / 100).toFixed(4)}`,
+  ];
+
+  return vars.join(";");
+}
+
 function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
   const errorBlock = error
     ? `<p class="alert" role="alert">${escapeHtml(error)}</p>`
@@ -300,6 +337,8 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
   const openBgStyle = theme.openBackgroundUrl
     ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
     : "";
+  const themeStyleVars = renderThemeStyleVars(theme);
+  const loginBoxMode = normalizeLoginBoxMode(theme?.loginBoxMode);
 
   return `<!doctype html>
 <html lang="en">
@@ -309,7 +348,7 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
     <title>Blastdoor Access</title>
     <link rel="stylesheet" href="/assets/theme.css" />
   </head>
-  <body>
+  <body data-login-box-mode="${loginBoxMode}" style="${themeStyleVars}">
     <div class="theme-stage" aria-hidden="true">
       <div class="theme-bg theme-bg-closed"${closedBgStyle}></div>
       <div class="theme-bg theme-bg-open"${openBgStyle}></div>
@@ -355,6 +394,8 @@ function renderLoginSuccessPage({ nextPath, theme }) {
     ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
     : "";
   const encodedNextPath = JSON.stringify(nextPath);
+  const themeStyleVars = renderThemeStyleVars(theme);
+  const loginBoxMode = normalizeLoginBoxMode(theme?.loginBoxMode);
 
   return `<!doctype html>
 <html lang="en">
@@ -364,7 +405,7 @@ function renderLoginSuccessPage({ nextPath, theme }) {
     <title>Blastdoor Access Granted</title>
     <link rel="stylesheet" href="/assets/theme.css" />
   </head>
-  <body class="auth-success">
+  <body class="auth-success" data-login-box-mode="${loginBoxMode}" style="${themeStyleVars}">
     <div class="theme-stage" aria-hidden="true">
       <div class="theme-bg theme-bg-closed"${closedBgStyle}></div>
       <div class="theme-bg theme-bg-open"${openBgStyle}></div>

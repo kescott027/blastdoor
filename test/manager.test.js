@@ -399,6 +399,15 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(before.body.themes[0].logoUrl, "");
       assert.equal(before.body.themes[0].closedBackgroundUrl, "");
       assert.equal(before.body.themes[0].openBackgroundUrl, "");
+      assert.equal(before.body.themes[0].loginBoxWidthPercent, 100);
+      assert.equal(before.body.themes[0].loginBoxHeightPercent, 100);
+      assert.equal(before.body.themes[0].loginBoxPosXPercent, 50);
+      assert.equal(before.body.themes[0].loginBoxPosYPercent, 50);
+      assert.equal(before.body.themes[0].logoSizePercent, 30);
+      assert.equal(before.body.themes[0].logoOffsetXPercent, 2);
+      assert.equal(before.body.themes[0].logoOffsetYPercent, 2);
+      assert.equal(before.body.themes[0].backgroundZoomPercent, 100);
+      assert.equal(before.body.themes[0].loginBoxMode, "dark");
 
       const created = await request(port, {
         method: "POST",
@@ -408,6 +417,15 @@ test("manager creates and applies login themes from graphics assets", async () =
           logoPath: "logo/crest.png",
           closedBackgroundPath: "background/closed.png",
           openBackgroundPath: "background/open.png",
+          loginBoxWidthPercent: 76,
+          loginBoxHeightPercent: 84,
+          loginBoxPosXPercent: 60,
+          loginBoxPosYPercent: 40,
+          logoSizePercent: 55,
+          logoOffsetXPercent: 12,
+          logoOffsetYPercent: 9,
+          backgroundZoomPercent: 130,
+          loginBoxMode: "light",
           makeActive: "true",
         },
       });
@@ -416,6 +434,15 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(created.body.activeThemeId, created.body.createdTheme.id);
       assert.equal(created.body.themes.length, 2);
       assert.equal(created.body.createdTheme.logoUrl, "/graphics/logo/crest.png");
+      assert.equal(created.body.createdTheme.loginBoxWidthPercent, 76);
+      assert.equal(created.body.createdTheme.loginBoxHeightPercent, 84);
+      assert.equal(created.body.createdTheme.loginBoxPosXPercent, 60);
+      assert.equal(created.body.createdTheme.loginBoxPosYPercent, 40);
+      assert.equal(created.body.createdTheme.logoSizePercent, 55);
+      assert.equal(created.body.createdTheme.logoOffsetXPercent, 12);
+      assert.equal(created.body.createdTheme.logoOffsetYPercent, 9);
+      assert.equal(created.body.createdTheme.backgroundZoomPercent, 130);
+      assert.equal(created.body.createdTheme.loginBoxMode, "light");
 
       const updated = await request(port, {
         method: "POST",
@@ -426,6 +453,15 @@ test("manager creates and applies login themes from graphics assets", async () =
           logoPath: "",
           closedBackgroundPath: "background/open.png",
           openBackgroundPath: "background/closed.png",
+          loginBoxWidthPercent: 20,
+          loginBoxHeightPercent: 100,
+          loginBoxPosXPercent: 0,
+          loginBoxPosYPercent: 100,
+          logoSizePercent: 100,
+          logoOffsetXPercent: 0,
+          logoOffsetYPercent: 100,
+          backgroundZoomPercent: 50,
+          loginBoxMode: "dark",
           makeActive: "true",
         },
       });
@@ -436,6 +472,15 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(updated.body.updatedTheme.logoPath, "");
       assert.equal(updated.body.updatedTheme.closedBackgroundPath, "background/open.png");
       assert.equal(updated.body.updatedTheme.openBackgroundPath, "background/closed.png");
+      assert.equal(updated.body.updatedTheme.loginBoxWidthPercent, 20);
+      assert.equal(updated.body.updatedTheme.loginBoxHeightPercent, 100);
+      assert.equal(updated.body.updatedTheme.loginBoxPosXPercent, 0);
+      assert.equal(updated.body.updatedTheme.loginBoxPosYPercent, 100);
+      assert.equal(updated.body.updatedTheme.logoSizePercent, 100);
+      assert.equal(updated.body.updatedTheme.logoOffsetXPercent, 0);
+      assert.equal(updated.body.updatedTheme.logoOffsetYPercent, 100);
+      assert.equal(updated.body.updatedTheme.backgroundZoomPercent, 50);
+      assert.equal(updated.body.updatedTheme.loginBoxMode, "dark");
 
       const renamed = await request(port, {
         method: "POST",
@@ -473,6 +518,92 @@ test("manager creates and applies login themes from graphics assets", async () =
       const rawThemeStore = await fs.readFile(themeStorePath, "utf8");
       assert.match(rawThemeStore, /"activeThemeId"/);
       assert.doesNotMatch(rawThemeStore, /Crystal Watch Final/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager adds missing theme layout defaults and persists migrated schema", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const graphicsDir = path.join(workspaceDir, "graphics");
+    const themeStorePath = path.join(graphicsDir, "themes", "themes.json");
+
+    await fs.mkdir(path.join(graphicsDir, "themes"), { recursive: true });
+    await fs.writeFile(
+      themeStorePath,
+      JSON.stringify(
+        {
+          activeThemeId: "legacy-theme",
+          themes: [
+            {
+              id: "legacy-theme",
+              name: "Legacy Theme",
+              logoPath: "",
+              closedBackgroundPath: "",
+              openBackgroundPath: "",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      graphicsDir,
+      themeStorePath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, { pathname: "/api/themes" });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+
+      const legacy = response.body.themes.find((theme) => theme.id === "legacy-theme");
+      assert.ok(legacy);
+      assert.equal(legacy.loginBoxWidthPercent, 100);
+      assert.equal(legacy.loginBoxHeightPercent, 100);
+      assert.equal(legacy.loginBoxPosXPercent, 50);
+      assert.equal(legacy.loginBoxPosYPercent, 50);
+      assert.equal(legacy.logoSizePercent, 30);
+      assert.equal(legacy.logoOffsetXPercent, 2);
+      assert.equal(legacy.logoOffsetYPercent, 2);
+      assert.equal(legacy.backgroundZoomPercent, 100);
+      assert.equal(legacy.loginBoxMode, "dark");
+
+      const raw = await fs.readFile(themeStorePath, "utf8");
+      assert.match(raw, /"loginBoxWidthPercent": 100/);
+      assert.match(raw, /"loginBoxHeightPercent": 100/);
+      assert.match(raw, /"loginBoxPosXPercent": 50/);
+      assert.match(raw, /"loginBoxPosYPercent": 50/);
+      assert.match(raw, /"logoSizePercent": 30/);
+      assert.match(raw, /"logoOffsetXPercent": 2/);
+      assert.match(raw, /"logoOffsetYPercent": 2/);
+      assert.match(raw, /"backgroundZoomPercent": 100/);
+      assert.match(raw, /"loginBoxMode": "dark"/);
     } finally {
       await closeServer(server);
     }

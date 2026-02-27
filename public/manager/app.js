@@ -42,8 +42,37 @@ const appearanceAssetChooserList = document.getElementById("appearanceAssetChoos
 const appearanceAssetSelectBtn = document.getElementById("appearanceAssetSelectBtn");
 const appearanceAssetCancelBtn = document.getElementById("appearanceAssetCancelBtn");
 const appearanceMakeActive = document.getElementById("appearanceMakeActive");
+const appearanceLoginBoxWidthPercent = document.getElementById("appearanceLoginBoxWidthPercent");
+const appearanceLoginBoxHeightPercent = document.getElementById("appearanceLoginBoxHeightPercent");
+const appearanceLoginBoxPosXPercent = document.getElementById("appearanceLoginBoxPosXPercent");
+const appearanceLoginBoxPosYPercent = document.getElementById("appearanceLoginBoxPosYPercent");
+const appearanceLogoSizePercent = document.getElementById("appearanceLogoSizePercent");
+const appearanceLogoOffsetXPercent = document.getElementById("appearanceLogoOffsetXPercent");
+const appearanceLogoOffsetYPercent = document.getElementById("appearanceLogoOffsetYPercent");
+const appearanceBackgroundZoomPercent = document.getElementById("appearanceBackgroundZoomPercent");
+const appearanceLoginBoxWidthValue = document.getElementById("appearanceLoginBoxWidthValue");
+const appearanceLoginBoxHeightValue = document.getElementById("appearanceLoginBoxHeightValue");
+const appearanceLoginBoxPosXValue = document.getElementById("appearanceLoginBoxPosXValue");
+const appearanceLoginBoxPosYValue = document.getElementById("appearanceLoginBoxPosYValue");
+const appearanceLogoSizeValue = document.getElementById("appearanceLogoSizeValue");
+const appearanceLogoOffsetXValue = document.getElementById("appearanceLogoOffsetXValue");
+const appearanceLogoOffsetYValue = document.getElementById("appearanceLogoOffsetYValue");
+const appearanceBackgroundZoomValue = document.getElementById("appearanceBackgroundZoomValue");
+const appearanceLoginBoxModeDark = document.getElementById("appearanceLoginBoxModeDark");
+const appearanceLoginBoxModeLight = document.getElementById("appearanceLoginBoxModeLight");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
+const THEME_LAYOUT_DEFAULTS = {
+  loginBoxWidthPercent: 100,
+  loginBoxHeightPercent: 100,
+  loginBoxPosXPercent: 50,
+  loginBoxPosYPercent: 50,
+  logoSizePercent: 30,
+  logoOffsetXPercent: 2,
+  logoOffsetYPercent: 2,
+  backgroundZoomPercent: 100,
+  loginBoxMode: "dark",
+};
 const hasThemeEditorPanelControls = Boolean(
   appearanceEditBtn &&
     appearanceNewBtn &&
@@ -55,7 +84,17 @@ const hasThemeEditorFormControls = Boolean(
     appearanceRenameBtn &&
     appearanceDeleteBtn &&
     appearanceThemeName &&
-    appearanceMakeActive,
+    appearanceMakeActive &&
+    appearanceLoginBoxWidthPercent &&
+    appearanceLoginBoxHeightPercent &&
+    appearanceLoginBoxPosXPercent &&
+    appearanceLoginBoxPosYPercent &&
+    appearanceLogoSizePercent &&
+    appearanceLogoOffsetXPercent &&
+    appearanceLogoOffsetYPercent &&
+    appearanceBackgroundZoomPercent &&
+    appearanceLoginBoxModeDark &&
+    appearanceLoginBoxModeLight,
 );
 const hasAssetPickerControls = Boolean(
   appearanceLogoDisplay &&
@@ -88,10 +127,30 @@ let appearanceSelection = {
   logoPath: "",
   closedBackgroundPath: "",
   openBackgroundPath: "",
+  loginBoxWidthPercent: THEME_LAYOUT_DEFAULTS.loginBoxWidthPercent,
+  loginBoxHeightPercent: THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+  loginBoxPosXPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
+  loginBoxPosYPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
+  logoSizePercent: THEME_LAYOUT_DEFAULTS.logoSizePercent,
+  logoOffsetXPercent: THEME_LAYOUT_DEFAULTS.logoOffsetXPercent,
+  logoOffsetYPercent: THEME_LAYOUT_DEFAULTS.logoOffsetYPercent,
+  backgroundZoomPercent: THEME_LAYOUT_DEFAULTS.backgroundZoomPercent,
+  loginBoxMode: THEME_LAYOUT_DEFAULTS.loginBoxMode,
 };
 let appearanceAssetChooserState = null;
 let appearanceEditorMode = "hidden";
 let appearanceEditingThemeId = "";
+
+function bindClick(id, handler) {
+  const element = document.getElementById(id);
+  if (!element) {
+    console.warn(`[manager-ui] missing #${id}; skipping click handler`);
+    return false;
+  }
+
+  element.addEventListener("click", handler);
+  return true;
+}
 
 function ensureThemeEditorFormControls() {
   if (!hasThemeEditorFormControls) {
@@ -127,6 +186,19 @@ function toBooleanString(value) {
 
 function parseBooleanish(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function clampThemeLayoutNumber(value, fallback, min, max) {
+  const raw = Number.parseFloat(String(value ?? ""));
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, raw));
+}
+
+function normalizeLoginBoxMode(value) {
+  return String(value || "").trim().toLowerCase() === "light" ? "light" : THEME_LAYOUT_DEFAULTS.loginBoxMode;
 }
 
 function toSecondsLabel(seconds) {
@@ -419,6 +491,55 @@ function setAppearanceSelection(nextSelection) {
     logoPath: String(nextSelection?.logoPath || ""),
     closedBackgroundPath: String(nextSelection?.closedBackgroundPath || ""),
     openBackgroundPath: String(nextSelection?.openBackgroundPath || ""),
+    loginBoxWidthPercent: clampThemeLayoutNumber(
+      nextSelection?.loginBoxWidthPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxWidthPercent,
+      20,
+      100,
+    ),
+    loginBoxHeightPercent: clampThemeLayoutNumber(
+      nextSelection?.loginBoxHeightPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+      20,
+      100,
+    ),
+    loginBoxPosXPercent: clampThemeLayoutNumber(
+      nextSelection?.loginBoxPosXPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
+      0,
+      100,
+    ),
+    loginBoxPosYPercent: clampThemeLayoutNumber(
+      nextSelection?.loginBoxPosYPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
+      0,
+      100,
+    ),
+    logoSizePercent: clampThemeLayoutNumber(
+      nextSelection?.logoSizePercent,
+      THEME_LAYOUT_DEFAULTS.logoSizePercent,
+      30,
+      100,
+    ),
+    logoOffsetXPercent: clampThemeLayoutNumber(
+      nextSelection?.logoOffsetXPercent,
+      THEME_LAYOUT_DEFAULTS.logoOffsetXPercent,
+      0,
+      100,
+    ),
+    logoOffsetYPercent: clampThemeLayoutNumber(
+      nextSelection?.logoOffsetYPercent,
+      THEME_LAYOUT_DEFAULTS.logoOffsetYPercent,
+      0,
+      100,
+    ),
+    backgroundZoomPercent: clampThemeLayoutNumber(
+      nextSelection?.backgroundZoomPercent,
+      THEME_LAYOUT_DEFAULTS.backgroundZoomPercent,
+      50,
+      200,
+    ),
+    loginBoxMode: normalizeLoginBoxMode(nextSelection?.loginBoxMode),
   };
 }
 
@@ -433,6 +554,50 @@ function normalizeThemeForEditor(theme) {
     logoPath: String(theme.logoPath || ""),
     closedBackgroundPath: String(theme.closedBackgroundPath || ""),
     openBackgroundPath: String(theme.openBackgroundPath || ""),
+    loginBoxWidthPercent: clampThemeLayoutNumber(
+      theme.loginBoxWidthPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxWidthPercent,
+      20,
+      100,
+    ),
+    loginBoxHeightPercent: clampThemeLayoutNumber(
+      theme.loginBoxHeightPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+      20,
+      100,
+    ),
+    loginBoxPosXPercent: clampThemeLayoutNumber(
+      theme.loginBoxPosXPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
+      0,
+      100,
+    ),
+    loginBoxPosYPercent: clampThemeLayoutNumber(
+      theme.loginBoxPosYPercent,
+      THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
+      0,
+      100,
+    ),
+    logoSizePercent: clampThemeLayoutNumber(theme.logoSizePercent, THEME_LAYOUT_DEFAULTS.logoSizePercent, 30, 100),
+    logoOffsetXPercent: clampThemeLayoutNumber(
+      theme.logoOffsetXPercent,
+      THEME_LAYOUT_DEFAULTS.logoOffsetXPercent,
+      0,
+      100,
+    ),
+    logoOffsetYPercent: clampThemeLayoutNumber(
+      theme.logoOffsetYPercent,
+      THEME_LAYOUT_DEFAULTS.logoOffsetYPercent,
+      0,
+      100,
+    ),
+    backgroundZoomPercent: clampThemeLayoutNumber(
+      theme.backgroundZoomPercent,
+      THEME_LAYOUT_DEFAULTS.backgroundZoomPercent,
+      50,
+      200,
+    ),
+    loginBoxMode: normalizeLoginBoxMode(theme.loginBoxMode),
   };
 }
 
@@ -495,6 +660,15 @@ function startNewThemeEditor() {
     logoPath: "",
     closedBackgroundPath: "",
     openBackgroundPath: "",
+    loginBoxWidthPercent: THEME_LAYOUT_DEFAULTS.loginBoxWidthPercent,
+    loginBoxHeightPercent: THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+    loginBoxPosXPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
+    loginBoxPosYPercent: THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
+    logoSizePercent: THEME_LAYOUT_DEFAULTS.logoSizePercent,
+    logoOffsetXPercent: THEME_LAYOUT_DEFAULTS.logoOffsetXPercent,
+    logoOffsetYPercent: THEME_LAYOUT_DEFAULTS.logoOffsetYPercent,
+    backgroundZoomPercent: THEME_LAYOUT_DEFAULTS.backgroundZoomPercent,
+    loginBoxMode: THEME_LAYOUT_DEFAULTS.loginBoxMode,
   });
   renderAppearanceSelection();
   appearanceMakeActive.checked = true;
@@ -518,6 +692,15 @@ function startManageThemeEditor() {
     logoPath: selectedTheme.logoPath,
     closedBackgroundPath: selectedTheme.closedBackgroundPath,
     openBackgroundPath: selectedTheme.openBackgroundPath,
+    loginBoxWidthPercent: selectedTheme.loginBoxWidthPercent,
+    loginBoxHeightPercent: selectedTheme.loginBoxHeightPercent,
+    loginBoxPosXPercent: selectedTheme.loginBoxPosXPercent,
+    loginBoxPosYPercent: selectedTheme.loginBoxPosYPercent,
+    logoSizePercent: selectedTheme.logoSizePercent,
+    logoOffsetXPercent: selectedTheme.logoOffsetXPercent,
+    logoOffsetYPercent: selectedTheme.logoOffsetYPercent,
+    backgroundZoomPercent: selectedTheme.backgroundZoomPercent,
+    loginBoxMode: selectedTheme.loginBoxMode,
   });
   renderAppearanceSelection();
   appearanceMakeActive.checked = selectedTheme.id === latestActiveThemeId;
@@ -540,6 +723,73 @@ function renderAppearanceSelection() {
   appearanceLogoDisplay.value = logo || "None";
   appearanceClosedBgDisplay.value = closed || "None";
   appearanceOpenBgDisplay.value = open || "None";
+
+  if (appearanceLoginBoxWidthPercent) {
+    appearanceLoginBoxWidthPercent.value = String(Math.round(appearanceSelection.loginBoxWidthPercent));
+  }
+  if (appearanceLoginBoxHeightPercent) {
+    appearanceLoginBoxHeightPercent.value = String(Math.round(appearanceSelection.loginBoxHeightPercent));
+  }
+  if (appearanceLoginBoxPosXPercent) {
+    appearanceLoginBoxPosXPercent.value = String(Math.round(appearanceSelection.loginBoxPosXPercent));
+  }
+  if (appearanceLoginBoxPosYPercent) {
+    appearanceLoginBoxPosYPercent.value = String(Math.round(appearanceSelection.loginBoxPosYPercent));
+  }
+  if (appearanceLogoSizePercent) {
+    appearanceLogoSizePercent.value = String(Math.round(appearanceSelection.logoSizePercent));
+  }
+  if (appearanceLogoOffsetXPercent) {
+    appearanceLogoOffsetXPercent.value = String(Math.round(appearanceSelection.logoOffsetXPercent));
+  }
+  if (appearanceLogoOffsetYPercent) {
+    appearanceLogoOffsetYPercent.value = String(Math.round(appearanceSelection.logoOffsetYPercent));
+  }
+  if (appearanceBackgroundZoomPercent) {
+    appearanceBackgroundZoomPercent.value = String(Math.round(appearanceSelection.backgroundZoomPercent));
+  }
+  if (appearanceLoginBoxWidthValue) {
+    appearanceLoginBoxWidthValue.textContent = `${Math.round(appearanceSelection.loginBoxWidthPercent)}%`;
+  }
+  if (appearanceLoginBoxHeightValue) {
+    appearanceLoginBoxHeightValue.textContent = `${Math.round(appearanceSelection.loginBoxHeightPercent)}%`;
+  }
+  if (appearanceLoginBoxPosXValue) {
+    appearanceLoginBoxPosXValue.textContent = `${Math.round(appearanceSelection.loginBoxPosXPercent)}%`;
+  }
+  if (appearanceLoginBoxPosYValue) {
+    appearanceLoginBoxPosYValue.textContent = `${Math.round(appearanceSelection.loginBoxPosYPercent)}%`;
+  }
+  if (appearanceLogoSizeValue) {
+    appearanceLogoSizeValue.textContent = `${Math.round(appearanceSelection.logoSizePercent)}%`;
+  }
+  if (appearanceLogoOffsetXValue) {
+    appearanceLogoOffsetXValue.textContent = `${Math.round(appearanceSelection.logoOffsetXPercent)}%`;
+  }
+  if (appearanceLogoOffsetYValue) {
+    appearanceLogoOffsetYValue.textContent = `${Math.round(appearanceSelection.logoOffsetYPercent)}%`;
+  }
+  if (appearanceBackgroundZoomValue) {
+    appearanceBackgroundZoomValue.textContent = `${Math.round(appearanceSelection.backgroundZoomPercent)}%`;
+  }
+  if (appearanceLoginBoxModeDark && appearanceLoginBoxModeLight) {
+    appearanceLoginBoxModeDark.checked = appearanceSelection.loginBoxMode === "dark";
+    appearanceLoginBoxModeLight.checked = appearanceSelection.loginBoxMode === "light";
+  }
+}
+
+function bindAppearanceRangeInput(input, key, min, max, fallback) {
+  if (!input) {
+    return;
+  }
+
+  input.addEventListener("input", () => {
+    setAppearanceSelection({
+      ...appearanceSelection,
+      [key]: clampThemeLayoutNumber(input.value, fallback, min, max),
+    });
+    renderAppearanceSelection();
+  });
 }
 
 function closeAppearanceAssetPicker() {
@@ -651,6 +901,15 @@ function renderThemeCatalog(payload) {
           logoPath: matchingTheme.logoPath,
           closedBackgroundPath: matchingTheme.closedBackgroundPath,
           openBackgroundPath: matchingTheme.openBackgroundPath,
+          loginBoxWidthPercent: matchingTheme.loginBoxWidthPercent,
+          loginBoxHeightPercent: matchingTheme.loginBoxHeightPercent,
+          loginBoxPosXPercent: matchingTheme.loginBoxPosXPercent,
+          loginBoxPosYPercent: matchingTheme.loginBoxPosYPercent,
+          logoSizePercent: matchingTheme.logoSizePercent,
+          logoOffsetXPercent: matchingTheme.logoOffsetXPercent,
+          logoOffsetYPercent: matchingTheme.logoOffsetYPercent,
+          backgroundZoomPercent: matchingTheme.backgroundZoomPercent,
+          loginBoxMode: matchingTheme.loginBoxMode,
         };
         appearanceThemeName.value = matchingTheme.name;
       }
@@ -670,6 +929,15 @@ function renderThemeCatalog(payload) {
       logoPath: validLogo,
       closedBackgroundPath: validClosed,
       openBackgroundPath: validOpen,
+      loginBoxWidthPercent: nextSelection.loginBoxWidthPercent,
+      loginBoxHeightPercent: nextSelection.loginBoxHeightPercent,
+      loginBoxPosXPercent: nextSelection.loginBoxPosXPercent,
+      loginBoxPosYPercent: nextSelection.loginBoxPosYPercent,
+      logoSizePercent: nextSelection.logoSizePercent,
+      logoOffsetXPercent: nextSelection.logoOffsetXPercent,
+      logoOffsetYPercent: nextSelection.logoOffsetYPercent,
+      backgroundZoomPercent: nextSelection.backgroundZoomPercent,
+      loginBoxMode: nextSelection.loginBoxMode,
     });
     renderAppearanceSelection();
     closeAppearanceAssetPicker();
@@ -733,6 +1001,15 @@ function buildAppearanceCreatePayload() {
       logoPath: String(appearanceSelection.logoPath || ""),
       closedBackgroundPath: String(appearanceSelection.closedBackgroundPath || ""),
       openBackgroundPath: String(appearanceSelection.openBackgroundPath || ""),
+      loginBoxWidthPercent: Math.round(appearanceSelection.loginBoxWidthPercent),
+      loginBoxHeightPercent: Math.round(appearanceSelection.loginBoxHeightPercent),
+      loginBoxPosXPercent: Math.round(appearanceSelection.loginBoxPosXPercent),
+      loginBoxPosYPercent: Math.round(appearanceSelection.loginBoxPosYPercent),
+      logoSizePercent: Math.round(appearanceSelection.logoSizePercent),
+      logoOffsetXPercent: Math.round(appearanceSelection.logoOffsetXPercent),
+      logoOffsetYPercent: Math.round(appearanceSelection.logoOffsetYPercent),
+      backgroundZoomPercent: Math.round(appearanceSelection.backgroundZoomPercent),
+      loginBoxMode: normalizeLoginBoxMode(appearanceSelection.loginBoxMode),
       makeActive: toBooleanString(appearanceMakeActive.checked),
     };
   }
@@ -748,6 +1025,57 @@ function buildAppearanceCreatePayload() {
       logoPath: String(appearanceLogoSelectLegacy.value || ""),
       closedBackgroundPath: closedPath,
       openBackgroundPath: String(appearanceOpenBgSelectLegacy.value || ""),
+      loginBoxWidthPercent: clampThemeLayoutNumber(
+        appearanceLoginBoxWidthPercent?.value,
+        THEME_LAYOUT_DEFAULTS.loginBoxWidthPercent,
+        20,
+        100,
+      ),
+      loginBoxHeightPercent: clampThemeLayoutNumber(
+        appearanceLoginBoxHeightPercent?.value,
+        THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+        20,
+        100,
+      ),
+      loginBoxPosXPercent: clampThemeLayoutNumber(
+        appearanceLoginBoxPosXPercent?.value,
+        THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
+        0,
+        100,
+      ),
+      loginBoxPosYPercent: clampThemeLayoutNumber(
+        appearanceLoginBoxPosYPercent?.value,
+        THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
+        0,
+        100,
+      ),
+      logoSizePercent: clampThemeLayoutNumber(
+        appearanceLogoSizePercent?.value,
+        THEME_LAYOUT_DEFAULTS.logoSizePercent,
+        30,
+        100,
+      ),
+      logoOffsetXPercent: clampThemeLayoutNumber(
+        appearanceLogoOffsetXPercent?.value,
+        THEME_LAYOUT_DEFAULTS.logoOffsetXPercent,
+        0,
+        100,
+      ),
+      logoOffsetYPercent: clampThemeLayoutNumber(
+        appearanceLogoOffsetYPercent?.value,
+        THEME_LAYOUT_DEFAULTS.logoOffsetYPercent,
+        0,
+        100,
+      ),
+      backgroundZoomPercent: clampThemeLayoutNumber(
+        appearanceBackgroundZoomPercent?.value,
+        THEME_LAYOUT_DEFAULTS.backgroundZoomPercent,
+        50,
+        200,
+      ),
+      loginBoxMode: normalizeLoginBoxMode(
+        appearanceLoginBoxModeLight?.checked ? "light" : appearanceLoginBoxModeDark?.checked ? "dark" : "",
+      ),
       makeActive: toBooleanString(appearanceMakeActive.checked),
     };
   }
@@ -765,54 +1093,62 @@ async function refreshAll() {
   }
 }
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const payload = buildConfigPayloadFromForm();
+if (form) {
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = buildConfigPayloadFromForm();
 
-  try {
-    await saveConfig(payload, "Configuration saved.");
-  } catch (error) {
-    setMessage(error.message || String(error), true);
-  }
-});
-
-blastDoorsToggle.addEventListener("change", async () => {
-  const closed = blastDoorsToggle.checked;
-  blastDoorsClosedField.value = toBooleanString(closed);
-  blastDoorsState.textContent = closed ? "Locked" : "Unlocked";
-
-  const payload = buildConfigPayloadFromForm();
-  try {
-    const result = await saveConfig(
-      payload,
-      closed ? "Blast doors locked." : "Blast doors unlocked.",
-    );
-    const serviceRestarted = Boolean(result?.runtime?.serviceRestarted);
-    const sessionSecretRotated = Boolean(result?.runtime?.sessionSecretRotated);
-    if (closed) {
-      setMessage(
-        serviceRestarted
-          ? sessionSecretRotated
-            ? "Blast doors locked. Gateway restarted, lockout is active, and all sessions were invalidated."
-            : "Blast doors locked. Gateway was restarted and lockout is active."
-          : sessionSecretRotated
-            ? "Blast doors locked and all sessions were invalidated. Restart gateway service if lockout is not active yet."
-            : "Blast doors locked. Restart gateway service to enforce lockout.",
-      );
-    } else {
-      setMessage(
-        serviceRestarted
-          ? "Blast doors unlocked. Gateway was restarted and routing is restored."
-          : "Blast doors unlocked. Start/restart the gateway service if routing is still blocked.",
-      );
+    try {
+      await saveConfig(payload, "Configuration saved.");
+    } catch (error) {
+      setMessage(error.message || String(error), true);
     }
-  } catch (error) {
-    setMessage(error.message || String(error), true);
-    await refreshAll();
-  }
-});
+  });
+} else {
+  console.warn("[manager-ui] missing #configForm; skipping config submit binding");
+}
 
-document.getElementById("startBtn").addEventListener("click", async () => {
+if (blastDoorsToggle && blastDoorsClosedField && blastDoorsState) {
+  blastDoorsToggle.addEventListener("change", async () => {
+    const closed = blastDoorsToggle.checked;
+    blastDoorsClosedField.value = toBooleanString(closed);
+    blastDoorsState.textContent = closed ? "Locked" : "Unlocked";
+
+    const payload = buildConfigPayloadFromForm();
+    try {
+      const result = await saveConfig(
+        payload,
+        closed ? "Blast doors locked." : "Blast doors unlocked.",
+      );
+      const serviceRestarted = Boolean(result?.runtime?.serviceRestarted);
+      const sessionSecretRotated = Boolean(result?.runtime?.sessionSecretRotated);
+      if (closed) {
+        setMessage(
+          serviceRestarted
+            ? sessionSecretRotated
+              ? "Blast doors locked. Gateway restarted, lockout is active, and all sessions were invalidated."
+              : "Blast doors locked. Gateway was restarted and lockout is active."
+            : sessionSecretRotated
+              ? "Blast doors locked and all sessions were invalidated. Restart gateway service if lockout is not active yet."
+              : "Blast doors locked. Restart gateway service to enforce lockout.",
+        );
+      } else {
+        setMessage(
+          serviceRestarted
+            ? "Blast doors unlocked. Gateway was restarted and routing is restored."
+            : "Blast doors unlocked. Start/restart the gateway service if routing is still blocked.",
+        );
+      }
+    } catch (error) {
+      setMessage(error.message || String(error), true);
+      await refreshAll();
+    }
+  });
+} else {
+  console.warn("[manager-ui] missing blast doors controls; skipping blast doors binding");
+}
+
+bindClick("startBtn", async () => {
   try {
     await api("POST", "/start");
     setMessage("Blastdoor start signal sent.");
@@ -822,7 +1158,7 @@ document.getElementById("startBtn").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("stopBtn").addEventListener("click", async () => {
+bindClick("stopBtn", async () => {
   try {
     await api("POST", "/stop");
     setMessage("Blastdoor stop signal sent.");
@@ -832,7 +1168,7 @@ document.getElementById("stopBtn").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("restartBtn").addEventListener("click", async () => {
+bindClick("restartBtn", async () => {
   try {
     await api("POST", "/restart");
     setMessage("Blastdoor restart signal sent.");
@@ -842,7 +1178,7 @@ document.getElementById("restartBtn").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("revokeSessionsBtn").addEventListener("click", async () => {
+bindClick("revokeSessionsBtn", async () => {
   try {
     const result = await api("POST", "/sessions/revoke-all");
     setMessage(
@@ -856,12 +1192,12 @@ document.getElementById("revokeSessionsBtn").addEventListener("click", async () 
   }
 });
 
-document.getElementById("refreshBtn").addEventListener("click", async () => {
+bindClick("refreshBtn", async () => {
   await refreshAll();
   setMessage("Status refreshed.");
 });
 
-document.getElementById("appearanceBtn").addEventListener("click", async () => {
+bindClick("appearanceBtn", async () => {
   if (!appearanceModal.hidden) {
     closeAppearanceModal();
     setAppearanceMessage("Appearance panel closed.");
@@ -881,7 +1217,7 @@ document.getElementById("appearanceBtn").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("appearanceCloseBtn").addEventListener("click", () => {
+bindClick("appearanceCloseBtn", () => {
   closeAppearanceModal();
 });
 
@@ -969,6 +1305,89 @@ if (hasThemeEditorFormControls && appearanceDeleteBtn) {
   });
 }
 
+if (hasThemeEditorFormControls) {
+  bindAppearanceRangeInput(
+    appearanceLoginBoxWidthPercent,
+    "loginBoxWidthPercent",
+    20,
+    100,
+    THEME_LAYOUT_DEFAULTS.loginBoxWidthPercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceLoginBoxHeightPercent,
+    "loginBoxHeightPercent",
+    20,
+    100,
+    THEME_LAYOUT_DEFAULTS.loginBoxHeightPercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceLoginBoxPosXPercent,
+    "loginBoxPosXPercent",
+    0,
+    100,
+    THEME_LAYOUT_DEFAULTS.loginBoxPosXPercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceLoginBoxPosYPercent,
+    "loginBoxPosYPercent",
+    0,
+    100,
+    THEME_LAYOUT_DEFAULTS.loginBoxPosYPercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceLogoSizePercent,
+    "logoSizePercent",
+    30,
+    100,
+    THEME_LAYOUT_DEFAULTS.logoSizePercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceLogoOffsetXPercent,
+    "logoOffsetXPercent",
+    0,
+    100,
+    THEME_LAYOUT_DEFAULTS.logoOffsetXPercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceLogoOffsetYPercent,
+    "logoOffsetYPercent",
+    0,
+    100,
+    THEME_LAYOUT_DEFAULTS.logoOffsetYPercent,
+  );
+  bindAppearanceRangeInput(
+    appearanceBackgroundZoomPercent,
+    "backgroundZoomPercent",
+    50,
+    200,
+    THEME_LAYOUT_DEFAULTS.backgroundZoomPercent,
+  );
+
+  appearanceLoginBoxModeDark.addEventListener("change", () => {
+    if (!appearanceLoginBoxModeDark.checked) {
+      return;
+    }
+
+    setAppearanceSelection({
+      ...appearanceSelection,
+      loginBoxMode: "dark",
+    });
+    renderAppearanceSelection();
+  });
+
+  appearanceLoginBoxModeLight.addEventListener("change", () => {
+    if (!appearanceLoginBoxModeLight.checked) {
+      return;
+    }
+
+    setAppearanceSelection({
+      ...appearanceSelection,
+      loginBoxMode: "light",
+    });
+    renderAppearanceSelection();
+  });
+}
+
 if (hasAssetPickerControls) {
   appearanceChooseLogoBtn.addEventListener("click", () => {
     openAppearanceAssetPicker({
@@ -1026,7 +1445,7 @@ if (hasAssetPickerControls) {
   });
 }
 
-document.getElementById("appearanceApplyBtn").addEventListener("click", async () => {
+bindClick("appearanceApplyBtn", async () => {
   try {
     if (appearanceThemeSelect.disabled || !appearanceThemeSelect.value) {
       throw new Error("No saved theme is available to apply.");
@@ -1074,7 +1493,7 @@ if (appearanceForm) {
   });
 }
 
-document.getElementById("diagGenerateBtn").addEventListener("click", async () => {
+bindClick("diagGenerateBtn", async () => {
   try {
     const payload = await api("GET", "/diagnostics");
     renderDiagnostics(payload);
@@ -1084,7 +1503,7 @@ document.getElementById("diagGenerateBtn").addEventListener("click", async () =>
   }
 });
 
-document.getElementById("diagCopySummaryBtn").addEventListener("click", async () => {
+bindClick("diagCopySummaryBtn", async () => {
   try {
     await copyToClipboard(latestDiagnostics?.summary || "");
     setDiagMessage("Summary copied.");
@@ -1093,7 +1512,7 @@ document.getElementById("diagCopySummaryBtn").addEventListener("click", async ()
   }
 });
 
-document.getElementById("diagCopyJsonBtn").addEventListener("click", async () => {
+bindClick("diagCopyJsonBtn", async () => {
   try {
     await copyToClipboard(latestDiagnostics ? JSON.stringify(latestDiagnostics.report || {}, null, 2) : "");
     setDiagMessage("JSON copied.");
@@ -1102,7 +1521,7 @@ document.getElementById("diagCopyJsonBtn").addEventListener("click", async () =>
   }
 });
 
-document.getElementById("tsAnalyzeBtn").addEventListener("click", async () => {
+bindClick("tsAnalyzeBtn", async () => {
   try {
     const payload = await api("GET", "/troubleshoot");
     renderTroubleshootReport(payload.report || {});
@@ -1122,19 +1541,19 @@ async function runTroubleshootAction(actionId, successMessage) {
   }
 }
 
-document.getElementById("tsSnapshotBtn").addEventListener("click", async () => {
+bindClick("tsSnapshotBtn", async () => {
   await runTroubleshootAction("snapshot.network", "Network snapshot complete.");
 });
 
-document.getElementById("tsGatewayBtn").addEventListener("click", async () => {
+bindClick("tsGatewayBtn", async () => {
   await runTroubleshootAction("check.gateway-local", "Gateway access checks complete.");
 });
 
-document.getElementById("tsPortproxyDetectBtn").addEventListener("click", async () => {
+bindClick("tsPortproxyDetectBtn", async () => {
   await runTroubleshootAction("detect.wsl-portproxy", "WSL2 portproxy detection complete.");
 });
 
-document.getElementById("tsPortproxyScriptBtn").addEventListener("click", async () => {
+bindClick("tsPortproxyScriptBtn", async () => {
   try {
     if (!latestTroubleshootReport) {
       const payload = await api("GET", "/troubleshoot");
@@ -1154,7 +1573,7 @@ document.getElementById("tsPortproxyScriptBtn").addEventListener("click", async 
   }
 });
 
-document.getElementById("tsCopyScriptBtn").addEventListener("click", async () => {
+bindClick("tsCopyScriptBtn", async () => {
   try {
     await copyToClipboard(tsScript.textContent || "");
     setTsMessage("Guided script copied.");

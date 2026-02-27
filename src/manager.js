@@ -16,6 +16,7 @@ import {
   listThemeAssets,
   mapThemeForClient,
   normalizeThemeAssetPath,
+  normalizeThemeLayoutSettings,
   readThemeStore,
   writeThemeStore,
 } from "./login-theme.js";
@@ -132,7 +133,21 @@ function parseBooleanLikeBody(value) {
 }
 
 function validateThemeAssetSelection(
-  { themeName, logoPath, closedBackgroundPath, openBackgroundPath },
+  {
+    themeName,
+    logoPath,
+    closedBackgroundPath,
+    openBackgroundPath,
+    loginBoxWidthPercent,
+    loginBoxHeightPercent,
+    loginBoxPosXPercent,
+    loginBoxPosYPercent,
+    logoSizePercent,
+    logoOffsetXPercent,
+    logoOffsetYPercent,
+    backgroundZoomPercent,
+    loginBoxMode,
+  },
   assets,
   options = {},
 ) {
@@ -165,11 +180,32 @@ function validateThemeAssetSelection(
     throw new Error("Closed background image selection is required.");
   }
 
+  const layout = normalizeThemeLayoutSettings({
+    loginBoxWidthPercent,
+    loginBoxHeightPercent,
+    loginBoxPosXPercent,
+    loginBoxPosYPercent,
+    logoSizePercent,
+    logoOffsetXPercent,
+    logoOffsetYPercent,
+    backgroundZoomPercent,
+    loginBoxMode,
+  });
+
   return {
     name,
     logoPath: logoSelection,
     closedBackgroundPath: closedSelection,
     openBackgroundPath: openSelection,
+    loginBoxWidthPercent: layout.loginBoxWidthPercent,
+    loginBoxHeightPercent: layout.loginBoxHeightPercent,
+    loginBoxPosXPercent: layout.loginBoxPosXPercent,
+    loginBoxPosYPercent: layout.loginBoxPosYPercent,
+    logoSizePercent: layout.logoSizePercent,
+    logoOffsetXPercent: layout.logoOffsetXPercent,
+    logoOffsetYPercent: layout.logoOffsetYPercent,
+    backgroundZoomPercent: layout.backgroundZoomPercent,
+    loginBoxMode: layout.loginBoxMode,
   };
 }
 
@@ -1143,6 +1179,15 @@ export function createManagerApp(options = {}) {
           logoPath: req.body?.logoPath,
           closedBackgroundPath: req.body?.closedBackgroundPath,
           openBackgroundPath: req.body?.openBackgroundPath,
+          loginBoxWidthPercent: req.body?.loginBoxWidthPercent,
+          loginBoxHeightPercent: req.body?.loginBoxHeightPercent,
+          loginBoxPosXPercent: req.body?.loginBoxPosXPercent,
+          loginBoxPosYPercent: req.body?.loginBoxPosYPercent,
+          logoSizePercent: req.body?.logoSizePercent,
+          logoOffsetXPercent: req.body?.logoOffsetXPercent,
+          logoOffsetYPercent: req.body?.logoOffsetYPercent,
+          backgroundZoomPercent: req.body?.backgroundZoomPercent,
+          loginBoxMode: req.body?.loginBoxMode,
         },
         assets,
       );
@@ -1158,6 +1203,15 @@ export function createManagerApp(options = {}) {
         logoPath: validated.logoPath,
         closedBackgroundPath: validated.closedBackgroundPath,
         openBackgroundPath: validated.openBackgroundPath,
+        loginBoxWidthPercent: validated.loginBoxWidthPercent,
+        loginBoxHeightPercent: validated.loginBoxHeightPercent,
+        loginBoxPosXPercent: validated.loginBoxPosXPercent,
+        loginBoxPosYPercent: validated.loginBoxPosYPercent,
+        logoSizePercent: validated.logoSizePercent,
+        logoOffsetXPercent: validated.logoOffsetXPercent,
+        logoOffsetYPercent: validated.logoOffsetYPercent,
+        backgroundZoomPercent: validated.backgroundZoomPercent,
+        loginBoxMode: validated.loginBoxMode,
         createdAt: now,
         updatedAt: now,
       };
@@ -1197,6 +1251,15 @@ export function createManagerApp(options = {}) {
           logoPath: req.body?.logoPath,
           closedBackgroundPath: req.body?.closedBackgroundPath,
           openBackgroundPath: req.body?.openBackgroundPath,
+          loginBoxWidthPercent: req.body?.loginBoxWidthPercent,
+          loginBoxHeightPercent: req.body?.loginBoxHeightPercent,
+          loginBoxPosXPercent: req.body?.loginBoxPosXPercent,
+          loginBoxPosYPercent: req.body?.loginBoxPosYPercent,
+          logoSizePercent: req.body?.logoSizePercent,
+          logoOffsetXPercent: req.body?.logoOffsetXPercent,
+          logoOffsetYPercent: req.body?.logoOffsetYPercent,
+          backgroundZoomPercent: req.body?.backgroundZoomPercent,
+          loginBoxMode: req.body?.loginBoxMode,
         },
         assets,
         { requireClosedBackground: false },
@@ -1217,6 +1280,15 @@ export function createManagerApp(options = {}) {
         logoPath: validated.logoPath,
         closedBackgroundPath: validated.closedBackgroundPath,
         openBackgroundPath: validated.openBackgroundPath,
+        loginBoxWidthPercent: validated.loginBoxWidthPercent,
+        loginBoxHeightPercent: validated.loginBoxHeightPercent,
+        loginBoxPosXPercent: validated.loginBoxPosXPercent,
+        loginBoxPosYPercent: validated.loginBoxPosYPercent,
+        logoSizePercent: validated.logoSizePercent,
+        logoOffsetXPercent: validated.logoOffsetXPercent,
+        logoOffsetYPercent: validated.logoOffsetYPercent,
+        backgroundZoomPercent: validated.backgroundZoomPercent,
+        loginBoxMode: validated.loginBoxMode,
         updatedAt: now,
       };
 

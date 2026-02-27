@@ -205,6 +205,147 @@
               </div>
             </section>
 
+            <section class="appearance-layout-section">
+              <h3>Theme Layout</h3>
+              <p class="panel-note">100% equals the original default login box size. Minimum login box size is 20%.</p>
+              <label>Login Box Width
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxWidthPercent"
+                    name="loginBoxWidthPercent"
+                    type="range"
+                    min="20"
+                    max="100"
+                    step="1"
+                    value="100"
+                  />
+                  <span id="appearanceLoginBoxWidthValue" class="range-value">100%</span>
+                </div>
+              </label>
+              <label>Login Box Height
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxHeightPercent"
+                    name="loginBoxHeightPercent"
+                    type="range"
+                    min="20"
+                    max="100"
+                    step="1"
+                    value="100"
+                  />
+                  <span id="appearanceLoginBoxHeightValue" class="range-value">100%</span>
+                </div>
+              </label>
+              <label>Login Box Horizontal Position
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxPosXPercent"
+                    name="loginBoxPosXPercent"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="50"
+                  />
+                  <span id="appearanceLoginBoxPosXValue" class="range-value">50%</span>
+                </div>
+              </label>
+              <label>Login Box Vertical Position
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxPosYPercent"
+                    name="loginBoxPosYPercent"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="50"
+                  />
+                  <span id="appearanceLoginBoxPosYValue" class="range-value">50%</span>
+                </div>
+              </label>
+              <label>Logo Size
+                <div class="range-row">
+                  <input
+                    id="appearanceLogoSizePercent"
+                    name="logoSizePercent"
+                    type="range"
+                    min="30"
+                    max="100"
+                    step="1"
+                    value="30"
+                  />
+                  <span id="appearanceLogoSizeValue" class="range-value">30%</span>
+                </div>
+              </label>
+              <label>Logo Horizontal Position
+                <div class="range-row">
+                  <input
+                    id="appearanceLogoOffsetXPercent"
+                    name="logoOffsetXPercent"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="2"
+                  />
+                  <span id="appearanceLogoOffsetXValue" class="range-value">2%</span>
+                </div>
+              </label>
+              <label>Logo Vertical Position
+                <div class="range-row">
+                  <input
+                    id="appearanceLogoOffsetYPercent"
+                    name="logoOffsetYPercent"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="2"
+                  />
+                  <span id="appearanceLogoOffsetYValue" class="range-value">2%</span>
+                </div>
+              </label>
+              <label>Background Zoom
+                <div class="range-row">
+                  <input
+                    id="appearanceBackgroundZoomPercent"
+                    name="backgroundZoomPercent"
+                    type="range"
+                    min="50"
+                    max="200"
+                    step="1"
+                    value="100"
+                  />
+                  <span id="appearanceBackgroundZoomValue" class="range-value">100%</span>
+                </div>
+              </label>
+              <div class="mode-toggle-wrap">
+                <span class="mode-toggle-label">Login Box Mode</span>
+                <div class="mode-toggle" role="radiogroup" aria-label="Login box mode">
+                  <label class="mode-toggle-option">
+                    <input
+                      id="appearanceLoginBoxModeDark"
+                      type="radio"
+                      name="appearanceLoginBoxMode"
+                      value="dark"
+                      checked
+                    />
+                    <span>Dark (A)</span>
+                  </label>
+                  <label class="mode-toggle-option">
+                    <input
+                      id="appearanceLoginBoxModeLight"
+                      type="radio"
+                      name="appearanceLoginBoxMode"
+                      value="light"
+                    />
+                    <span>Light (B)</span>
+                  </label>
+                </div>
+              </div>
+            </section>
+
             <div class="button-row">
               <button id="appearanceSaveBtn" type="submit">Save Theme</button>
               <button id="appearanceRenameBtn" type="button">Rename Theme</button>

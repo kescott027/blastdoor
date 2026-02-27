@@ -12,6 +12,14 @@
   --shadow: 0 24px 80px rgba(2, 10, 26, 0.55);
   --font-title: "Copperplate", "Trajan Pro", "Palatino Linotype", serif;
   --font-body: "Eurostile", "Avenir Next", "Gill Sans", sans-serif;
+  --login-box-width-scale: 1;
+  --login-box-height-scale: 1;
+  --login-box-shift-x: 0vw;
+  --login-box-shift-y: 0vh;
+  --logo-size-scale: 1;
+  --logo-offset-x: 2vw;
+  --logo-offset-y: 2vh;
+  --background-zoom-scale: 1;
 }
 
 * {
@@ -48,7 +56,7 @@ body {
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  transform: scale(1.02);
+  transform: scale(calc(1.02 * var(--background-zoom-scale)));
   transition: opacity 1400ms ease, transform 1600ms ease;
 }
 
@@ -71,9 +79,9 @@ body {
 
 .brand-anchor {
   position: fixed;
-  top: 20px;
-  left: 20px;
-  z-index: 3;
+  top: var(--logo-offset-y);
+  left: var(--logo-offset-x);
+  z-index: 2;
   pointer-events: none;
 }
 
@@ -83,6 +91,8 @@ body {
   max-height: 120px;
   object-fit: contain;
   filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.45));
+  transform-origin: top left;
+  transform: scale(var(--logo-size-scale));
 }
 
 .brand-logo-fallback {
@@ -95,6 +105,8 @@ body {
   color: var(--accent-2);
   background: rgba(4, 12, 24, 0.72);
   box-shadow: 0 12px 40px rgba(2, 10, 26, 0.5);
+  transform-origin: top left;
+  transform: scale(var(--logo-size-scale));
 }
 
 .sky {
@@ -112,7 +124,7 @@ body {
 
 .shell {
   position: relative;
-  z-index: 2;
+  z-index: 4;
   min-height: 100vh;
   display: grid;
   place-items: center;
@@ -128,6 +140,15 @@ body {
   padding: 24px 24px;
   backdrop-filter: blur(8px);
   animation: panel-rise 700ms cubic-bezier(0.21, 1, 0.29, 1);
+  transform-origin: center center;
+  transform: translate(var(--login-box-shift-x), var(--login-box-shift-y))
+    scale(var(--login-box-width-scale), var(--login-box-height-scale));
+}
+
+body[data-login-box-mode="light"] .panel {
+  border-color: rgba(64, 118, 171, 0.46);
+  background: linear-gradient(180deg, rgba(241, 249, 255, 0.94), rgba(219, 236, 250, 0.88));
+  box-shadow: 0 24px 80px rgba(6, 24, 52, 0.38);
 }
 
 .eyebrow {
@@ -146,11 +167,22 @@ h1 {
   text-shadow: 0 0 32px rgba(107, 228, 255, 0.25);
 }
 
+body[data-login-box-mode="light"] h1 {
+  color: #12345b;
+  text-shadow: 0 0 16px rgba(87, 149, 212, 0.2);
+}
+
 .intro {
   margin: 0 0 16px;
   color: var(--muted);
   line-height: 1.45;
   font-size: 0.95rem;
+}
+
+body[data-login-box-mode="light"] .eyebrow,
+body[data-login-box-mode="light"] .intro,
+body[data-login-box-mode="light"] label {
+  color: #385a7f;
 }
 
 form {
@@ -176,10 +208,21 @@ input {
   transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
+body[data-login-box-mode="light"] input {
+  border-color: rgba(66, 118, 170, 0.38);
+  background: rgba(255, 255, 255, 0.94);
+  color: #143356;
+}
+
 input:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(107, 228, 255, 0.24);
+}
+
+body[data-login-box-mode="light"] input:focus {
+  border-color: #3f74ac;
+  box-shadow: 0 0 0 3px rgba(108, 160, 219, 0.26);
 }
 
 button {
@@ -194,6 +237,11 @@ button {
   box-shadow: 0 10px 24px rgba(8, 26, 54, 0.35);
   cursor: pointer;
   transition: transform 180ms ease, filter 180ms ease;
+}
+
+body[data-login-box-mode="light"] button {
+  color: #f8fbff;
+  background: linear-gradient(115deg, #1a4f89, #2a6ca9 55%, #3f84c3);
 }
 
 button:hover {
@@ -212,6 +260,12 @@ button:active {
   color: #ffc4be;
   border-radius: 10px;
   padding: 10px 12px;
+}
+
+body[data-login-box-mode="light"] .alert {
+  border-color: rgba(176, 86, 77, 0.38);
+  background: rgba(255, 237, 234, 0.85);
+  color: #8d2f26;
 }
 
 .success-panel {
@@ -243,12 +297,12 @@ body.auth-success .theme-bg-open {
 
 body.auth-success.auth-success-active .theme-bg-closed {
   opacity: 0;
-  transform: scale(1.05);
+  transform: scale(calc(1.05 * var(--background-zoom-scale)));
 }
 
 body.auth-success.auth-success-active .theme-bg-open {
   opacity: 1;
-  transform: scale(1);
+  transform: scale(calc(1 * var(--background-zoom-scale)));
 }
 
 @keyframes drift {
@@ -263,20 +317,17 @@ body.auth-success.auth-success-active .theme-bg-open {
 @keyframes panel-rise {
   from {
     opacity: 0;
-    transform: translateY(18px) scale(0.98);
+    transform: translate(var(--login-box-shift-x), calc(var(--login-box-shift-y) + 18px))
+      scale(calc(var(--login-box-width-scale) * 0.98), calc(var(--login-box-height-scale) * 0.98));
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate(var(--login-box-shift-x), var(--login-box-shift-y))
+      scale(var(--login-box-width-scale), var(--login-box-height-scale));
   }
 }
 
 @media (max-width: 540px) {
-  .brand-anchor {
-    top: 12px;
-    left: 12px;
-  }
-
   .brand-logo {
     max-width: min(40vw, 170px);
     max-height: 92px;
