@@ -240,10 +240,40 @@ body[data-login-box-mode="light"] input {
   color: #143356;
 }
 
+textarea {
+  width: 100%;
+  border: 1px solid rgba(134, 255, 207, 0.2);
+  background: rgba(5, 15, 31, 0.9);
+  color: var(--text);
+  border-radius: 11px;
+  padding: 12px 13px;
+  font-size: 0.95rem;
+  font-family: var(--font-body);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+  resize: vertical;
+}
+
+body[data-login-box-mode="light"] textarea {
+  border-color: rgba(66, 118, 170, 0.38);
+  background: rgba(255, 255, 255, 0.94);
+  color: #143356;
+}
+
 input:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(107, 228, 255, 0.24);
+}
+
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(107, 228, 255, 0.24);
+}
+
+body[data-login-box-mode="light"] textarea:focus {
+  border-color: #3f74ac;
+  box-shadow: 0 0 0 3px rgba(108, 160, 219, 0.26);
 }
 
 body[data-login-box-mode="light"] input:focus {
@@ -303,6 +333,13 @@ body[data-login-box-mode="light"] .alert {
   margin-bottom: 1rem;
 }
 
+.success-links {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
 .continue-link {
   color: var(--accent-2);
   text-decoration: none;
@@ -329,6 +366,36 @@ body.auth-success.auth-success-active .theme-bg-closed {
 body.auth-success.auth-success-active .theme-bg-open {
   opacity: 1;
   transform: scale(calc(1 * var(--background-zoom-scale)));
+}
+
+.account-shell {
+  padding: 26px;
+}
+
+.account-panel {
+  width: min(920px, 100%);
+}
+
+.account-panel h2 {
+  margin: 8px 0 8px;
+  font-family: var(--font-title);
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  color: var(--accent-2);
+}
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.account-message-panel {
+  margin-top: 14px;
+}
+
+body[data-login-box-mode="light"] .account-panel h2 {
+  color: #2f5c8c;
 }
 
 @keyframes drift {
@@ -362,6 +429,10 @@ body.auth-success.auth-success-active .theme-bg-open {
   .panel {
     border-radius: 14px;
     padding: 22px 18px;
+  }
+
+  .account-grid {
+    grid-template-columns: 1fr;
   }
 
   h1 {

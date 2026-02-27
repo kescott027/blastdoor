@@ -1184,7 +1184,7 @@ test("manager user management supports create update filters and token actions",
       });
       assert.equal(tempCode.status, 200);
       assert.match(String(tempCode.body.code || ""), /[A-Za-z0-9_-]{8,}/);
-      assert.match(String(tempCode.body.warning || ""), /email dispatch is not configured/i);
+      assert.match(String(tempCode.body.warning || ""), /email dispatch unavailable/i);
 
       const invalidated = await request(port, {
         method: "POST",
@@ -1261,6 +1261,86 @@ test("manager user management rejects malformed email input", async () => {
       });
       assert.equal(created.status, 400);
       assert.match(String(created.body.error || ""), /email must be valid/i);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager reset login code reports sent email when provider is configured", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const passwordStoreFile = path.join(workspaceDir, "mock", "password-store.json");
+    await fs.mkdir(path.dirname(passwordStoreFile), { recursive: true });
+    await fs.writeFile(
+      passwordStoreFile,
+      JSON.stringify(
+        {
+          users: [{ username: "gm", passwordHash: "scrypt$seed$hash", disabled: false }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=file",
+        `PASSWORD_STORE_FILE=${passwordStoreFile}`,
+        "AUTH_USERNAME=",
+        "AUTH_PASSWORD_HASH=",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "SESSION_MAX_AGE_HOURS=12",
+        "REQUIRE_TOTP=false",
+        "EMAIL_PROVIDER=console",
+        "EMAIL_FROM=blastdoor@example.test",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/users/create",
+        body: {
+          username: "pilot-mail",
+          password: "Correct Horse Battery Staple 123!",
+          friendlyName: "Pilot Mail",
+          email: "pilot-mail@example.test",
+          status: "active",
+          displayInfo: "",
+          notes: "",
+        },
+      });
+      assert.equal(created.status, 200);
+
+      const tempCode = await request(port, {
+        method: "POST",
+        pathname: "/api/users/reset-login-code",
+        body: {
+          username: "pilot-mail",
+          delivery: "email",
+        },
+      });
+      assert.equal(tempCode.status, 200);
+      assert.equal(tempCode.body.emailSent, true);
+      assert.equal(tempCode.body.emailTo, "pilot-mail@example.test");
+      assert.equal(String(tempCode.body.warning || ""), "");
     } finally {
       await closeServer(server);
     }
