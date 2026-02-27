@@ -268,6 +268,10 @@ test("manager lock toggle restarts a running managed gateway immediately", async
       assert.equal(created[0].killed, true);
       assert.equal(created.length, 2);
 
+      const runtimeStatePath = path.join(workspaceDir, "data", "runtime-state.json");
+      const runtimeStateRaw = await fs.readFile(runtimeStatePath, "utf8");
+      assert.match(runtimeStateRaw, /"blastDoorsClosed": true/);
+
       const monitor = await request(port, { pathname: "/api/monitor" });
       assert.equal(monitor.status, 200);
       assert.equal(monitor.body.status.running, true);

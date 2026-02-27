@@ -10,6 +10,7 @@ import { once } from "node:events";
 import { authenticator } from "otplib";
 import { createServer } from "../src/server.js";
 import { BlastdoorDatabase, BlastdoorPostgresDatabase } from "../src/database-store.js";
+import { writeBlastDoorsState } from "../src/blastdoors-state.js";
 import { createPasswordHash } from "../src/security.js";
 import { createMockPostgresPoolFactory } from "./helpers/mock-postgres.js";
 
@@ -184,6 +185,7 @@ async function startGateway({
   blastDoorsClosed = false,
   graphicsDir = "",
   themeStorePath = "",
+  runtimeStatePath = "",
 }) {
   const password = "Correct Horse Battery Staple 123!";
   const authUsername = "gm";
@@ -220,6 +222,7 @@ async function startGateway({
       postgresPoolFactory,
       graphicsDir: graphicsDir || undefined,
       themeStorePath: themeStorePath || undefined,
+      runtimeStatePath: runtimeStatePath || undefined,
     },
   );
 
@@ -715,6 +718,40 @@ test("login page renders active theme assets and success transition uses open ba
     assertTransitionResponse(login, "/theme-world");
     assert.match(login.body, /auth-success-active/);
     assert.match(login.body, /\/graphics\/background\/test-open\.png/);
+  });
+});
+
+test("runtime blast doors state file toggles lock mode without service restart", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const runtimeStatePath = path.join(tempDir, "runtime-state.json");
+    const gateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      blastDoorsClosed: false,
+      runtimeStatePath,
+    });
+
+    t.after(async () => {
+      await closeServer(gateway.server);
+      await closeServer(target.server);
+    });
+
+    const initial = await request(gateway.port, { path: "/login", headers: { accept: "text/html" } });
+    assert.equal(initial.status, 200);
+
+    await writeBlastDoorsState(runtimeStatePath, true);
+    await new Promise((resolve) => setTimeout(resolve, 320));
+
+    const locked = await request(gateway.port, { path: "/login", headers: { accept: "text/html" } });
+    assert.equal(locked.status, 503);
+    assert.equal(locked.headers["x-blastdoors-state"], "locked");
+
+    await writeBlastDoorsState(runtimeStatePath, false);
+    await new Promise((resolve) => setTimeout(resolve, 320));
+
+    const unlocked = await request(gateway.port, { path: "/login", headers: { accept: "text/html" } });
+    assert.equal(unlocked.status, 200);
   });
 });
 

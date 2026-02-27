@@ -21,6 +21,7 @@ import { createLogger } from "./logger.js";
 import { createConfigStore } from "./config-store.js";
 import { createPasswordStore } from "./password-store.js";
 import { mapThemeForClient, readThemeStore, resolveActiveTheme } from "./login-theme.js";
+import { createBlastDoorsStateController } from "./blastdoors-state.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -374,6 +375,30 @@ export function createApp(config, options = {}) {
   const publicDir = options.publicDir || path.join(__dirname, "..", "public");
   const graphicsDir = options.graphicsDir || path.join(__dirname, "..", "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
+  const runtimeStatePath = options.runtimeStatePath || path.join(process.cwd(), "data", "runtime-state.json");
+  const blastDoorsStateController =
+    options.blastDoorsStateController ||
+    createBlastDoorsStateController({
+      filePath: runtimeStatePath,
+      fallback: Boolean(config.blastDoorsClosed),
+      onReadError: (error) => {
+        logger.warn("blastdoors.state_read_failed", {
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+          runtimeStatePath,
+        });
+      },
+    });
+
+  void blastDoorsStateController.setClosed(Boolean(config.blastDoorsClosed)).catch((error) => {
+    logger.warn("blastdoors.state_write_failed", {
+      error: {
+        message: error instanceof Error ? error.message : String(error),
+      },
+      runtimeStatePath,
+    });
+  });
 
   async function resolveLoginTheme() {
     try {
@@ -449,10 +474,10 @@ export function createApp(config, options = {}) {
     next();
   });
 
-  app.use((req, res, next) => {
-    if (!config.blastDoorsClosed) {
-      next();
-      return;
+  app.use(async (req, res, next) => {
+    const doorsClosed = await blastDoorsStateController.getClosed();
+    if (!doorsClosed) {
+      return next();
     }
 
     if (logger.debugEnabled) {
@@ -754,7 +779,7 @@ export function createApp(config, options = {}) {
   app.use(authGuard);
   app.use("/", proxy);
 
-  return { app, proxy, sessionMiddleware, passwordStore };
+  return { app, proxy, sessionMiddleware, passwordStore, blastDoorsStateController, runtimeStatePath };
 }
 
 export function attachWebsocketAuth(
@@ -765,75 +790,98 @@ export function attachWebsocketAuth(
   options = {},
 ) {
   server.on("upgrade", (req, socket, head) => {
-    if (options.blastDoorsClosed) {
-      if (logger.debugEnabled) {
-        logger.warn("blastdoors.closed_websocket_block", {
-          path: req.url || "/",
-          host: req.headers.host || null,
-          origin: req.headers.origin || null,
-        });
-      }
-
-      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-
-    const url = req.url || "/";
-    if (url.startsWith("/assets") || url.startsWith("/login") || url.startsWith("/healthz")) {
-      socket.destroy();
-      return;
-    }
-
-    const denyUpgrade = () => {
-      if (logger.debugEnabled) {
-        logger.warn("proxy.websocket_unauthorized", {
-          path: url,
-          host: req.headers.host || null,
-          origin: req.headers.origin || null,
-          forwardedProto: req.headers["x-forwarded-proto"] || null,
-        });
-      }
-
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      socket.destroy();
-    };
-
-    const fakeRes = {
-      getHeader() {
-        return undefined;
-      },
-      setHeader() {},
-      end() {},
-      writeHead() {},
-    };
-
-    try {
-      sessionMiddleware(req, fakeRes, () => {
-        if (!req.session?.authenticated) {
-          denyUpgrade();
-          return;
+    void (async () => {
+      let doorsClosed = Boolean(options.blastDoorsClosed);
+      if (typeof options.isBlastDoorsClosed === "function") {
+        try {
+          doorsClosed = Boolean(await options.isBlastDoorsClosed());
+        } catch (error) {
+          logger.warn("blastdoors.websocket_state_read_failed", {
+            error: {
+              message: error instanceof Error ? error.message : String(error),
+            },
+          });
         }
+      }
 
+      if (doorsClosed) {
         if (logger.debugEnabled) {
-          logger.debug("proxy.websocket_authorized", {
-            path: url,
+          logger.warn("blastdoors.closed_websocket_block", {
+            path: req.url || "/",
             host: req.headers.host || null,
             origin: req.headers.origin || null,
           });
         }
 
-        proxy.upgrade(req, socket, head);
-      });
-    } catch (error) {
-      logger.error("proxy.websocket_upgrade_error", {
-        path: url,
+        socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      const url = req.url || "/";
+      if (url.startsWith("/assets") || url.startsWith("/login") || url.startsWith("/healthz")) {
+        socket.destroy();
+        return;
+      }
+
+      const denyUpgrade = () => {
+        if (logger.debugEnabled) {
+          logger.warn("proxy.websocket_unauthorized", {
+            path: url,
+            host: req.headers.host || null,
+            origin: req.headers.origin || null,
+            forwardedProto: req.headers["x-forwarded-proto"] || null,
+          });
+        }
+
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+      };
+
+      const fakeRes = {
+        getHeader() {
+          return undefined;
+        },
+        setHeader() {},
+        end() {},
+        writeHead() {},
+      };
+
+      try {
+        sessionMiddleware(req, fakeRes, () => {
+          if (!req.session?.authenticated) {
+            denyUpgrade();
+            return;
+          }
+
+          if (logger.debugEnabled) {
+            logger.debug("proxy.websocket_authorized", {
+              path: url,
+              host: req.headers.host || null,
+              origin: req.headers.origin || null,
+            });
+          }
+
+          proxy.upgrade(req, socket, head);
+        });
+      } catch (error) {
+        logger.error("proxy.websocket_upgrade_error", {
+          path: url,
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+        denyUpgrade();
+      }
+    })().catch((error) => {
+      logger.error("proxy.websocket_state_handler_error", {
         error: {
           message: error instanceof Error ? error.message : String(error),
         },
       });
-      denyUpgrade();
-    }
+      socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+      socket.destroy();
+    });
   });
 }
 
@@ -843,7 +891,10 @@ export function createServer(config, options = {}) {
     logFile: config.debugLogFile || "logs/blastdoor-debug.log",
   });
 
-  const { app, proxy, sessionMiddleware, passwordStore } = createApp(config, { ...options, logger });
+  const { app, proxy, sessionMiddleware, passwordStore, blastDoorsStateController, runtimeStatePath } = createApp(
+    config,
+    { ...options, logger },
+  );
   const configStore = options.configStore || createConfigStore(config, options);
 
   void persistConfigSnapshot(config, configStore, logger);
@@ -869,6 +920,7 @@ export function createServer(config, options = {}) {
           : false,
       allowNullOrigin: Boolean(config.allowNullOrigin),
       blastDoorsClosed: Boolean(config.blastDoorsClosed),
+      runtimeStatePath,
       debugMode: Boolean(config.debugMode),
       debugLogFile: config.debugLogFile || null,
     });
@@ -876,6 +928,7 @@ export function createServer(config, options = {}) {
 
   attachWebsocketAuth(server, sessionMiddleware, proxy, logger, {
     blastDoorsClosed: Boolean(config.blastDoorsClosed),
+    isBlastDoorsClosed: () => blastDoorsStateController.getClosed(),
   });
   server.on("close", () => {
     if (typeof passwordStore?.close === "function") {

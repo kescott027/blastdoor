@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createPasswordHash } from "./security.js";
 import { validateConfig, loadConfigFromEnv } from "./server.js";
+import { writeBlastDoorsState } from "./blastdoors-state.js";
 import {
   createThemeId,
   listThemeAssets,
@@ -825,6 +826,7 @@ function createTroubleshootReport({ config, health, environment, serviceStatus }
 export function createManagerApp(options = {}) {
   const workspaceDir = path.resolve(options.workspaceDir || path.join(__dirname, ".."));
   const envPath = options.envPath || path.join(workspaceDir, ".env");
+  const runtimeStatePath = options.runtimeStatePath || path.join(workspaceDir, "data", "runtime-state.json");
   const managerDir = options.managerDir || path.join(workspaceDir, "public", "manager");
   const graphicsDir = options.graphicsDir || path.join(workspaceDir, "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
@@ -886,6 +888,7 @@ export function createManagerApp(options = {}) {
 
       validateConfig(loadConfigFromEnv({ ...incoming }));
       await writeEnvConfig(envPath, incoming);
+      await writeBlastDoorsState(runtimeStatePath, parseBooleanLike(incoming.BLAST_DOORS_CLOSED, false));
 
       const blastDoorsChanged =
         normalizeString(existing.BLAST_DOORS_CLOSED, CONFIG_DEFAULTS.BLAST_DOORS_CLOSED) !==
