@@ -88,6 +88,14 @@ export class PasswordStore {
   async getUserByUsername() {
     throw new Error("getUserByUsername is not implemented.");
   }
+
+  async listUsers() {
+    throw new Error("listUsers is not implemented.");
+  }
+
+  async upsertUser() {
+    throw new Error("upsertUser is not implemented.");
+  }
 }
 
 export class EnvPasswordStore extends PasswordStore {
@@ -113,6 +121,25 @@ export class EnvPasswordStore extends PasswordStore {
       totpSecret: this.totpSecret,
       disabled: false,
     };
+  }
+
+  async listUsers() {
+    if (!this.authUsername || !this.authPasswordHash) {
+      return [];
+    }
+
+    return [
+      {
+        username: this.authUsername,
+        passwordHash: this.authPasswordHash,
+        totpSecret: this.totpSecret,
+        disabled: false,
+      },
+    ];
+  }
+
+  async upsertUser() {
+    throw new Error("PASSWORD_STORE_MODE=env is read-only in the admin user manager.");
   }
 }
 
@@ -145,7 +172,34 @@ export class FilePasswordStore extends PasswordStore {
     return null;
   }
 
-  async readUsers() {
+  async listUsers() {
+    return this.readUsers({ allowEmpty: true });
+  }
+
+  async upsertUser({ username, passwordHash, totpSecret = null, disabled = false }) {
+    const normalized = normalizeUserEntry({ username, passwordHash, totpSecret, disabled });
+    if (!normalized) {
+      throw new Error("username and passwordHash are required.");
+    }
+
+    const users = await this.readUsers({ allowEmpty: true });
+    const nextUsers = [...users];
+    const existingIndex = nextUsers.findIndex((entry) => safeEqual(entry.username, normalized.username));
+    if (existingIndex >= 0) {
+      nextUsers[existingIndex] = {
+        ...nextUsers[existingIndex],
+        ...normalized,
+      };
+    } else {
+      nextUsers.push(normalized);
+    }
+
+    await this.writeUsers(nextUsers);
+    return normalized;
+  }
+
+  async readUsers(options = {}) {
+    const allowEmpty = options.allowEmpty === true;
     let raw;
     try {
       raw = await fs.readFile(this.filePath, "utf8");
@@ -161,11 +215,25 @@ export class FilePasswordStore extends PasswordStore {
     }
 
     const users = normalizeUsersFromFilePayload(parsed);
-    if (users.length === 0) {
+    if (users.length === 0 && !allowEmpty) {
       throw new Error("Password store file contains no valid users.");
     }
 
     return users;
+  }
+
+  async writeUsers(users) {
+    const output = {
+      users: users.map((entry) => ({
+        username: entry.username,
+        passwordHash: entry.passwordHash,
+        totpSecret: entry.totpSecret || "",
+        disabled: entry.disabled === true,
+      })),
+    };
+    const serialized = `${JSON.stringify(output, null, 2)}\n`;
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    await fs.writeFile(this.filePath, serialized, "utf8");
   }
 }
 
@@ -192,6 +260,15 @@ export class SqlitePasswordStore extends PasswordStore {
     }
 
     return user;
+  }
+
+  async listUsers() {
+    return this.database.listUsers();
+  }
+
+  async upsertUser({ username, passwordHash, totpSecret = null, disabled = false }) {
+    this.database.upsertUser({ username, passwordHash, totpSecret, disabled });
+    return this.database.getUser(username);
   }
 
   close() {
@@ -226,6 +303,15 @@ export class PostgresPasswordStore extends PasswordStore {
     }
 
     return user;
+  }
+
+  async listUsers() {
+    return this.database.listUsers();
+  }
+
+  async upsertUser({ username, passwordHash, totpSecret = null, disabled = false }) {
+    await this.database.upsertUser({ username, passwordHash, totpSecret, disabled });
+    return this.database.getUser(username);
   }
 
   async close() {

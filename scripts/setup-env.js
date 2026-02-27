@@ -36,6 +36,15 @@ const defaults = {
   PROXY_TLS_VERIFY: "true",
   ALLOWED_ORIGINS: "",
   ALLOW_NULL_ORIGIN: "false",
+  GRAPHICS_CACHE_ENABLED: "true",
+  BLASTDOOR_API_URL: "",
+  BLASTDOOR_API_TOKEN: "",
+  BLASTDOOR_API_TIMEOUT_MS: "2500",
+  BLASTDOOR_API_RETRY_MAX_ATTEMPTS: "3",
+  BLASTDOOR_API_RETRY_BASE_DELAY_MS: "120",
+  BLASTDOOR_API_RETRY_MAX_DELAY_MS: "1200",
+  BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD: "5",
+  BLASTDOOR_API_CIRCUIT_RESET_MS: "10000",
   DEBUG_MODE: "false",
   DEBUG_LOG_FILE: "logs/blastdoor-debug.log",
 };
@@ -661,6 +670,42 @@ async function main() {
       await prompt(rl, "ALLOW_NULL_ORIGIN", defaults.ALLOW_NULL_ORIGIN),
       defaults.ALLOW_NULL_ORIGIN,
     );
+    config.GRAPHICS_CACHE_ENABLED = normalizeBoolean(
+      await prompt(rl, "GRAPHICS_CACHE_ENABLED", defaults.GRAPHICS_CACHE_ENABLED),
+      defaults.GRAPHICS_CACHE_ENABLED,
+    );
+    config.BLASTDOOR_API_URL = await prompt(rl, "BLASTDOOR_API_URL", defaults.BLASTDOOR_API_URL);
+    config.BLASTDOOR_API_TOKEN = await prompt(rl, "BLASTDOOR_API_TOKEN", defaults.BLASTDOOR_API_TOKEN);
+    config.BLASTDOOR_API_TIMEOUT_MS = await prompt(
+      rl,
+      "BLASTDOOR_API_TIMEOUT_MS",
+      defaults.BLASTDOOR_API_TIMEOUT_MS,
+    );
+    config.BLASTDOOR_API_RETRY_MAX_ATTEMPTS = await prompt(
+      rl,
+      "BLASTDOOR_API_RETRY_MAX_ATTEMPTS",
+      defaults.BLASTDOOR_API_RETRY_MAX_ATTEMPTS,
+    );
+    config.BLASTDOOR_API_RETRY_BASE_DELAY_MS = await prompt(
+      rl,
+      "BLASTDOOR_API_RETRY_BASE_DELAY_MS",
+      defaults.BLASTDOOR_API_RETRY_BASE_DELAY_MS,
+    );
+    config.BLASTDOOR_API_RETRY_MAX_DELAY_MS = await prompt(
+      rl,
+      "BLASTDOOR_API_RETRY_MAX_DELAY_MS",
+      defaults.BLASTDOOR_API_RETRY_MAX_DELAY_MS,
+    );
+    config.BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD = await prompt(
+      rl,
+      "BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD",
+      defaults.BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD,
+    );
+    config.BLASTDOOR_API_CIRCUIT_RESET_MS = await prompt(
+      rl,
+      "BLASTDOOR_API_CIRCUIT_RESET_MS",
+      defaults.BLASTDOOR_API_CIRCUIT_RESET_MS,
+    );
     config.DEBUG_MODE = normalizeBoolean(await prompt(rl, "DEBUG_MODE", defaults.DEBUG_MODE), defaults.DEBUG_MODE);
     config.DEBUG_LOG_FILE = await prompt(rl, "DEBUG_LOG_FILE", defaults.DEBUG_LOG_FILE);
 
@@ -694,6 +739,15 @@ async function main() {
       `PROXY_TLS_VERIFY=${formatEnvValue(config.PROXY_TLS_VERIFY)}`,
       `ALLOWED_ORIGINS=${formatEnvValue(config.ALLOWED_ORIGINS)}`,
       `ALLOW_NULL_ORIGIN=${formatEnvValue(config.ALLOW_NULL_ORIGIN)}`,
+      `GRAPHICS_CACHE_ENABLED=${formatEnvValue(config.GRAPHICS_CACHE_ENABLED)}`,
+      `BLASTDOOR_API_URL=${formatEnvValue(config.BLASTDOOR_API_URL)}`,
+      `BLASTDOOR_API_TOKEN=${formatEnvValue(config.BLASTDOOR_API_TOKEN)}`,
+      `BLASTDOOR_API_TIMEOUT_MS=${formatEnvValue(config.BLASTDOOR_API_TIMEOUT_MS)}`,
+      `BLASTDOOR_API_RETRY_MAX_ATTEMPTS=${formatEnvValue(config.BLASTDOOR_API_RETRY_MAX_ATTEMPTS)}`,
+      `BLASTDOOR_API_RETRY_BASE_DELAY_MS=${formatEnvValue(config.BLASTDOOR_API_RETRY_BASE_DELAY_MS)}`,
+      `BLASTDOOR_API_RETRY_MAX_DELAY_MS=${formatEnvValue(config.BLASTDOOR_API_RETRY_MAX_DELAY_MS)}`,
+      `BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD=${formatEnvValue(config.BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD)}`,
+      `BLASTDOOR_API_CIRCUIT_RESET_MS=${formatEnvValue(config.BLASTDOOR_API_CIRCUIT_RESET_MS)}`,
       "",
       `DEBUG_MODE=${formatEnvValue(config.DEBUG_MODE)}`,
       `DEBUG_LOG_FILE=${formatEnvValue(config.DEBUG_LOG_FILE)}`,

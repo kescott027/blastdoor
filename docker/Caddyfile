@@ -1,0 +1,10 @@
+{
+  email {$LETSENCRYPT_EMAIL}
+}
+
+{$BLASTDOOR_DOMAIN} {
+  encode zstd gzip
+
+  # Blastdoor handles auth/session logic; Caddy provides TLS termination.
+  reverse_proxy blastdoor:8080
+}

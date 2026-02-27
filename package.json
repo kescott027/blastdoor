@@ -6,14 +6,18 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
+    "api": "node src/api-server.js",
     "manager": "node src/manager.js",
     "dev": "node --watch src/server.js",
     "hash-password": "node scripts/hash-password.js",
     "gen-secret": "node scripts/gen-secret.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "check": "npm run lint && npm test",
+    "check": "npm run lint && npm run test:coverage",
     "test": "node --test",
+    "test:coverage": "c8 --reporter=text-summary --reporter=lcov --check-coverage --lines 70 --functions 70 --branches 55 --statements 70 node --test",
+    "test:integration": "playwright test -c playwright.config.js",
+    "test:integration:ci": "playwright test -c playwright.config.js",
     "prepare": "husky"
   },
   "engines": {
@@ -31,6 +35,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.58.2",
+    "c8": "^11.0.0",
     "eslint": "^10.0.2",
     "globals": "^17.3.0",
     "husky": "^9.1.7"

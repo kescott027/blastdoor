@@ -32,7 +32,10 @@
           <button id="restartBtn" type="button">Restart</button>
           <button id="revokeSessionsBtn" type="button">Revoke Sessions</button>
           <button id="refreshBtn" type="button">Refresh</button>
+          <button id="openPortalBtn" type="button">Open Portal</button>
           <button id="appearanceBtn" type="button">Login Appearance</button>
+          <button id="tlsBtn" type="button">Manage TLS</button>
+          <button id="userMgmtBtn" type="button">User Management</button>
         </div>
         <dl class="stats">
           <div><dt>Running</dt><dd id="runningValue">No</dd></div>
@@ -70,6 +73,15 @@
             <label>PROXY_TLS_VERIFY <input name="PROXY_TLS_VERIFY" /></label>
             <label>ALLOWED_ORIGINS <input name="ALLOWED_ORIGINS" /></label>
             <label>ALLOW_NULL_ORIGIN <input name="ALLOW_NULL_ORIGIN" /></label>
+            <label>GRAPHICS_CACHE_ENABLED <input name="GRAPHICS_CACHE_ENABLED" /></label>
+            <label>BLASTDOOR_API_URL <input name="BLASTDOOR_API_URL" /></label>
+            <label>BLASTDOOR_API_TOKEN <input name="BLASTDOOR_API_TOKEN" type="password" /></label>
+            <label>BLASTDOOR_API_TIMEOUT_MS <input name="BLASTDOOR_API_TIMEOUT_MS" /></label>
+            <label>BLASTDOOR_API_RETRY_MAX_ATTEMPTS <input name="BLASTDOOR_API_RETRY_MAX_ATTEMPTS" /></label>
+            <label>BLASTDOOR_API_RETRY_BASE_DELAY_MS <input name="BLASTDOOR_API_RETRY_BASE_DELAY_MS" /></label>
+            <label>BLASTDOOR_API_RETRY_MAX_DELAY_MS <input name="BLASTDOOR_API_RETRY_MAX_DELAY_MS" /></label>
+            <label>BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD <input name="BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD" /></label>
+            <label>BLASTDOOR_API_CIRCUIT_RESET_MS <input name="BLASTDOOR_API_CIRCUIT_RESET_MS" /></label>
             <label>DEBUG_MODE <input name="DEBUG_MODE" /></label>
             <label>DEBUG_LOG_FILE <input name="DEBUG_LOG_FILE" /></label>
           </div>
@@ -381,6 +393,170 @@
               <button id="appearanceCancelBtn" type="button" class="ghost-btn">Cancel</button>
             </div>
           </form>
+        </section>
+      </section>
+    </aside>
+
+    <aside
+      id="tlsModal"
+      class="tls-dock hidden"
+      hidden
+      role="region"
+      aria-labelledby="tlsTitle"
+    >
+      <section class="tls-dock-panel">
+        <header class="tls-dock-header">
+          <h2 id="tlsTitle">TLS Management (Let's Encrypt)</h2>
+          <button id="tlsCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          Configure TLS settings and generate a guided Let's Encrypt setup plan.
+        </p>
+        <p class="status-message" id="tlsStatusMessage"></p>
+
+        <form id="tlsForm">
+          <div class="appearance-grid">
+            <label class="checkbox-label">
+              <input id="tlsEnabled" name="tlsEnabled" type="checkbox" />
+              Enable TLS in Blastdoor
+            </label>
+            <label>Domain
+              <input id="tlsDomain" name="tlsDomain" placeholder="vtt.example.com" />
+            </label>
+            <label>Email
+              <input id="tlsEmail" name="tlsEmail" type="email" placeholder="admin@example.com" />
+            </label>
+            <label>Challenge Method
+              <select id="tlsChallengeMethod" name="tlsChallengeMethod">
+                <option value="webroot">webroot</option>
+                <option value="standalone">standalone</option>
+              </select>
+            </label>
+            <label>Webroot Path
+              <input id="tlsWebrootPath" name="tlsWebrootPath" placeholder="/var/www/html" />
+            </label>
+            <label>Certificate File
+              <input id="tlsCertFile" name="tlsCertFile" placeholder="/etc/letsencrypt/live/DOMAIN/fullchain.pem" />
+            </label>
+            <label>Key File
+              <input id="tlsKeyFile" name="tlsKeyFile" placeholder="/etc/letsencrypt/live/DOMAIN/privkey.pem" />
+            </label>
+            <label>CA File (optional)
+              <input id="tlsCaFile" name="tlsCaFile" placeholder="/etc/letsencrypt/live/DOMAIN/chain.pem" />
+            </label>
+            <label>TLS Key Passphrase (optional)
+              <input id="tlsPassphrase" name="tlsPassphrase" type="password" autocomplete="new-password" />
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button id="tlsDetectBtn" type="button">Detect TLS Environment</button>
+            <button id="tlsPlanBtn" type="button">Generate Let's Encrypt Plan</button>
+            <button id="tlsCopyPlanBtn" type="button">Copy Plan</button>
+            <button id="tlsSaveBtn" type="submit">Save TLS Config</button>
+          </div>
+        </form>
+
+        <h3>Detection</h3>
+        <pre id="tlsDetectionOutput" class="log-box"></pre>
+        <h3>Let's Encrypt Plan</h3>
+        <pre id="tlsPlanOutput" class="log-box"></pre>
+      </section>
+    </aside>
+
+    <aside
+      id="userModal"
+      class="user-dock hidden"
+      hidden
+      role="region"
+      aria-labelledby="userMgmtTitle"
+    >
+      <section class="user-dock-panel">
+        <header class="user-dock-header">
+          <h2 id="userMgmtTitle">User Management</h2>
+          <button id="userCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          Create and manage Blastdoor users. Sensitive credential material is never shown after save.
+        </p>
+        <p class="status-message" id="userStatusMessage"></p>
+
+        <fieldset class="user-filter-row">
+          <legend>View</legend>
+          <label><input type="radio" name="userFilter" value="active" checked /> Active</label>
+          <label><input type="radio" name="userFilter" value="inactive" /> Inactive</label>
+          <label><input type="radio" name="userFilter" value="authenticated" /> Authenticated Now</label>
+          <label><input type="radio" name="userFilter" value="all" /> All</label>
+        </fieldset>
+
+        <div class="button-row">
+          <button id="userRefreshBtn" type="button">Refresh Users</button>
+          <button id="userNewBtn" type="button">New User</button>
+        </div>
+
+        <div class="user-list-wrap">
+          <table class="user-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Status</th>
+                <th>Last Login</th>
+                <th>Last IP</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="userTableBody"></tbody>
+          </table>
+        </div>
+
+        <section class="user-editor">
+          <h3 id="userEditorHeading">Add New User</h3>
+          <form id="userForm">
+            <div class="appearance-grid">
+              <label>Friendly Name
+                <input id="userFriendlyName" name="friendlyName" />
+              </label>
+              <label>Username
+                <input id="userUsername" name="username" required />
+              </label>
+              <label>Email
+                <input id="userEmail" name="email" type="email" />
+              </label>
+              <label>Password (required for new user)
+                <input id="userPassword" name="password" type="password" autocomplete="new-password" />
+              </label>
+              <label>Status
+                <select id="userStatus" name="status">
+                  <option value="active">Active</option>
+                  <option value="deactivated">Deactivated</option>
+                  <option value="banned">Banned</option>
+                </select>
+              </label>
+              <label>Last Login
+                <input id="userLastLoginAt" readonly />
+              </label>
+              <label>Last Known IP
+                <input id="userLastKnownIp" readonly />
+              </label>
+            </div>
+            <label>Display Info
+              <textarea id="userDisplayInfo" name="displayInfo" rows="2"></textarea>
+            </label>
+            <label>Notes
+              <textarea id="userNotes" name="notes" rows="3"></textarea>
+            </label>
+
+            <div class="button-row">
+              <button id="userSaveBtn" type="submit">Save User</button>
+              <button id="userResetCodeBtn" type="button">Reset Login / Temp Code</button>
+              <button id="userInvalidateBtn" type="button">Invalidate Login Token</button>
+              <button id="userBanReinstateBtn" type="button">Ban / Reinstate</button>
+              <button id="userCancelBtn" type="button" class="ghost-btn">Cancel</button>
+            </div>
+          </form>
+          <pre id="userTempCodeBox" class="log-box user-tempcode"></pre>
         </section>
       </section>
     </aside>

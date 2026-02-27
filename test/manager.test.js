@@ -1073,6 +1073,343 @@ test("manager remains accessible when blast doors are closed", async () => {
   });
 });
 
+test("manager user management supports create update filters and token actions", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const passwordStoreFile = path.join(workspaceDir, "mock", "password-store.json");
+    await fs.mkdir(path.dirname(passwordStoreFile), { recursive: true });
+    await fs.writeFile(
+      passwordStoreFile,
+      JSON.stringify(
+        {
+          users: [{ username: "gm", passwordHash: "scrypt$seed$hash", disabled: false }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=file",
+        `PASSWORD_STORE_FILE=${passwordStoreFile}`,
+        "AUTH_USERNAME=",
+        "AUTH_PASSWORD_HASH=",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "SESSION_MAX_AGE_HOURS=12",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const initial = await request(port, { pathname: "/api/users?view=all" });
+      assert.equal(initial.status, 200);
+      assert.equal(initial.body.users.length, 1);
+      assert.equal(initial.body.users[0].username, "gm");
+
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/users/create",
+        body: {
+          username: "pilot-1",
+          password: "Correct Horse Battery Staple 123!",
+          friendlyName: "Pilot One",
+          email: "pilot@example.test",
+          status: "active",
+          displayInfo: "Frontline scout",
+          notes: "Created from manager integration test",
+        },
+      });
+      assert.equal(created.status, 200);
+      assert.equal(created.body.ok, true);
+      assert.equal(created.body.user.username, "pilot-1");
+      assert.equal(created.body.user.status, "active");
+
+      const updated = await request(port, {
+        method: "POST",
+        pathname: "/api/users/update",
+        body: {
+          username: "pilot-1",
+          password: "",
+          friendlyName: "Pilot Prime",
+          email: "pilot-prime@example.test",
+          status: "deactivated",
+          displayInfo: "Grounded",
+          notes: "Temporarily disabled",
+        },
+      });
+      assert.equal(updated.status, 200);
+      assert.equal(updated.body.user.status, "deactivated");
+      assert.equal(updated.body.user.friendlyName, "Pilot Prime");
+
+      const inactive = await request(port, { pathname: "/api/users?view=inactive" });
+      assert.equal(inactive.status, 200);
+      assert.equal(inactive.body.users.some((entry) => entry.username === "pilot-1"), true);
+
+      const reinstated = await request(port, {
+        method: "POST",
+        pathname: "/api/users/set-status",
+        body: {
+          username: "pilot-1",
+          status: "active",
+        },
+      });
+      assert.equal(reinstated.status, 200);
+      assert.equal(reinstated.body.user.status, "active");
+
+      const tempCode = await request(port, {
+        method: "POST",
+        pathname: "/api/users/reset-login-code",
+        body: {
+          username: "pilot-1",
+          delivery: "email",
+          ttlMinutes: 15,
+        },
+      });
+      assert.equal(tempCode.status, 200);
+      assert.match(String(tempCode.body.code || ""), /[A-Za-z0-9_-]{8,}/);
+      assert.match(String(tempCode.body.warning || ""), /email dispatch is not configured/i);
+
+      const invalidated = await request(port, {
+        method: "POST",
+        pathname: "/api/users/invalidate-token",
+        body: {
+          username: "pilot-1",
+        },
+      });
+      assert.equal(invalidated.status, 200);
+      assert.ok(Number.parseInt(String(invalidated.body.sessionVersion || "0"), 10) >= 2);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager user management rejects malformed email input", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const passwordStoreFile = path.join(workspaceDir, "mock", "password-store.json");
+    await fs.mkdir(path.dirname(passwordStoreFile), { recursive: true });
+    await fs.writeFile(
+      passwordStoreFile,
+      JSON.stringify(
+        {
+          users: [{ username: "gm", passwordHash: "scrypt$seed$hash", disabled: false }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=file",
+        `PASSWORD_STORE_FILE=${passwordStoreFile}`,
+        "AUTH_USERNAME=",
+        "AUTH_PASSWORD_HASH=",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "SESSION_MAX_AGE_HOURS=12",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/users/create",
+        body: {
+          username: "pilot-2",
+          password: "Correct Horse Battery Staple 123!",
+          friendlyName: "Pilot Two",
+          email: "pilot@!.",
+          status: "active",
+          displayInfo: "",
+          notes: "",
+        },
+      });
+      assert.equal(created.status, 400);
+      assert.match(String(created.body.error || ""), /email must be valid/i);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager TLS endpoints detect environment, generate plan, and save config", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const certFile = path.join(workspaceDir, "tls", "fullchain.pem");
+    const keyFile = path.join(workspaceDir, "tls", "privkey.pem");
+    await fs.mkdir(path.dirname(certFile), { recursive: true });
+    await fs.writeFile(certFile, "dummy-cert", "utf8");
+    await fs.writeFile(keyFile, "dummy-key", "utf8");
+
+    const commandRunner = async ({ command }) => {
+      if (command === "certbot") {
+        return { ok: true, stdout: "certbot 2.10.0", stderr: "", exitCode: 0 };
+      }
+      if (command === "docker") {
+        return { ok: false, stdout: "", stderr: "command not found", exitCode: 127, error: "not found" };
+      }
+      if (command === "openssl") {
+        return { ok: true, stdout: "OpenSSL 3.0.0", stderr: "", exitCode: 0 };
+      }
+      return { ok: false, stdout: "", stderr: "unsupported", exitCode: 1, error: "unsupported" };
+    };
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      commandRunner,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const tlsStatus = await request(port, { pathname: "/api/tls" });
+      assert.equal(tlsStatus.status, 200);
+      assert.equal(tlsStatus.body.detection.certbotAvailable, true);
+      assert.equal(tlsStatus.body.detection.opensslAvailable, true);
+
+      const plan = await request(port, {
+        method: "POST",
+        pathname: "/api/tls/letsencrypt-plan",
+        body: {
+          tlsDomain: "vtt.example.test",
+          tlsEmail: "admin@example.test",
+          tlsChallengeMethod: "webroot",
+          tlsWebrootPath: "/var/www/html",
+        },
+      });
+      assert.equal(plan.status, 200);
+      assert.equal(Array.isArray(plan.body.plan.commands), true);
+      assert.equal(plan.body.plan.commands.some((entry) => entry.includes("certbot certonly --webroot")), true);
+
+      const save = await request(port, {
+        method: "POST",
+        pathname: "/api/tls/save",
+        body: {
+          tlsEnabled: true,
+          tlsDomain: "vtt.example.test",
+          tlsEmail: "admin@example.test",
+          tlsChallengeMethod: "webroot",
+          tlsWebrootPath: "/var/www/html",
+          tlsCertFile: certFile,
+          tlsKeyFile: keyFile,
+        },
+      });
+      assert.equal(save.status, 200);
+      assert.equal(save.body.tls.tlsEnabled, true);
+      assert.equal(save.body.tls.tlsDomain, "vtt.example.test");
+
+      const envContent = await fs.readFile(envPath, "utf8");
+      assert.match(envContent, /TLS_ENABLED=true/);
+      assert.match(envContent, /TLS_DOMAIN=vtt\.example\.test/);
+      assert.match(envContent, /TLS_CERT_FILE=/);
+      assert.match(envContent, /TLS_KEY_FILE=/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager TLS endpoints reject malformed email input", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const plan = await request(port, {
+        method: "POST",
+        pathname: "/api/tls/letsencrypt-plan",
+        body: {
+          tlsDomain: "vtt.example.test",
+          tlsEmail: "admin@!.",
+          tlsChallengeMethod: "webroot",
+          tlsWebrootPath: "/var/www/html",
+        },
+      });
+      assert.equal(plan.status, 400);
+      assert.match(String(plan.body.error || ""), /email must be valid/i);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("formatManagerListenError explains when manager port is already in use", () => {
   const message = formatManagerListenError({ code: "EADDRINUSE" }, { host: "127.0.0.1", port: 8090 });
   assert.match(message, /already in use/);

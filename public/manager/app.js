@@ -64,6 +64,37 @@ const appearanceLogoOffsetYValue = document.getElementById("appearanceLogoOffset
 const appearanceBackgroundZoomValue = document.getElementById("appearanceBackgroundZoomValue");
 const appearanceLoginBoxModeDark = document.getElementById("appearanceLoginBoxModeDark");
 const appearanceLoginBoxModeLight = document.getElementById("appearanceLoginBoxModeLight");
+const userModal = document.getElementById("userModal");
+const userStatusMessage = document.getElementById("userStatusMessage");
+const userTableBody = document.getElementById("userTableBody");
+const userForm = document.getElementById("userForm");
+const userEditorHeading = document.getElementById("userEditorHeading");
+const userFriendlyName = document.getElementById("userFriendlyName");
+const userUsername = document.getElementById("userUsername");
+const userEmail = document.getElementById("userEmail");
+const userPassword = document.getElementById("userPassword");
+const userStatus = document.getElementById("userStatus");
+const userDisplayInfo = document.getElementById("userDisplayInfo");
+const userNotes = document.getElementById("userNotes");
+const userLastLoginAt = document.getElementById("userLastLoginAt");
+const userLastKnownIp = document.getElementById("userLastKnownIp");
+const userBanReinstateBtn = document.getElementById("userBanReinstateBtn");
+const userTempCodeBox = document.getElementById("userTempCodeBox");
+const userFilterInputs = Array.from(document.querySelectorAll("input[name='userFilter']"));
+const tlsModal = document.getElementById("tlsModal");
+const tlsStatusMessage = document.getElementById("tlsStatusMessage");
+const tlsForm = document.getElementById("tlsForm");
+const tlsEnabled = document.getElementById("tlsEnabled");
+const tlsDomain = document.getElementById("tlsDomain");
+const tlsEmail = document.getElementById("tlsEmail");
+const tlsChallengeMethod = document.getElementById("tlsChallengeMethod");
+const tlsWebrootPath = document.getElementById("tlsWebrootPath");
+const tlsCertFile = document.getElementById("tlsCertFile");
+const tlsKeyFile = document.getElementById("tlsKeyFile");
+const tlsCaFile = document.getElementById("tlsCaFile");
+const tlsPassphrase = document.getElementById("tlsPassphrase");
+const tlsDetectionOutput = document.getElementById("tlsDetectionOutput");
+const tlsPlanOutput = document.getElementById("tlsPlanOutput");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
 const THEME_LAYOUT_DEFAULTS = {
@@ -150,6 +181,10 @@ let appearanceSelection = {
 let appearanceAssetChooserState = null;
 let appearanceEditorMode = "hidden";
 let appearanceEditingThemeId = "";
+let latestUsers = [];
+let selectedUserUsername = "";
+let userEditorMode = "new";
+let latestTlsPlan = "";
 
 function bindClick(id, handler) {
   const element = document.getElementById(id);
@@ -190,12 +225,42 @@ function setAppearanceMessage(text, isError = false) {
   appearanceStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
+function setUserMessage(text, isError = false) {
+  if (!userStatusMessage) {
+    return;
+  }
+  userStatusMessage.textContent = text;
+  userStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setTlsMessage(text, isError = false) {
+  if (!tlsStatusMessage) {
+    return;
+  }
+  tlsStatusMessage.textContent = text;
+  tlsStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
 function toBooleanString(value) {
   return value ? "true" : "false";
 }
 
 function parseBooleanish(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function resolvePortalUrl(config = {}) {
+  const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+  const configuredHost = String(config.HOST || "").trim();
+  const configuredPort = String(config.PORT || "").trim();
+  const host =
+    !configuredHost || configuredHost === "0.0.0.0" || configuredHost === "::"
+      ? window.location.hostname || "127.0.0.1"
+      : configuredHost;
+  const shouldIncludePort =
+    configuredPort && !((protocol === "http:" && configuredPort === "80") || (protocol === "https:" && configuredPort === "443"));
+  const portSegment = shouldIncludePort ? `:${configuredPort}` : "";
+  return `${protocol}//${host}${portSegment}/`;
 }
 
 function clampThemeLayoutNumber(value, fallback, min, max) {
@@ -1151,6 +1216,360 @@ function buildAppearanceCreatePayload() {
   throw new Error("Appearance panel controls are missing. Hard refresh the admin panel and try again.");
 }
 
+function getSelectedUserFilter() {
+  const selected = userFilterInputs.find((input) => input.checked);
+  return selected ? selected.value : "active";
+}
+
+function formatUserDate(value) {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return "-";
+  }
+  return date.toLocaleString();
+}
+
+function findUserByUsername(username) {
+  const target = String(username || "");
+  return latestUsers.find((entry) => String(entry.username || "") === target) || null;
+}
+
+function openUserModal() {
+  if (!userModal) {
+    return;
+  }
+  userModal.hidden = false;
+  userModal.classList.remove("hidden");
+}
+
+function closeUserModal() {
+  if (!userModal) {
+    return;
+  }
+  userModal.hidden = true;
+  userModal.classList.add("hidden");
+}
+
+function clearUserEditor() {
+  selectedUserUsername = "";
+  userEditorMode = "new";
+  if (userEditorHeading) {
+    userEditorHeading.textContent = "Add New User";
+  }
+  if (userFriendlyName) {
+    userFriendlyName.value = "";
+  }
+  if (userUsername) {
+    userUsername.value = "";
+    userUsername.readOnly = false;
+  }
+  if (userEmail) {
+    userEmail.value = "";
+  }
+  if (userPassword) {
+    userPassword.value = "";
+  }
+  if (userStatus) {
+    userStatus.value = "active";
+  }
+  if (userDisplayInfo) {
+    userDisplayInfo.value = "";
+  }
+  if (userNotes) {
+    userNotes.value = "";
+  }
+  if (userLastLoginAt) {
+    userLastLoginAt.value = "";
+  }
+  if (userLastKnownIp) {
+    userLastKnownIp.value = "";
+  }
+  if (userBanReinstateBtn) {
+    userBanReinstateBtn.textContent = "Ban / Reinstate";
+  }
+}
+
+function loadUserEditor(user) {
+  if (!user) {
+    clearUserEditor();
+    return;
+  }
+  selectedUserUsername = String(user.username || "");
+  userEditorMode = "edit";
+  if (userEditorHeading) {
+    userEditorHeading.textContent = `Manage User: ${selectedUserUsername}`;
+  }
+  if (userFriendlyName) {
+    userFriendlyName.value = String(user.friendlyName || "");
+  }
+  if (userUsername) {
+    userUsername.value = selectedUserUsername;
+    userUsername.readOnly = true;
+  }
+  if (userEmail) {
+    userEmail.value = String(user.email || "");
+  }
+  if (userPassword) {
+    userPassword.value = "";
+  }
+  if (userStatus) {
+    userStatus.value = String(user.status || "active");
+  }
+  if (userDisplayInfo) {
+    userDisplayInfo.value = String(user.displayInfo || "");
+  }
+  if (userNotes) {
+    userNotes.value = String(user.notes || "");
+  }
+  if (userLastLoginAt) {
+    userLastLoginAt.value = user.lastLoginAt ? formatUserDate(user.lastLoginAt) : "";
+  }
+  if (userLastKnownIp) {
+    userLastKnownIp.value = String(user.lastKnownIp || "");
+  }
+  if (userBanReinstateBtn) {
+    userBanReinstateBtn.textContent = user.status === "active" ? "Ban User" : "Reinstate User";
+  }
+}
+
+function buildUserPayloadFromForm() {
+  return {
+    username: String(userUsername?.value || ""),
+    password: String(userPassword?.value || ""),
+    friendlyName: String(userFriendlyName?.value || ""),
+    email: String(userEmail?.value || ""),
+    status: String(userStatus?.value || "active"),
+    displayInfo: String(userDisplayInfo?.value || ""),
+    notes: String(userNotes?.value || ""),
+  };
+}
+
+function buildUserRowActionButton(label, handler) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function renderUserTable(users) {
+  if (!userTableBody) {
+    return;
+  }
+  userTableBody.innerHTML = "";
+
+  if (!Array.isArray(users) || users.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.textContent = "No users found for this filter.";
+    row.append(cell);
+    userTableBody.append(row);
+    return;
+  }
+
+  for (const user of users) {
+    const row = document.createElement("tr");
+    const userCell = document.createElement("td");
+    userCell.textContent = `${user.friendlyName || user.username} (${user.username})`;
+    row.append(userCell);
+
+    const statusCell = document.createElement("td");
+    statusCell.textContent = user.authenticatedNow
+      ? `${user.status} / authenticated`
+      : user.status;
+    row.append(statusCell);
+
+    const lastLoginCell = document.createElement("td");
+    lastLoginCell.textContent = formatUserDate(user.lastLoginAt);
+    row.append(lastLoginCell);
+
+    const lastIpCell = document.createElement("td");
+    lastIpCell.textContent = user.lastKnownIp || "-";
+    row.append(lastIpCell);
+
+    const actionsCell = document.createElement("td");
+    actionsCell.className = "actions-cell";
+    const actions = document.createElement("div");
+    actions.className = "user-row-actions";
+    actions.append(
+      buildUserRowActionButton("Manage", () => {
+        loadUserEditor(user);
+      }),
+      buildUserRowActionButton("Reset Code", async () => {
+        try {
+          const payload = await api("POST", "/users/reset-login-code", {
+            username: user.username,
+            delivery: "email",
+          });
+          userTempCodeBox.textContent = [
+            `Temporary code for ${user.username}`,
+            `Code: ${payload.code || ""}`,
+            `Expires: ${formatUserDate(payload.expiresAt)}`,
+            payload.warning || "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+          setUserMessage(`Temporary login code created for ${user.username}.`);
+          await refreshUsers(false);
+        } catch (error) {
+          setUserMessage(error.message || String(error), true);
+        }
+      }),
+      buildUserRowActionButton("Invalidate", async () => {
+        try {
+          await api("POST", "/users/invalidate-token", {
+            username: user.username,
+          });
+          setUserMessage(`Session tokens invalidated for ${user.username}.`);
+          await refreshUsers(false);
+        } catch (error) {
+          setUserMessage(error.message || String(error), true);
+        }
+      }),
+    );
+    actionsCell.append(actions);
+    row.append(actionsCell);
+    userTableBody.append(row);
+  }
+}
+
+async function refreshUsers(showMessage = true) {
+  const view = getSelectedUserFilter();
+  const payload = await api("GET", `/users?view=${encodeURIComponent(view)}`);
+  latestUsers = Array.isArray(payload.users) ? payload.users : [];
+  renderUserTable(latestUsers);
+
+  if (selectedUserUsername) {
+    const selected = findUserByUsername(selectedUserUsername);
+    if (selected) {
+      loadUserEditor(selected);
+    } else {
+      clearUserEditor();
+    }
+  }
+
+  if (showMessage) {
+    setUserMessage(`Loaded ${latestUsers.length} user(s) for '${view}' view.`);
+  }
+}
+
+function openTlsModal() {
+  if (!tlsModal) {
+    return;
+  }
+  tlsModal.hidden = false;
+  tlsModal.classList.remove("hidden");
+}
+
+function closeTlsModal() {
+  if (!tlsModal) {
+    return;
+  }
+  tlsModal.hidden = true;
+  tlsModal.classList.add("hidden");
+}
+
+function buildTlsPayload() {
+  return {
+    tlsEnabled: Boolean(tlsEnabled?.checked),
+    tlsDomain: String(tlsDomain?.value || ""),
+    tlsEmail: String(tlsEmail?.value || ""),
+    tlsChallengeMethod: String(tlsChallengeMethod?.value || "webroot"),
+    tlsWebrootPath: String(tlsWebrootPath?.value || ""),
+    tlsCertFile: String(tlsCertFile?.value || ""),
+    tlsKeyFile: String(tlsKeyFile?.value || ""),
+    tlsCaFile: String(tlsCaFile?.value || ""),
+    tlsPassphrase: String(tlsPassphrase?.value || ""),
+  };
+}
+
+function fillTlsForm(payload = {}) {
+  if (tlsEnabled) {
+    tlsEnabled.checked = Boolean(payload.tlsEnabled);
+  }
+  if (tlsDomain) {
+    tlsDomain.value = String(payload.tlsDomain || "");
+  }
+  if (tlsEmail) {
+    tlsEmail.value = String(payload.tlsEmail || "");
+  }
+  if (tlsChallengeMethod) {
+    tlsChallengeMethod.value = String(payload.tlsChallengeMethod || "webroot");
+  }
+  if (tlsWebrootPath) {
+    tlsWebrootPath.value = String(payload.tlsWebrootPath || "/var/www/html");
+  }
+  if (tlsCertFile) {
+    tlsCertFile.value = String(payload.tlsCertFile || "");
+  }
+  if (tlsKeyFile) {
+    tlsKeyFile.value = String(payload.tlsKeyFile || "");
+  }
+  if (tlsCaFile) {
+    tlsCaFile.value = String(payload.tlsCaFile || "");
+  }
+  if (tlsPassphrase) {
+    tlsPassphrase.value = "";
+  }
+}
+
+function renderTlsDetection(detection = {}) {
+  if (!tlsDetectionOutput) {
+    return;
+  }
+  const lines = [
+    `certbot available: ${detection.certbotAvailable ? "yes" : "no"}`,
+    `docker available: ${detection.dockerAvailable ? "yes" : "no"}`,
+    `openssl available: ${detection.opensslAvailable ? "yes" : "no"}`,
+    `cert file present: ${detection.certExists ? "yes" : "no"}`,
+    `key file present: ${detection.keyExists ? "yes" : "no"}`,
+    detection.certbotVersion ? `certbot: ${detection.certbotVersion}` : "",
+    detection.dockerVersion ? `docker: ${detection.dockerVersion}` : "",
+    detection.opensslVersion ? `openssl: ${detection.opensslVersion}` : "",
+  ].filter(Boolean);
+  tlsDetectionOutput.textContent = lines.join("\n");
+}
+
+function renderTlsPlan(plan = {}) {
+  if (!tlsPlanOutput) {
+    return;
+  }
+  const lines = [
+    "Steps:",
+    ...(plan.steps || []),
+    "",
+    "Install Hints:",
+    ...(plan.certbotInstallHints || []),
+    "",
+    "Issue Certificate:",
+    ...(plan.commands || []),
+    "",
+    "Blastdoor .env Preview:",
+    ...(plan.envPreview || []),
+    "",
+    "Renewal:",
+    ...(plan.renew || []),
+    "",
+    "Notes:",
+    ...(plan.notes || []),
+  ];
+  latestTlsPlan = lines.join("\n");
+  tlsPlanOutput.textContent = latestTlsPlan;
+}
+
+async function refreshTlsPanel(showMessage = true) {
+  const payload = await api("GET", "/tls");
+  fillTlsForm(payload.tls || {});
+  renderTlsDetection(payload.detection || {});
+  if (showMessage) {
+    setTlsMessage("TLS status loaded.");
+  }
+}
+
 async function refreshAll() {
   try {
     const [configResult, monitorResult] = await Promise.all([api("GET", "/config"), api("GET", "/monitor")]);
@@ -1263,6 +1682,26 @@ bindClick("revokeSessionsBtn", async () => {
 bindClick("refreshBtn", async () => {
   await refreshAll();
   setMessage("Status refreshed.");
+});
+
+bindClick("openPortalBtn", async () => {
+  try {
+    let config = buildConfigPayloadFromForm();
+    if (!config.HOST || !config.PORT) {
+      const configResult = await api("GET", "/config");
+      config = configResult.config || config;
+    }
+
+    const portalUrl = resolvePortalUrl(config);
+    const newWindow = window.open(portalUrl, "_blank", "noopener,noreferrer");
+    if (!newWindow) {
+      throw new Error(`Popup blocked while opening ${portalUrl}`);
+    }
+
+    setMessage(`Opened Blastdoor portal: ${portalUrl}`);
+  } catch (error) {
+    setMessage(error.message || String(error), true);
+  }
 });
 
 bindClick("appearanceBtn", async () => {
@@ -1664,6 +2103,229 @@ bindClick("tsCopyScriptBtn", async () => {
   }
 });
 
+bindClick("userMgmtBtn", async () => {
+  if (!userModal) {
+    setMessage("User management panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!userModal.hidden) {
+    closeUserModal();
+    setUserMessage("User management panel closed.");
+    return;
+  }
+
+  openUserModal();
+  clearUserEditor();
+  if (userTempCodeBox) {
+    userTempCodeBox.textContent = "";
+  }
+  setUserMessage("Loading users...");
+  try {
+    await refreshUsers();
+  } catch (error) {
+    setUserMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("userCloseBtn", () => {
+  closeUserModal();
+});
+
+bindClick("userRefreshBtn", async () => {
+  try {
+    await refreshUsers();
+  } catch (error) {
+    setUserMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("userNewBtn", () => {
+  clearUserEditor();
+  setUserMessage("Add New User mode.");
+});
+
+bindClick("userCancelBtn", () => {
+  clearUserEditor();
+  setUserMessage("User editor reset.");
+});
+
+if (userFilterInputs.length > 0) {
+  for (const input of userFilterInputs) {
+    input.addEventListener("change", async () => {
+      try {
+        await refreshUsers();
+      } catch (error) {
+        setUserMessage(error.message || String(error), true);
+      }
+    });
+  }
+}
+
+bindClick("userResetCodeBtn", async () => {
+  try {
+    const target = selectedUserUsername || String(userUsername?.value || "");
+    if (!target) {
+      throw new Error("Select a user before resetting login.");
+    }
+    const payload = await api("POST", "/users/reset-login-code", {
+      username: target,
+      delivery: "email",
+    });
+    if (userTempCodeBox) {
+      userTempCodeBox.textContent = [
+        `Temporary code for ${target}`,
+        `Code: ${payload.code || ""}`,
+        `Expires: ${formatUserDate(payload.expiresAt)}`,
+        payload.warning || "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+    setUserMessage(`Temporary login code created for ${target}.`);
+    await refreshUsers(false);
+  } catch (error) {
+    setUserMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("userInvalidateBtn", async () => {
+  try {
+    const target = selectedUserUsername || String(userUsername?.value || "");
+    if (!target) {
+      throw new Error("Select a user before invalidating login token.");
+    }
+    await api("POST", "/users/invalidate-token", {
+      username: target,
+    });
+    setUserMessage(`Login token invalidated for ${target}.`);
+    await refreshUsers(false);
+  } catch (error) {
+    setUserMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("userBanReinstateBtn", async () => {
+  try {
+    const target = selectedUserUsername || String(userUsername?.value || "");
+    if (!target) {
+      throw new Error("Select a user before changing status.");
+    }
+    const current = findUserByUsername(target);
+    const nextStatus = current?.status === "active" ? "banned" : "active";
+    const payload = await api("POST", "/users/set-status", {
+      username: target,
+      status: nextStatus,
+    });
+    if (payload.user) {
+      loadUserEditor(payload.user);
+    }
+    setUserMessage(nextStatus === "active" ? `User ${target} reinstated.` : `User ${target} banned.`);
+    await refreshUsers(false);
+  } catch (error) {
+    setUserMessage(error.message || String(error), true);
+  }
+});
+
+if (userForm) {
+  userForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const payload = buildUserPayloadFromForm();
+      const isUpdate = userEditorMode === "edit" && Boolean(selectedUserUsername);
+      if (!isUpdate && payload.password.length < 12) {
+        throw new Error("New users require a password of at least 12 characters.");
+      }
+      const response = await api("POST", isUpdate ? "/users/update" : "/users/create", payload);
+      if (response.user) {
+        loadUserEditor(response.user);
+        selectedUserUsername = response.user.username || "";
+        userEditorMode = "edit";
+      }
+      if (userPassword) {
+        userPassword.value = "";
+      }
+      setUserMessage(isUpdate ? "User updated." : "User created.");
+      await refreshUsers(false);
+    } catch (error) {
+      setUserMessage(error.message || String(error), true);
+    }
+  });
+}
+
+bindClick("tlsBtn", async () => {
+  if (!tlsModal) {
+    setMessage("TLS panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!tlsModal.hidden) {
+    closeTlsModal();
+    setTlsMessage("TLS panel closed.");
+    return;
+  }
+
+  openTlsModal();
+  setTlsMessage("Loading TLS status...");
+  try {
+    await refreshTlsPanel();
+    if (tlsPlanOutput) {
+      tlsPlanOutput.textContent = "";
+    }
+    latestTlsPlan = "";
+  } catch (error) {
+    setTlsMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("tlsCloseBtn", () => {
+  closeTlsModal();
+});
+
+bindClick("tlsDetectBtn", async () => {
+  try {
+    await refreshTlsPanel();
+  } catch (error) {
+    setTlsMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("tlsPlanBtn", async () => {
+  try {
+    const payload = await api("POST", "/tls/letsencrypt-plan", buildTlsPayload());
+    renderTlsDetection(payload.detection || {});
+    renderTlsPlan(payload.plan || {});
+    setTlsMessage("Let's Encrypt plan generated.");
+  } catch (error) {
+    setTlsMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("tlsCopyPlanBtn", async () => {
+  try {
+    await copyToClipboard(latestTlsPlan || "");
+    setTlsMessage("TLS setup plan copied.");
+  } catch (error) {
+    setTlsMessage(error.message || String(error), true);
+  }
+});
+
+if (tlsForm) {
+  tlsForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await api("POST", "/tls/save", buildTlsPayload());
+      setTlsMessage("TLS configuration saved. Restart Blastdoor to apply certificate changes.");
+      await refreshTlsPanel(false);
+      await refreshAll();
+    } catch (error) {
+      setTlsMessage(error.message || String(error), true);
+    }
+  });
+}
+
 refreshAll();
 setInterval(refreshAll, 3000);
 closeAppearanceModal();
+closeUserModal();
+closeTlsModal();
