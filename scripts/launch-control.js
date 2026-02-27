@@ -13,6 +13,7 @@ const ENV_PATH = path.join(WORKSPACE_DIR, ".env");
 const MANAGER_HOST = process.env.MANAGER_HOST || "127.0.0.1";
 const MANAGER_PORT = Number.parseInt(process.env.MANAGER_PORT || "8090", 10);
 const MANAGER_URL = `http://${MANAGER_HOST}:${MANAGER_PORT}`;
+const CONTROLS_REFRESH_MS = Number.parseInt(process.env.CONTROLS_REFRESH_MS || "0", 10);
 const API_BASE_CANDIDATES = ["/api", "/manager/api"];
 const WATCH_IGNORE_PREFIXES = [".git/", "node_modules/", "logs/", "data/"];
 
@@ -679,12 +680,13 @@ async function main() {
   bindKeyControls();
   printControls();
 
-  // Re-render controls periodically so they remain visible after log output.
-  state.footerInterval = setInterval(() => {
-    if (!state.shuttingDown) {
-      printControls();
-    }
-  }, 30000);
+  if (Number.isInteger(CONTROLS_REFRESH_MS) && CONTROLS_REFRESH_MS > 0) {
+    state.footerInterval = setInterval(() => {
+      if (!state.shuttingDown) {
+        printControls();
+      }
+    }, CONTROLS_REFRESH_MS);
+  }
 
   void openAdminPanel();
 }
