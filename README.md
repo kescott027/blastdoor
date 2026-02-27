@@ -64,6 +64,17 @@ make troubleshoot
 
 Re-run `make configure` any time to edit the installation profile. Generic commands (`launch`, `monitor`, `debug`, `troubleshoot`) read `installation_config.json` and execute the correct recipe automatically.
 
+If you run `make launch` before setup is complete, Blastdoor now prompts with `Y/N/M`:
+
+- `Y`: open installer immediately
+- `N`: exit without changes
+- `M`: run quick environment diagnostics + recommendations, then open installer
+
+After saving installer configuration, use the in-UI buttons:
+
+- `Close`: close installer cleanly
+- `Launch and Exit`: request launch and close installer cleanly
+
 ### Basic-Standalone
 
 Use this model for local installs and simpler topologies.
@@ -565,6 +576,9 @@ rm -rf node_modules
 npm install
 make setup-env
 ```
+
+If container launch warns about random unset variables during `docker compose` startup, update to latest `main` and relaunch.
+Compose commands now read `docker-compose.yml` service `env_file` directly (no global `--env-file` interpolation of hashed secrets).
 
 If setup fails with `ECONNREFUSED 127.0.0.1:5432`, PostgreSQL is not reachable at the configured URL.
 Start PostgreSQL, verify `POSTGRES_URL`, then rerun:

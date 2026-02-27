@@ -114,15 +114,8 @@ launch-env: ensure-deps
 	fi
 	npm start
 
-launch: ensure-deps ensure-install-config
-	@profile=$$(node scripts/install-profile-dispatch.js profile $(INSTALL_CONFIG_PATH)); \
-	if [ "$$profile" = "container" ]; then \
-		echo "Install profile: container"; \
-		$(MAKE) launch-container; \
-	else \
-		echo "Install profile: local"; \
-		$(MAKE) launch-local; \
-	fi
+launch: ensure-deps
+	node scripts/launch-with-install-check.js $(INSTALL_CONFIG_PATH)
 
 launch-local: ensure-deps
 	@if [ ! -f .env ]; then \
@@ -132,7 +125,7 @@ launch-local: ensure-deps
 	node scripts/launch-control.js
 
 launch-container: ensure-docker-env
-	docker compose --env-file docker/blastdoor.env up -d --build
+	docker compose up -d --build
 
 manager-launch: ensure-deps
 	npm run manager
@@ -162,10 +155,10 @@ monitor-local:
 
 monitor-container: ensure-docker-env
 	@echo "Container status:"
-	@docker compose --env-file docker/blastdoor.env ps
+	@docker compose ps
 	@echo ""
 	@echo "Recent logs:"
-	@docker compose --env-file docker/blastdoor.env logs --tail=120 caddy blastdoor blastdoor-api postgres
+	@docker compose logs --tail=120 caddy blastdoor blastdoor-api postgres
 
 debug: ensure-deps ensure-install-config
 	@profile=$$(node scripts/install-profile-dispatch.js profile $(INSTALL_CONFIG_PATH)); \
@@ -185,7 +178,7 @@ debug-local: ensure-deps
 	DEBUG_MODE=true LAUNCH_CONTROL_AUTO_DEBUG=true node scripts/launch-control.js
 
 debug-container: ensure-docker-env
-	docker compose --env-file docker/blastdoor.env logs -f --tail=200 caddy blastdoor blastdoor-api postgres
+	docker compose logs -f --tail=200 caddy blastdoor blastdoor-api postgres
 
 troubleshoot: ensure-install-config
 	@profile=$$(node scripts/install-profile-dispatch.js profile $(INSTALL_CONFIG_PATH)); \
@@ -208,16 +201,16 @@ troubleshoot-local:
 
 troubleshoot-container: ensure-docker-env
 	@echo "Container status:"
-	@docker compose --env-file docker/blastdoor.env ps
+	@docker compose ps
 	@echo ""
 	@echo "Blastdoor internal health:"
-	@docker compose --env-file docker/blastdoor.env exec -T blastdoor node -e "fetch('http://127.0.0.1:8080/healthz').then(async (r)=>{console.log(r.status); console.log(await r.text()); process.exit(r.ok?0:1);}).catch((e)=>{console.error(e.message); process.exit(1);})" || echo "Blastdoor health probe failed."
+	@docker compose exec -T blastdoor node -e "fetch('http://127.0.0.1:8080/healthz').then(async (r)=>{console.log(r.status); console.log(await r.text()); process.exit(r.ok?0:1);}).catch((e)=>{console.error(e.message); process.exit(1);})" || echo "Blastdoor health probe failed."
 	@echo ""
 	@echo "Blastdoor API internal health:"
-	@docker compose --env-file docker/blastdoor.env exec -T blastdoor-api node -e "fetch('http://127.0.0.1:8070/healthz').then(async (r)=>{console.log(r.status); console.log(await r.text()); process.exit(r.ok?0:1);}).catch((e)=>{console.error(e.message); process.exit(1);})" || echo "Blastdoor API health probe failed."
+	@docker compose exec -T blastdoor-api node -e "fetch('http://127.0.0.1:8070/healthz').then(async (r)=>{console.log(r.status); console.log(await r.text()); process.exit(r.ok?0:1);}).catch((e)=>{console.error(e.message); process.exit(1);})" || echo "Blastdoor API health probe failed."
 	@echo ""
 	@echo "Recent service logs:"
-	@docker compose --env-file docker/blastdoor.env logs --tail=200 caddy blastdoor blastdoor-api postgres
+	@docker compose logs --tail=200 caddy blastdoor blastdoor-api postgres
 
 mock-vtt: ensure-deps
 	MOCK_VTT_HOST=127.0.0.1 MOCK_VTT_PORT=$(MOCK_VTT_PORT) node scripts/mock-vtt.js
@@ -283,16 +276,16 @@ ensure-docker-env:
 	fi
 
 docker-build: ensure-docker-env
-	docker compose --env-file docker/blastdoor.env build blastdoor
+	docker compose build blastdoor
 
 docker-up: ensure-docker-env
-	docker compose --env-file docker/blastdoor.env up -d --build
+	docker compose up -d --build
 
 docker-down: ensure-docker-env
-	docker compose --env-file docker/blastdoor.env down
+	docker compose down
 
 docker-logs: ensure-docker-env
-	docker compose --env-file docker/blastdoor.env logs -f --tail=200 caddy blastdoor blastdoor-api postgres
+	docker compose logs -f --tail=200 caddy blastdoor blastdoor-api postgres
 
 basic-install: ensure-dev-deps precommit-install
 	@echo "Basic-Standalone dependencies and local hooks are ready."
