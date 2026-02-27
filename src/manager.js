@@ -925,7 +925,16 @@ export function createManagerApp(options = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
-  app.use("/manager", express.static(managerDir, { etag: true, maxAge: "1h" }));
+  app.use(
+    "/manager",
+    express.static(managerDir, {
+      etag: true,
+      maxAge: 0,
+      setHeaders(res) {
+        res.setHeader("Cache-Control", "no-store");
+      },
+    }),
+  );
   app.use(
     "/graphics",
     express.static(graphicsDir, {
@@ -981,6 +990,14 @@ export function createManagerApp(options = {}) {
         incoming.TOTP_SECRET = existing.TOTP_SECRET || "";
       }
 
+      const wasBlastDoorsClosed = parseBooleanLike(existing.BLAST_DOORS_CLOSED, false);
+      const willBlastDoorsClose = parseBooleanLike(incoming.BLAST_DOORS_CLOSED, false);
+      let sessionSecretRotated = false;
+      if (!wasBlastDoorsClosed && willBlastDoorsClose) {
+        incoming.SESSION_SECRET = createSessionSecret();
+        sessionSecretRotated = true;
+      }
+
       validateConfig(loadConfigFromEnv({ ...incoming }));
       await writeEnvConfig(envPath, incoming);
       await writeBlastDoorsState(runtimeStatePath, parseBooleanLike(incoming.BLAST_DOORS_CLOSED, false));
@@ -1002,6 +1019,7 @@ export function createManagerApp(options = {}) {
         runtime: {
           blastDoorsChanged,
           serviceRestarted,
+          sessionSecretRotated,
         },
       });
     } catch (error) {

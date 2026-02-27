@@ -744,11 +744,16 @@ blastDoorsToggle.addEventListener("change", async () => {
       closed ? "Blast doors locked." : "Blast doors unlocked.",
     );
     const serviceRestarted = Boolean(result?.runtime?.serviceRestarted);
+    const sessionSecretRotated = Boolean(result?.runtime?.sessionSecretRotated);
     if (closed) {
       setMessage(
         serviceRestarted
-          ? "Blast doors locked. Gateway was restarted and lockout is active."
-          : "Blast doors locked. Start/restart the gateway service if lockout is not active yet.",
+          ? sessionSecretRotated
+            ? "Blast doors locked. Gateway restarted, lockout is active, and all sessions were invalidated."
+            : "Blast doors locked. Gateway was restarted and lockout is active."
+          : sessionSecretRotated
+            ? "Blast doors locked and all sessions were invalidated. Restart gateway service if lockout is not active yet."
+            : "Blast doors locked. Restart gateway service to enforce lockout.",
       );
     } else {
       setMessage(

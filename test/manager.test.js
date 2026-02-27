@@ -267,6 +267,7 @@ test("manager can revoke all sessions by rotating session secret", async () => {
 test("manager lock toggle restarts a running managed gateway immediately", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");
+    const initialSecret = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     await fs.writeFile(
       envPath,
       [
@@ -276,7 +277,7 @@ test("manager lock toggle restarts a running managed gateway immediately", async
         "PASSWORD_STORE_MODE=env",
         "AUTH_USERNAME=gm",
         "AUTH_PASSWORD_HASH=scrypt$a$b",
-        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        `SESSION_SECRET=${initialSecret}`,
         "REQUIRE_TOTP=false",
         "BLAST_DOORS_CLOSED=false",
         "",
@@ -320,6 +321,7 @@ test("manager lock toggle restarts a running managed gateway immediately", async
       assert.equal(saved.body.config.BLAST_DOORS_CLOSED, "true");
       assert.equal(saved.body.runtime.blastDoorsChanged, true);
       assert.equal(saved.body.runtime.serviceRestarted, true);
+      assert.equal(saved.body.runtime.sessionSecretRotated, true);
 
       assert.equal(created[0].killed, true);
       assert.equal(created.length, 2);
@@ -327,6 +329,13 @@ test("manager lock toggle restarts a running managed gateway immediately", async
       const runtimeStatePath = path.join(workspaceDir, "data", "runtime-state.json");
       const runtimeStateRaw = await fs.readFile(runtimeStatePath, "utf8");
       assert.match(runtimeStateRaw, /"blastDoorsClosed": true/);
+
+      const envContent = await fs.readFile(envPath, "utf8");
+      const secretLine = envContent
+        .split(/\r?\n/)
+        .find((line) => line.startsWith("SESSION_SECRET="));
+      assert.ok(secretLine);
+      assert.notEqual(secretLine, `SESSION_SECRET=${initialSecret}`);
 
       const monitor = await request(port, { pathname: "/api/monitor" });
       assert.equal(monitor.status, 200);

@@ -435,11 +435,16 @@ async function saveConfigPatch(patch) {
 async function setBlastDoors(closed) {
   const result = await saveConfigPatch({ BLAST_DOORS_CLOSED: closed ? "true" : "false" });
   const restarted = Boolean(result?.runtime?.serviceRestarted);
+  const sessionSecretRotated = Boolean(result?.runtime?.sessionSecretRotated);
   if (closed) {
     info(
       restarted
-        ? "Blast doors are now LOCKED. Gateway restarted and lockout is active."
-        : "Blast doors are now LOCKED. Restart gateway service to enforce lockout.",
+        ? sessionSecretRotated
+          ? "Blast doors are now LOCKED. Gateway restarted, lockout is active, and all sessions were invalidated."
+          : "Blast doors are now LOCKED. Gateway restarted and lockout is active."
+        : sessionSecretRotated
+          ? "Blast doors are now LOCKED and all sessions were invalidated. Restart gateway service to enforce lockout."
+          : "Blast doors are now LOCKED. Restart gateway service to enforce lockout.",
     );
   } else {
     info(
