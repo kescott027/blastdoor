@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import dotenv from "dotenv";
 import { createInstallerApp } from "../scripts/install-gui.js";
 
@@ -198,6 +199,95 @@ test("installer API validates external API configuration requirements", async ()
 
       assert.equal(response.status, 400);
       assert.match(String(response.body.error || ""), /requires blastdoorApiUrl/i);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("installer API supports close action and invokes exit callback", async () => {
+  await withTempDir(async (workspaceDir) => {
+    let exitAction = null;
+    const app = createInstallerApp({
+      configPath: path.join(workspaceDir, "data", "installation_config.json"),
+      envPath: path.join(workspaceDir, ".env"),
+      dockerEnvPath: path.join(workspaceDir, "docker", "blastdoor.env"),
+      requestExit(action) {
+        exitAction = action;
+      },
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, {
+        method: "POST",
+        pathname: "/api/exit",
+        body: { action: "close" },
+      });
+
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+      assert.equal(response.body.action, "close");
+
+      await delay(200);
+      assert.equal(exitAction, "close");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("installer API launch action supports defer mode and validates saved profile", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const configPath = path.join(workspaceDir, "data", "installation_config.json");
+    const envPath = path.join(workspaceDir, ".env");
+    const dockerEnvPath = path.join(workspaceDir, "docker", "blastdoor.env");
+    let launchCalls = 0;
+
+    const app = createInstallerApp({
+      configPath,
+      envPath,
+      dockerEnvPath,
+      deferLaunch: true,
+      async launchDispatcher() {
+        launchCalls += 1;
+      },
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const missingProfileResponse = await request(port, {
+        method: "POST",
+        pathname: "/api/exit",
+        body: { action: "launch" },
+      });
+      assert.equal(missingProfileResponse.status, 400);
+      assert.match(String(missingProfileResponse.body.error || ""), /save configuration before launching/i);
+
+      const saveResponse = await request(port, {
+        method: "POST",
+        pathname: "/api/config",
+        body: {
+          installType: "local",
+          foundryMode: "local",
+        },
+      });
+      assert.equal(saveResponse.status, 200);
+
+      const launchResponse = await request(port, {
+        method: "POST",
+        pathname: "/api/exit",
+        body: { action: "launch" },
+      });
+      assert.equal(launchResponse.status, 200);
+      assert.equal(launchResponse.body.ok, true);
+      assert.equal(launchResponse.body.action, "launch");
+      assert.equal(launchResponse.body.deferred, true);
+      assert.equal(launchCalls, 0);
     } finally {
       await closeServer(server);
     }

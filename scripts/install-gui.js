@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import express from "express";
+import fs from "node:fs/promises";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   defaultInstallationConfig,
@@ -19,6 +20,20 @@ const workspaceDir = path.resolve(__dirname, "..");
 const defaultConfigPath = path.join(workspaceDir, "data", "installation_config.json");
 const defaultEnvPath = path.join(workspaceDir, ".env");
 const defaultDockerEnvPath = path.join(workspaceDir, "docker", "blastdoor.env");
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
 
 function openBrowser(url) {
   const candidates = [];
@@ -45,7 +60,46 @@ function openBrowser(url) {
   return false;
 }
 
-function renderHtml() {
+function spawnDetachedCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(command, args, {
+        detached: true,
+        stdio: "ignore",
+        ...options,
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    child.once("error", (error) => {
+      reject(error);
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function defaultLaunchDispatcher(config) {
+  const installType = String(config?.installType || "local").toLowerCase();
+  if (installType === "container") {
+    return spawnDetachedCommand("docker", ["compose", "up", "-d", "--build"], {
+      cwd: workspaceDir,
+      env: { ...process.env },
+    });
+  }
+
+  return spawnDetachedCommand(process.execPath, ["scripts/launch-control.js"], {
+    cwd: workspaceDir,
+    env: { ...process.env },
+  });
+}
+
+function renderHtml({ deferLaunch = false } = {}) {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -249,6 +303,10 @@ function renderHtml() {
         <button id="nextBtn" type="button">Next</button>
         <button id="saveBtn" type="button" class="hidden">Save Configuration</button>
       </div>
+      <div id="postSaveActions" class="buttons hidden">
+        <button id="closeBtn" type="button" class="secondary">Close</button>
+        <button id="launchExitBtn" type="button">Launch and Exit</button>
+      </div>
       <div id="status" class="status"></div>
     </main>
 
@@ -259,6 +317,9 @@ function renderHtml() {
       const prevBtn = document.getElementById("prevBtn");
       const nextBtn = document.getElementById("nextBtn");
       const saveBtn = document.getElementById("saveBtn");
+      const postSaveActions = document.getElementById("postSaveActions");
+      const closeBtn = document.getElementById("closeBtn");
+      const launchExitBtn = document.getElementById("launchExitBtn");
       const foundryMode = document.getElementById("foundryMode");
       const foundryLocalGroup = document.getElementById("foundryLocalGroup");
       const foundryExternalGroup = document.getElementById("foundryExternalGroup");
@@ -319,6 +380,19 @@ function renderHtml() {
         if (current === steps.length - 1) {
           review.textContent = JSON.stringify(formData(), null, 2);
         }
+      }
+
+      async function requestInstallerExit(action) {
+        const response = await fetch("/api/exit", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Failed to complete installer exit action.");
+        }
+        return payload;
       }
 
       function fillForm(config) {
@@ -394,6 +468,43 @@ function renderHtml() {
         status.className = "status good";
         model = result.config;
         review.textContent = JSON.stringify(model, null, 2);
+        postSaveActions.classList.remove("hidden");
+      });
+
+      closeBtn.addEventListener("click", async () => {
+        closeBtn.disabled = true;
+        launchExitBtn.disabled = true;
+        try {
+          const payload = await requestInstallerExit("close");
+          status.textContent = payload.message || "Installer is closing. You can close this tab.";
+          status.className = "status good";
+          setTimeout(() => {
+            window.close();
+          }, 350);
+        } catch (error) {
+          status.textContent = error.message || String(error);
+          status.className = "status warn";
+          closeBtn.disabled = false;
+          launchExitBtn.disabled = false;
+        }
+      });
+
+      launchExitBtn.addEventListener("click", async () => {
+        closeBtn.disabled = true;
+        launchExitBtn.disabled = true;
+        try {
+          const payload = await requestInstallerExit("launch");
+          status.textContent = payload.message || "Launch command accepted. Installer is closing.";
+          status.className = "status good";
+          setTimeout(() => {
+            window.close();
+          }, 350);
+        } catch (error) {
+          status.textContent = error.message || String(error);
+          status.className = "status warn";
+          closeBtn.disabled = false;
+          launchExitBtn.disabled = false;
+        }
       });
 
       load().catch((error) => {
@@ -401,6 +512,9 @@ function renderHtml() {
         status.className = "status warn";
       });
       syncApiSection();
+      if (${deferLaunch ? "true" : "false"}) {
+        launchExitBtn.textContent = "Launch and Exit (Terminal)";
+      }
       renderStep();
     </script>
   </body>
@@ -411,6 +525,9 @@ export function createInstallerApp({
   configPath = defaultConfigPath,
   envPath = defaultEnvPath,
   dockerEnvPath = defaultDockerEnvPath,
+  deferLaunch = false,
+  requestExit = () => {},
+  launchDispatcher = defaultLaunchDispatcher,
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
@@ -453,8 +570,65 @@ export function createInstallerApp({
     }
   });
 
+  app.post("/api/exit", async (req, res) => {
+    try {
+      const action = String(req.body?.action || "close").trim().toLowerCase();
+      if (!["close", "launch"].includes(action)) {
+        return res.status(400).json({
+          error: "Invalid installer exit action.",
+        });
+      }
+
+      if (action === "launch") {
+        const config = await readInstallationConfig(configPath);
+        if (!config) {
+          return res.status(400).json({
+            error: "No installation profile found. Save configuration before launching.",
+          });
+        }
+
+        if (!deferLaunch) {
+          try {
+            await launchDispatcher(config);
+          } catch (error) {
+            return res.status(500).json({
+              error: `Launch failed: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          }
+        }
+      }
+
+      const deferred = action === "launch" && deferLaunch;
+      const message =
+        action === "launch"
+          ? deferred
+            ? "Launch request accepted. Installer will close and the terminal launch flow will continue."
+            : "Launch started. Installer is closing."
+          : "Installer is closing.";
+
+      res.json({
+        ok: true,
+        action,
+        deferred,
+        message,
+      });
+
+      setTimeout(() => {
+        try {
+          requestExit(action);
+        } catch {
+          // ignore
+        }
+      }, 120);
+    } catch (error) {
+      return res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   app.get("/", (_req, res) => {
-    res.type("html").send(renderHtml());
+    res.type("html").send(renderHtml({ deferLaunch }));
   });
 
   return app;
@@ -466,11 +640,42 @@ export function startInstallerServer({
   configPath = defaultConfigPath,
   envPath = defaultEnvPath,
   dockerEnvPath = defaultDockerEnvPath,
+  deferLaunch = parseBoolean(process.env.INSTALLER_DEFER_LAUNCH, false),
+  exitSignalPath = process.env.INSTALLER_EXIT_SIGNAL_PATH || "",
   autoOpen = true,
 } = {}) {
-  const app = createInstallerApp({ configPath, envPath, dockerEnvPath });
+  const resolvedExitSignalPath = exitSignalPath ? path.resolve(workspaceDir, exitSignalPath) : "";
+  let server = null;
+  const app = createInstallerApp({
+    configPath,
+    envPath,
+    dockerEnvPath,
+    deferLaunch,
+    requestExit(action) {
+      const closeServer = () => {
+        if (!server) {
+          return;
+        }
+        server.close(() => {
+          process.exit(0);
+        });
+      };
+
+      if (!resolvedExitSignalPath) {
+        closeServer();
+        return;
+      }
+
+      fs.mkdir(path.dirname(resolvedExitSignalPath), { recursive: true })
+        .then(() => fs.writeFile(resolvedExitSignalPath, `${action}\n`, "utf8"))
+        .catch(() => {
+          // ignore signal write errors and continue shutdown
+        })
+        .finally(closeServer);
+    },
+  });
   const installerUrl = `http://${installerHost}:${installerPort}`;
-  const server = app.listen(installerPort, installerHost, () => {
+  server = app.listen(installerPort, installerHost, () => {
     console.log(`Blastdoor installer available at ${installerUrl}`);
     if (!autoOpen) {
       return;
