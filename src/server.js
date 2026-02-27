@@ -7,6 +7,7 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 import { authenticator } from "otplib";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -58,6 +59,130 @@ function requiredEnv(env, name, validator) {
   }
 
   return value;
+}
+
+function normalizeHostname(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
+function isWildcardHost(hostname) {
+  return hostname === "0.0.0.0" || hostname === "::";
+}
+
+function isLoopbackHost(hostname) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function defaultPortForProtocol(protocol) {
+  if (protocol === "https:") {
+    return 443;
+  }
+  if (protocol === "http:") {
+    return 80;
+  }
+  return null;
+}
+
+function resolveUrlPort(url) {
+  if (url.port) {
+    const parsed = Number.parseInt(url.port, 10);
+    return Number.isInteger(parsed) ? parsed : null;
+  }
+  return defaultPortForProtocol(url.protocol);
+}
+
+function collectLocalHostnames() {
+  const local = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0", "::"]);
+  const machineHostname = normalizeHostname(os.hostname());
+  if (machineHostname) {
+    local.add(machineHostname);
+  }
+
+  const interfaces = os.networkInterfaces();
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries || []) {
+      const normalized = normalizeHostname(entry.address);
+      if (normalized) {
+        local.add(normalized);
+      }
+    }
+  }
+
+  return local;
+}
+
+export function detectSelfProxyTarget(config) {
+  const gatewayPort = Number.parseInt(String(config?.port ?? ""), 10);
+  if (!Number.isInteger(gatewayPort)) {
+    return {
+      isSelfTarget: false,
+      reason: null,
+    };
+  }
+
+  let targetUrl;
+  try {
+    targetUrl = new URL(String(config?.foundryTarget || ""));
+  } catch {
+    return {
+      isSelfTarget: false,
+      reason: null,
+    };
+  }
+
+  const targetPort = resolveUrlPort(targetUrl);
+  if (!Number.isInteger(targetPort) || targetPort !== gatewayPort) {
+    return {
+      isSelfTarget: false,
+      reason: null,
+      targetHost: normalizeHostname(targetUrl.hostname),
+      targetPort,
+      gatewayHost: normalizeHostname(config?.host || ""),
+      gatewayPort,
+    };
+  }
+
+  const gatewayHost = normalizeHostname(config?.host || "");
+  const targetHost = normalizeHostname(targetUrl.hostname);
+  const localHosts = collectLocalHostnames();
+  const targetLooksLocal = localHosts.has(targetHost) || isLoopbackHost(targetHost) || isWildcardHost(targetHost);
+  const gatewayLooksLocal = localHosts.has(gatewayHost) || isLoopbackHost(gatewayHost) || isWildcardHost(gatewayHost);
+  const exactHostMatch = gatewayHost.length > 0 && gatewayHost === targetHost;
+  const wildcardGatewayToLocalTarget = isWildcardHost(gatewayHost) && targetLooksLocal;
+  const localAliasMatch = gatewayLooksLocal && targetLooksLocal;
+
+  if (!exactHostMatch && !wildcardGatewayToLocalTarget && !localAliasMatch) {
+    return {
+      isSelfTarget: false,
+      reason: null,
+      targetHost,
+      targetPort,
+      gatewayHost,
+      gatewayPort,
+    };
+  }
+
+  let reason = "target-resolves-to-gateway";
+  if (exactHostMatch) {
+    reason = "exact-host-and-port-match";
+  } else if (wildcardGatewayToLocalTarget) {
+    reason = "wildcard-bind-with-local-target";
+  } else if (localAliasMatch) {
+    reason = "local-alias-host-and-port-match";
+  }
+
+  return {
+    isSelfTarget: true,
+    reason,
+    targetHost,
+    targetPort,
+    gatewayHost,
+    gatewayPort,
+  };
 }
 
 export function loadConfigFromEnv(env = process.env) {
@@ -144,6 +269,14 @@ export function validateConfig(config) {
     new URL(config.foundryTarget);
   } catch {
     throw new Error("FOUNDRY_TARGET must be a full URL like http://127.0.0.1:30000");
+  }
+
+  const selfTarget = detectSelfProxyTarget(config);
+  if (selfTarget.isSelfTarget) {
+    throw new Error(
+      `FOUNDRY_TARGET points to this Blastdoor gateway (${selfTarget.targetHost}:${selfTarget.targetPort}). ` +
+        `Use your Foundry server address/port instead (for example http://127.0.0.1:30000).`,
+    );
   }
 }
 
@@ -563,6 +696,15 @@ export function createApp(config, options = {}) {
   });
 
   app.get("/login", async (req, res) => {
+    const forceReauth = parseBoolean(req.query.reauth, false);
+    if (forceReauth && req.session) {
+      const nextPath = safeNextPath(req.query.next, "/");
+      return req.session.destroy(() => {
+        res.clearCookie("blastdoor.sid");
+        res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+      });
+    }
+
     if (req.session?.authenticated) {
       const nextPath = safeNextPath(req.query.next, "/");
       if (logger.debugEnabled) {
@@ -757,22 +899,36 @@ export function createApp(config, options = {}) {
     secure: config.proxyTlsVerify,
     proxyTimeout: 60_000,
     timeout: 60_000,
-    onError(err, req, res) {
-      logger.error("proxy.http_error", {
-        requestId: req.requestId || null,
-        path: req.url || null,
-        target: config.foundryTarget,
-        error: {
-          name: err.name,
-          message: err.message,
-        },
-      });
+    on: {
+      error(err, req, res) {
+        const details = {
+          requestId: req.requestId || null,
+          path: req.url || null,
+          host: req.headers?.host || null,
+          target: config.foundryTarget,
+          error: {
+            name: err.name,
+            message: err.message,
+            code: err.code || null,
+          },
+        };
 
-      if (!res.headersSent) {
-        res.writeHead(502, { "Content-Type": "text/plain" });
-      }
+        logger.error("proxy.http_error", details);
 
-      res.end(`Gateway error: ${err.message}`);
+        if (!res || typeof res.writeHead !== "function" || typeof res.end !== "function") {
+          return;
+        }
+
+        if (!res.headersSent) {
+          res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+        }
+
+        const suggestion =
+          err.code === "ECONNREFUSED"
+            ? "Foundry target refused the connection. Verify FOUNDRY_TARGET and that Foundry is running."
+            : "Verify FOUNDRY_TARGET and upstream Foundry availability.";
+        res.end(`Gateway error: ${err.message}\nTarget: ${config.foundryTarget}\n${suggestion}`);
+      },
     },
   });
 

@@ -5,10 +5,11 @@ import { createReadStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createPasswordHash } from "./security.js";
-import { validateConfig, loadConfigFromEnv } from "./server.js";
+import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
 import {
   createThemeId,
@@ -94,6 +95,10 @@ function formatEnvValue(value) {
   }
 
   return JSON.stringify(value);
+}
+
+function createSessionSecret() {
+  return randomBytes(48).toString("base64url");
 }
 
 function normalizeString(value, fallback = "") {
@@ -453,6 +458,54 @@ async function checkBlastdoorHealth(config) {
   }
 }
 
+async function checkFoundryTargetHealth(config) {
+  const rawTarget = normalizeString(config.FOUNDRY_TARGET, "");
+  if (!rawTarget) {
+    return {
+      ok: false,
+      statusCode: null,
+      url: "",
+      error: "FOUNDRY_TARGET is not configured.",
+    };
+  }
+
+  let targetUrl;
+  try {
+    targetUrl = new URL(rawTarget);
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      url: rawTarget,
+      error: `Invalid FOUNDRY_TARGET URL: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2000);
+  try {
+    const response = await fetch(targetUrl, {
+      method: "GET",
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    return {
+      ok: true,
+      statusCode: response.status,
+      url: targetUrl.toString(),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      url: targetUrl.toString(),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function parseBooleanLike(value, fallback = false) {
   if (value === undefined || value === null || value === "") {
     return fallback;
@@ -461,9 +514,14 @@ function parseBooleanLike(value, fallback = false) {
   return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 }
 
-function createTroubleshootChecks({ config, health, environment }) {
+function createTroubleshootChecks({ config, health, foundryHealth, environment }) {
   const checks = [];
   const blastDoorsClosed = parseBooleanLike(config.BLAST_DOORS_CLOSED, false);
+  const selfTarget = detectSelfProxyTarget({
+    host: normalizeString(config.HOST, CONFIG_DEFAULTS.HOST),
+    port: Number.parseInt(config.PORT || CONFIG_DEFAULTS.PORT, 10),
+    foundryTarget: normalizeString(config.FOUNDRY_TARGET, CONFIG_DEFAULTS.FOUNDRY_TARGET),
+  });
 
   checks.push({
     id: "gateway.blastdoors",
@@ -497,6 +555,31 @@ function createTroubleshootChecks({ config, health, environment }) {
       : `Gateway health endpoint is unreachable at ${health.url}${health.error ? ` (${health.error})` : ""}.`,
     recommendation: health.ok ? null : "Confirm service status and check Runtime/Debug logs.",
   });
+
+  if (selfTarget.isSelfTarget) {
+    checks.push({
+      id: "proxy.self-target",
+      title: "Proxy self-target loop detection",
+      status: "error",
+      detail: `FOUNDRY_TARGET resolves to the Blastdoor gateway address (${selfTarget.targetHost}:${selfTarget.targetPort}).`,
+      recommendation:
+        "Set FOUNDRY_TARGET to your Foundry VTT server endpoint (different host/port than Blastdoor), then restart.",
+    });
+  } else {
+    checks.push({
+      id: "proxy.foundry-target-health",
+      title: "Foundry target reachability",
+      status: foundryHealth.ok ? "ok" : "error",
+      detail: foundryHealth.ok
+        ? `Foundry target responded from ${foundryHealth.url} with status ${foundryHealth.statusCode}.`
+        : `Unable to reach Foundry target at ${foundryHealth.url || "unset"}${foundryHealth.error ? ` (${foundryHealth.error})` : ""}.`,
+      recommendation: foundryHealth.ok
+        ? null
+        : environment.isWsl
+          ? "When running in WSL, ensure FOUNDRY_TARGET points to an address reachable from Linux and that Foundry is running."
+          : "Verify Foundry is running and FOUNDRY_TARGET points to the correct service address and port.",
+    });
+  }
 
   const cookieSecure = parseBooleanLike(config.COOKIE_SECURE, false);
   checks.push({
@@ -812,12 +895,12 @@ async function runTroubleshootAction({ actionId, config, environment, workspaceD
   throw new Error(`Unknown or unsupported troubleshooting action '${actionId}'.`);
 }
 
-function createTroubleshootReport({ config, health, environment, serviceStatus }) {
+function createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus }) {
   return {
     generatedAt: new Date().toISOString(),
     serviceStatus,
     environment,
-    checks: createTroubleshootChecks({ config, health, environment }),
+    checks: createTroubleshootChecks({ config, health, foundryHealth, environment }),
     safeActions: buildSafeActions(environment),
     guidedActions: buildGuidedActions({ environment, config }),
   };
@@ -943,6 +1026,37 @@ export function createManagerApp(options = {}) {
       await processState.stop();
       const status = await processState.start();
       res.json({ ok: true, status });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/sessions/revoke-all", async (_req, res) => {
+    try {
+      const config = await readEnvConfig(envPath);
+      const nextSecret = createSessionSecret();
+      const nextConfig = {
+        ...config,
+        SESSION_SECRET: nextSecret,
+      };
+
+      await writeEnvConfig(envPath, nextConfig);
+
+      let serviceRestarted = false;
+      if (processState.getStatus().running) {
+        await processState.stop();
+        await processState.start();
+        serviceRestarted = true;
+      }
+
+      res.json({
+        ok: true,
+        serviceRestarted,
+        rotatedAt: new Date().toISOString(),
+        forceReauthUrl: "/login?reauth=1",
+      });
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : String(error),
@@ -1102,9 +1216,9 @@ export function createManagerApp(options = {}) {
     try {
       const config = await readEnvConfig(envPath);
       const serviceStatus = processState.getStatus();
-      const health = await checkBlastdoorHealth(config);
+      const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
       const environment = detectEnvironmentInfo({ workspaceDir, envPath });
-      const report = createTroubleshootReport({ config, health, environment, serviceStatus });
+      const report = createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus });
 
       res.json({
         ok: true,

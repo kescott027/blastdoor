@@ -457,6 +457,20 @@ document.getElementById("restartBtn").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("revokeSessionsBtn").addEventListener("click", async () => {
+  try {
+    const result = await api("POST", "/sessions/revoke-all");
+    setMessage(
+      result?.serviceRestarted
+        ? "All sessions were revoked (SESSION_SECRET rotated). Gateway restarted."
+        : "All sessions were revoked (SESSION_SECRET rotated). Restart gateway to enforce immediately.",
+    );
+    await refreshAll();
+  } catch (error) {
+    setMessage(error.message || String(error), true);
+  }
+});
+
 document.getElementById("refreshBtn").addEventListener("click", async () => {
   await refreshAll();
   setMessage("Status refreshed.");

@@ -587,6 +587,48 @@ test("gateway behavior without TOTP", async (t) => {
     assert.equal(after.status, 401);
   });
 
+  await t.test("login reauth query clears active session and returns login screen", async () => {
+    const jar = new CookieJar();
+    const csrf = await getLoginCsrf(gateway.port, jar, "/reauth-check");
+
+    const login = await postLogin(gateway.port, jar, {
+      csrf,
+      username: gateway.username,
+      password: gateway.password,
+      next: "/reauth-check",
+    });
+    assertTransitionResponse(login, "/reauth-check");
+
+    const forceReauth = await request(
+      gateway.port,
+      {
+        path: "/login?reauth=1&next=%2Freauth-check",
+        headers: { accept: "text/html" },
+      },
+      jar,
+    );
+    assert.equal(forceReauth.status, 302);
+    assert.equal(forceReauth.headers.location, "/login?next=%2Freauth-check");
+
+    const loginPage = await request(
+      gateway.port,
+      {
+        path: "/login?next=%2Freauth-check",
+        headers: { accept: "text/html" },
+      },
+      jar,
+    );
+    assert.equal(loginPage.status, 200);
+    assert.match(loginPage.body, /<form method="post" action="\/login"/);
+
+    const protectedAfterReauth = await request(
+      gateway.port,
+      { path: "/reauth-check", headers: { accept: "application/json" } },
+      jar,
+    );
+    assert.equal(protectedAfterReauth.status, 401);
+  });
+
   await t.test("websocket upgrades require auth", async () => {
     const unauth = await wsHandshake(gateway.port, "/socket");
     assert.match(unauth.statusLine, /^HTTP\/1\.1 401/);
@@ -1017,7 +1059,8 @@ test("proxy returns 502 when target is unreachable", async (t) => {
 
   const proxied = await request(gateway.port, { path: "/world", headers: { accept: "application/json" } }, jar);
   assert.ok([502, 504].includes(proxied.status));
-  assert.match(proxied.body, /Gateway error|Error occurred while trying to proxy/i);
+  assert.match(proxied.body, /Gateway error/i);
+  assert.match(proxied.body, /Foundry target refused the connection|Verify FOUNDRY_TARGET/i);
 });
 
 test("login rate limiting blocks excessive attempts", async (t) => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadConfigFromEnv, validateConfig } from "../src/server.js";
+import { detectSelfProxyTarget, loadConfigFromEnv, validateConfig } from "../src/server.js";
 
 test("loadConfigFromEnv supports sqlite store defaults", () => {
   const config = loadConfigFromEnv({
@@ -119,4 +119,47 @@ test("validateConfig requires postgres url for postgres-backed stores", () => {
       }),
     /POSTGRES_URL is required/,
   );
+});
+
+test("validateConfig rejects self-targeting Foundry URL", () => {
+  assert.throws(
+    () =>
+      validateConfig({
+        host: "127.0.0.1",
+        port: 8080,
+        foundryTarget: "http://localhost:8080",
+        authUsername: "gm",
+        authPasswordHash: "scrypt$a$b",
+        requireTotp: false,
+        totpSecret: "",
+        sessionSecret: "x".repeat(48),
+        sessionMaxAgeHours: 12,
+        cookieSecure: false,
+        trustProxy: false,
+        proxyTlsVerify: true,
+        loginRateLimitWindowMs: 900000,
+        loginRateLimitMax: 8,
+        debugMode: false,
+        debugLogFile: "logs/blastdoor-debug.log",
+        allowedOrigins: "",
+        allowNullOrigin: false,
+        configStoreMode: "env",
+        databaseFile: "",
+        postgresUrl: "",
+        postgresSsl: false,
+        passwordStoreMode: "env",
+        passwordStoreFile: "",
+      }),
+    /FOUNDRY_TARGET points to this Blastdoor gateway/,
+  );
+});
+
+test("detectSelfProxyTarget allows remote target on same port", () => {
+  const check = detectSelfProxyTarget({
+    host: "127.0.0.1",
+    port: 8080,
+    foundryTarget: "http://203.0.113.10:8080",
+  });
+
+  assert.equal(check.isSelfTarget, false);
 });

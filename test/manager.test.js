@@ -208,6 +208,62 @@ test("manager can start stop and monitor gateway process", async () => {
   });
 });
 
+test("manager can revoke all sessions by rotating session secret", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const initialSecret = "y".repeat(48);
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        `SESSION_SECRET=${initialSecret}`,
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { factory, created } = createFakeProcessFactory();
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      processFactory: factory,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const started = await request(port, { method: "POST", pathname: "/api/start" });
+      assert.equal(started.status, 200);
+      assert.equal(started.body.status.running, true);
+      assert.equal(created.length, 1);
+
+      const revoke = await request(port, { method: "POST", pathname: "/api/sessions/revoke-all" });
+      assert.equal(revoke.status, 200);
+      assert.equal(revoke.body.ok, true);
+      assert.equal(revoke.body.serviceRestarted, true);
+      assert.equal(revoke.body.forceReauthUrl, "/login?reauth=1");
+      assert.equal(created.length, 2);
+      assert.equal(created[0].killed, true);
+
+      const envContent = await fs.readFile(envPath, "utf8");
+      const secretLine = envContent
+        .split(/\r?\n/)
+        .find((line) => line.startsWith("SESSION_SECRET="));
+      assert.ok(secretLine);
+      assert.notEqual(secretLine, `SESSION_SECRET=${initialSecret}`);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager lock toggle restarts a running managed gateway immediately", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");
@@ -582,6 +638,48 @@ test("manager troubleshooting report includes WSL guidance when running in WSL",
       } else {
         process.env.WSL_DISTRO_NAME = previousDistro;
       }
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager troubleshooting flags proxy self-target misconfiguration", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://localhost:8080",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$x$y",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, { pathname: "/api/troubleshoot" });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+
+      const issue = response.body.report.checks.find((entry) => entry.id === "proxy.self-target");
+      assert.ok(issue);
+      assert.equal(issue.status, "error");
+      assert.match(issue.detail, /FOUNDRY_TARGET resolves to the Blastdoor gateway/i);
+    } finally {
       await closeServer(server);
     }
   });
