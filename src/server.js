@@ -4,7 +4,6 @@ import helmet from "helmet";
 import session from "express-session";
 import rateLimit from "express-rate-limit";
 import { createProxyMiddleware } from "http-proxy-middleware";
-import { authenticator } from "otplib";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -19,6 +18,7 @@ import {
   verifyPassword,
 } from "./security.js";
 import { createLogger } from "./logger.js";
+import { authenticator } from "./otp.js";
 import { createConfigStore } from "./config-store.js";
 import { createPasswordStore } from "./password-store.js";
 import { mapThemeForClient, readThemeStore, resolveActiveTheme } from "./login-theme.js";
