@@ -12,7 +12,7 @@ DEBUG_FORCED_USERNAME ?= gm
 DEBUG_FORCED_PASSWORD ?= R@ndomPa55w0rd!
 ALLOW_NULL_ORIGIN ?= false
 
-.PHONY: help install ensure-deps ensure-dev-deps lint test precommit-install setup-env launch manager-launch mock-vtt test-launch debug-launch
+.PHONY: help install ensure-deps ensure-dev-deps lint test precommit-install setup-env launch launch-env manager-launch mock-vtt test-launch debug-launch
 
 help:
 	@echo "Targets:"
@@ -21,7 +21,8 @@ help:
 	@echo "  make test          Run unit/integration tests"
 	@echo "  make precommit-install  Install local git hooks (husky)"
 	@echo "  make setup-env     Interactive .env setup wizard"
-	@echo "  make launch        Launch Blastdoor using .env"
+	@echo "  make launch        Launch interactive control console (manager + service controls)"
+	@echo "  make launch-env    Launch Blastdoor service using .env (legacy behavior)"
 	@echo "  make manager-launch Launch local Blastdoor management UI"
 	@echo "  make mock-vtt      Launch standalone mock VTT backend"
 	@echo "  make test-launch   Launch Blastdoor against the mock VTT backend"
@@ -54,12 +55,19 @@ precommit-install: ensure-dev-deps
 setup-env: ensure-deps
 	node scripts/setup-env.js
 
-launch: ensure-deps
+launch-env: ensure-deps
 	@if [ ! -f .env ]; then \
 		echo "No .env found. Starting interactive setup..."; \
 		node scripts/setup-env.js; \
 	fi
 	npm start
+
+launch: ensure-deps
+	@if [ ! -f .env ]; then \
+		echo "No .env found. Starting interactive setup..."; \
+		node scripts/setup-env.js; \
+	fi
+	node scripts/launch-control.js
 
 manager-launch: ensure-deps
 	npm run manager
