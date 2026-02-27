@@ -30,9 +30,18 @@ function request(port, { method = "GET", pathname = "/", body = null }) {
           raw += chunk;
         });
         res.on("end", () => {
+          let parsed = {};
+          if (raw) {
+            try {
+              parsed = JSON.parse(raw);
+            } catch {
+              parsed = { raw };
+            }
+          }
+
           resolve({
             status: res.statusCode,
-            body: raw ? JSON.parse(raw) : {},
+            body: parsed,
           });
         });
       },
@@ -246,6 +255,109 @@ test("manager diagnostics endpoint returns sanitized report", async () => {
       assert.doesNotMatch(response.body.summary, /super-session-secret/);
       assert.doesNotMatch(response.body.summary, /super-secret/);
       assert.match(response.body.summary, /Redactions:/);
+
+      const aliasResponse = await request(port, { pathname: "/manager/api/diagnostics" });
+      assert.equal(aliasResponse.status, 200);
+      assert.equal(aliasResponse.body.ok, true);
+      assert.equal(aliasResponse.body.report.config.SESSION_SECRET, "[REDACTED]");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager diagnostics preserves empty secret fields", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "CONFIG_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=",
+        "SESSION_SECRET=",
+        "REQUIRE_TOTP=false",
+        "TOTP_SECRET=",
+        "DEBUG_MODE=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, { pathname: "/api/diagnostics" });
+      assert.equal(response.status, 200);
+      const config = response.body.report.config;
+      assert.equal(config.AUTH_PASSWORD_HASH, "");
+      assert.equal(config.AUTH_PASSWORD_HASH_PRESENT, false);
+      assert.equal(config.SESSION_SECRET, "");
+      assert.equal(config.TOTP_SECRET, "");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager diagnostics masks postgres URL credentials with fallback parser", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=postgres",
+        "CONFIG_STORE_MODE=postgres",
+        "POSTGRES_URL=//blastdoor:super-secret@127.0.0.1:5432/blastdoor",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, { pathname: "/api/diagnostics" });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.report.config.POSTGRES_URL, "//REDACTED:REDACTED@127.0.0.1:5432/blastdoor");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager diagnostics returns JSON error when .env cannot be read", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath: workspaceDir,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, { pathname: "/api/diagnostics" });
+      assert.equal(response.status, 500);
+      assert.equal(typeof response.body.error, "string");
+      assert.match(response.body.error, /Failed to read config/);
     } finally {
       await closeServer(server);
     }

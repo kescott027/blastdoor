@@ -409,11 +409,21 @@ export function createManagerApp(options = {}) {
   app.use(express.json({ limit: "64kb" }));
   app.use("/manager", express.static(managerDir, { etag: true, maxAge: "1h" }));
 
+  const registerApiGet = (routePath, handler) => {
+    app.get(`/api${routePath}`, handler);
+    app.get(`/manager/api${routePath}`, handler);
+  };
+
+  const registerApiPost = (routePath, handler) => {
+    app.post(`/api${routePath}`, handler);
+    app.post(`/manager/api${routePath}`, handler);
+  };
+
   app.get("/", (_req, res) => {
     res.redirect("/manager/");
   });
 
-  app.get("/api/config", async (_req, res) => {
+  registerApiGet("/config", async (_req, res) => {
     try {
       const config = await readEnvConfig(envPath);
       res.json({
@@ -427,7 +437,7 @@ export function createManagerApp(options = {}) {
     }
   });
 
-  app.post("/api/config", async (req, res) => {
+  registerApiPost("/config", async (req, res) => {
     try {
       const existing = await readEnvConfig(envPath);
       const incoming = parseBodyConfig(req.body || {});
@@ -459,7 +469,7 @@ export function createManagerApp(options = {}) {
     }
   });
 
-  app.post("/api/start", async (_req, res) => {
+  registerApiPost("/start", async (_req, res) => {
     try {
       const status = await processState.start();
       res.json({ ok: true, status });
@@ -470,7 +480,7 @@ export function createManagerApp(options = {}) {
     }
   });
 
-  app.post("/api/stop", async (_req, res) => {
+  registerApiPost("/stop", async (_req, res) => {
     try {
       const status = await processState.stop();
       res.json({ ok: true, status });
@@ -481,7 +491,7 @@ export function createManagerApp(options = {}) {
     }
   });
 
-  app.post("/api/restart", async (_req, res) => {
+  registerApiPost("/restart", async (_req, res) => {
     try {
       await processState.stop();
       const status = await processState.start();
@@ -493,7 +503,7 @@ export function createManagerApp(options = {}) {
     }
   });
 
-  app.get("/api/monitor", async (_req, res) => {
+  registerApiGet("/monitor", async (_req, res) => {
     try {
       const status = processState.getStatus();
       const config = await readEnvConfig(envPath);
@@ -516,7 +526,7 @@ export function createManagerApp(options = {}) {
     }
   });
 
-  app.get("/api/diagnostics", async (_req, res) => {
+  registerApiGet("/diagnostics", async (_req, res) => {
     try {
       const config = await readEnvConfig(envPath);
       const serviceStatus = processState.getStatus();

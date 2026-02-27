@@ -1,8 +1,11 @@
+import { formatUnexpectedPayload, resolveApiBasePath, resolveApiPath } from "./client-utils.js";
+
 const statusMessage = document.getElementById("statusMessage");
 const form = document.getElementById("configForm");
 const diagStatusMessage = document.getElementById("diagStatusMessage");
 const diagSummary = document.getElementById("diagSummary");
 const diagJson = document.getElementById("diagJson");
+const API_BASE = resolveApiBasePath(window.location.href);
 
 let latestDiagnostics = null;
 
@@ -69,8 +72,8 @@ function fillForm(config) {
   }
 }
 
-async function api(method, url, body) {
-  const response = await fetch(url, {
+async function api(method, routePath, body) {
+  const response = await fetch(resolveApiPath(API_BASE, routePath), {
     method,
     headers: {
       "content-type": "application/json",
@@ -78,7 +81,16 @@ async function api(method, url, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const payload = await response.json();
+  const rawBody = await response.text();
+  let payload = {};
+  if (rawBody) {
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      throw new Error(formatUnexpectedPayload(response, rawBody));
+    }
+  }
+
   if (!response.ok) {
     throw new Error(payload.error || `Request failed (${response.status})`);
   }
@@ -115,7 +127,7 @@ function renderDiagnostics(payload) {
 
 async function refreshAll() {
   try {
-    const [configResult, monitorResult] = await Promise.all([api("GET", "/api/config"), api("GET", "/api/monitor")]);
+    const [configResult, monitorResult] = await Promise.all([api("GET", "/config"), api("GET", "/monitor")]);
     fillForm(configResult.config);
     updateStatusCards(monitorResult);
   } catch (error) {
@@ -132,7 +144,7 @@ form.addEventListener("submit", async (event) => {
   }
 
   try {
-    await api("POST", "/api/config", payload);
+    await api("POST", "/config", payload);
     setMessage("Configuration saved.");
     await refreshAll();
   } catch (error) {
@@ -142,7 +154,7 @@ form.addEventListener("submit", async (event) => {
 
 document.getElementById("startBtn").addEventListener("click", async () => {
   try {
-    await api("POST", "/api/start");
+    await api("POST", "/start");
     setMessage("Blastdoor start signal sent.");
     await refreshAll();
   } catch (error) {
@@ -152,7 +164,7 @@ document.getElementById("startBtn").addEventListener("click", async () => {
 
 document.getElementById("stopBtn").addEventListener("click", async () => {
   try {
-    await api("POST", "/api/stop");
+    await api("POST", "/stop");
     setMessage("Blastdoor stop signal sent.");
     await refreshAll();
   } catch (error) {
@@ -162,7 +174,7 @@ document.getElementById("stopBtn").addEventListener("click", async () => {
 
 document.getElementById("restartBtn").addEventListener("click", async () => {
   try {
-    await api("POST", "/api/restart");
+    await api("POST", "/restart");
     setMessage("Blastdoor restart signal sent.");
     await refreshAll();
   } catch (error) {
@@ -177,7 +189,7 @@ document.getElementById("refreshBtn").addEventListener("click", async () => {
 
 document.getElementById("diagGenerateBtn").addEventListener("click", async () => {
   try {
-    const payload = await api("GET", "/api/diagnostics");
+    const payload = await api("GET", "/diagnostics");
     renderDiagnostics(payload);
     setDiagMessage("Diagnostics generated.");
   } catch (error) {
