@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blastdoor Control Console</title>
+    <link rel="stylesheet" href="/manager/style.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero-glow"></div>
+      <h1>Blastdoor Control Console</h1>
+      <p>Configure, launch, and monitor your Foundry gateway.</p>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <h2>Service Control</h2>
+        <div class="blastdoors-control">
+          <div>
+            <p class="panel-note">Lock blast doors to hard-lock the gateway and block all routing.</p>
+            <p class="status-inline"><strong>State:</strong> <span id="blastDoorsState">Unlocked</span></p>
+          </div>
+          <label class="switch" for="blastDoorsToggle" title="Lock blast doors">
+            <input id="blastDoorsToggle" type="checkbox" />
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="startBtn" type="button">Start</button>
+          <button id="stopBtn" type="button">Stop</button>
+          <button id="restartBtn" type="button">Restart</button>
+          <button id="revokeSessionsBtn" type="button">Revoke Sessions</button>
+          <button id="refreshBtn" type="button">Refresh</button>
+          <button id="appearanceBtn" type="button">Login Appearance</button>
+        </div>
+        <dl class="stats">
+          <div><dt>Running</dt><dd id="runningValue">No</dd></div>
+          <div><dt>PID</dt><dd id="pidValue">-</dd></div>
+          <div><dt>Uptime</dt><dd id="uptimeValue">0s</dd></div>
+          <div><dt>Health</dt><dd id="healthValue">Unknown</dd></div>
+        </dl>
+        <p class="status-message" id="statusMessage"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Configuration</h2>
+        <form id="configForm">
+          <input type="hidden" name="BLAST_DOORS_CLOSED" id="blastDoorsClosedField" />
+          <div class="grid">
+            <label>HOST <input name="HOST" required /></label>
+            <label>PORT <input name="PORT" required /></label>
+            <label>FOUNDRY_TARGET <input name="FOUNDRY_TARGET" required /></label>
+            <label>PASSWORD_STORE_MODE <input name="PASSWORD_STORE_MODE" required /></label>
+            <label>PASSWORD_STORE_FILE <input name="PASSWORD_STORE_FILE" /></label>
+            <label>CONFIG_STORE_MODE <input name="CONFIG_STORE_MODE" required /></label>
+            <label>DATABASE_FILE <input name="DATABASE_FILE" /></label>
+            <label>POSTGRES_URL <input name="POSTGRES_URL" /></label>
+            <label>POSTGRES_SSL <input name="POSTGRES_SSL" /></label>
+            <label>AUTH_USERNAME <input name="AUTH_USERNAME" required /></label>
+            <label>AUTH_PASSWORD (leave blank to keep) <input name="AUTH_PASSWORD" type="password" /></label>
+            <label>SESSION_SECRET <input name="SESSION_SECRET" /></label>
+            <label>COOKIE_SECURE <input name="COOKIE_SECURE" /></label>
+            <label>TRUST_PROXY <input name="TRUST_PROXY" /></label>
+            <label>SESSION_MAX_AGE_HOURS <input name="SESSION_MAX_AGE_HOURS" /></label>
+            <label>LOGIN_RATE_LIMIT_WINDOW_MS <input name="LOGIN_RATE_LIMIT_WINDOW_MS" /></label>
+            <label>LOGIN_RATE_LIMIT_MAX <input name="LOGIN_RATE_LIMIT_MAX" /></label>
+            <label>REQUIRE_TOTP <input name="REQUIRE_TOTP" /></label>
+            <label>TOTP_SECRET <input name="TOTP_SECRET" /></label>
+            <label>PROXY_TLS_VERIFY <input name="PROXY_TLS_VERIFY" /></label>
+            <label>ALLOWED_ORIGINS <input name="ALLOWED_ORIGINS" /></label>
+            <label>ALLOW_NULL_ORIGIN <input name="ALLOW_NULL_ORIGIN" /></label>
+            <label>DEBUG_MODE <input name="DEBUG_MODE" /></label>
+            <label>DEBUG_LOG_FILE <input name="DEBUG_LOG_FILE" /></label>
+          </div>
+          <div class="button-row">
+            <button type="submit">Save Config</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel diagnostics-panel">
+        <h2>Diagnostics</h2>
+        <p class="panel-note">
+          Generates a sanitized report for troubleshooting. Secrets are automatically redacted.
+        </p>
+        <div class="button-row">
+          <button id="diagGenerateBtn" type="button">Generate Diagnostics</button>
+          <button id="diagCopySummaryBtn" type="button">Copy Summary</button>
+          <button id="diagCopyJsonBtn" type="button">Copy JSON</button>
+        </div>
+        <p class="status-message" id="diagStatusMessage"></p>
+        <h3>Summary</h3>
+        <pre id="diagSummary" class="log-box"></pre>
+        <h3>JSON</h3>
+        <pre id="diagJson" class="log-box"></pre>
+      </section>
+
+      <section class="panel troubleshooting-panel">
+        <h2>Troubleshooting</h2>
+        <p class="panel-note">
+          Run read-only environment checks and view guided remediation steps. Potentially destructive fixes are never
+          executed automatically.
+        </p>
+        <div class="button-row">
+          <button id="tsAnalyzeBtn" type="button">Analyze System</button>
+          <button id="tsSnapshotBtn" type="button">Gather Snapshot</button>
+          <button id="tsGatewayBtn" type="button">Test Gateway Access</button>
+          <button id="tsPortproxyDetectBtn" type="button">Detect WSL Portproxy</button>
+          <button id="tsPortproxyScriptBtn" type="button">Show Portproxy Script</button>
+          <button id="tsCopyScriptBtn" type="button">Copy Script</button>
+        </div>
+        <p class="status-message" id="tsStatusMessage"></p>
+        <h3>Hints</h3>
+        <pre id="tsHints" class="log-box"></pre>
+        <h3>Action Output</h3>
+        <pre id="tsOutput" class="log-box"></pre>
+        <h3>Guided Script (Manual Review Required)</h3>
+        <pre id="tsScript" class="log-box"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Runtime Logs</h2>
+        <pre id="runtimeLogs" class="log-box"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Debug Log Tail</h2>
+        <pre id="debugLogs" class="log-box"></pre>
+      </section>
+    </main>
+
+    <aside
+      id="appearanceModal"
+      class="appearance-dock hidden"
+      hidden
+      role="region"
+      aria-labelledby="appearanceTitle"
+    >
+      <section class="appearance-dock-panel">
+        <header class="appearance-dock-header">
+          <h2 id="appearanceTitle">Blastdoor Login Appearance</h2>
+          <button id="appearanceCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          Create and apply themes using assets from <code>/graphics/logo</code> and <code>/graphics/background</code>.
+        </p>
+
+        <p class="status-message" id="appearanceStatusMessage"></p>
+
+        <div class="appearance-grid">
+          <label>Saved Themes
+            <select id="appearanceThemeSelect"></select>
+          </label>
+          <div class="button-row">
+            <button id="appearanceApplyBtn" type="button">Apply Theme</button>
+            <button id="appearanceEditBtn" type="button">Manage Theme</button>
+            <button id="appearanceNewBtn" type="button">New Theme</button>
+          </div>
+        </div>
+
+        <section id="appearanceEditorSection" class="appearance-editor hidden" hidden>
+          <h3 id="appearanceEditorHeading">Add New Theme</h3>
+
+          <form id="appearanceForm">
+            <div class="appearance-grid">
+              <label>Theme Name
+                <input id="appearanceThemeName" name="name" placeholder="Astral Siege" required />
+              </label>
+              <label>Logo (optional)
+                <div class="asset-picker-row">
+                  <input id="appearanceLogoDisplay" type="text" readonly value="None" />
+                  <button id="appearanceChooseLogoBtn" type="button">Choose a Logo</button>
+                </div>
+                <input id="appearanceLogoPath" name="logoPath" type="hidden" value="" />
+              </label>
+              <label>Closed Background
+                <div class="asset-picker-row">
+                  <input id="appearanceClosedBgDisplay" type="text" readonly value="None" />
+                  <button id="appearanceChooseClosedBgBtn" type="button">Choose Closed Background</button>
+                </div>
+                <input id="appearanceClosedBgPath" name="closedBackgroundPath" type="hidden" value="" />
+              </label>
+              <label>Open Background (optional)
+                <div class="asset-picker-row">
+                  <input id="appearanceOpenBgDisplay" type="text" readonly value="None" />
+                  <button id="appearanceChooseOpenBgBtn" type="button">Choose Open Background</button>
+                </div>
+                <input id="appearanceOpenBgPath" name="openBackgroundPath" type="hidden" value="" />
+              </label>
+              <label class="checkbox-label">
+                <input id="appearanceMakeActive" name="makeActive" type="checkbox" checked />
+                Make active after save
+              </label>
+            </div>
+
+            <section id="appearanceAssetChooser" class="asset-chooser hidden" hidden>
+              <h3 id="appearanceAssetChooserTitle">Choose Asset</h3>
+              <p class="panel-note">Select one option and click Use Selection.</p>
+              <div id="appearanceAssetChooserList" class="asset-chooser-list"></div>
+              <div class="button-row">
+                <button id="appearanceAssetSelectBtn" type="button">Use Selection</button>
+                <button id="appearanceAssetCancelBtn" type="button" class="ghost-btn">Cancel</button>
+              </div>
+            </section>
+
+            <section class="appearance-layout-section">
+              <h3>Theme Layout</h3>
+              <p class="panel-note">100% equals the original default login box size. Minimum login box size is 20%.</p>
+              <label>Login Box Transparency
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxOpacityPercent"
+                    name="loginBoxOpacityPercent"
+                    type="range"
+                    min="10"
+                    max="100"
+                    step="1"
+                    value="100"
+                  />
+                  <span id="appearanceLoginBoxOpacityValue" class="range-value">100%</span>
+                </div>
+              </label>
+              <label>Mouse-Over Login Box Transparency
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxHoverOpacityPercent"
+                    name="loginBoxHoverOpacityPercent"
+                    type="range"
+                    min="10"
+                    max="100"
+                    step="1"
+                    value="100"
+                  />
+                  <span id="appearanceLoginBoxHoverOpacityValue" class="range-value">100%</span>
+                </div>
+              </label>
+              <label>Login Box Width
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxWidthPercent"
+                    name="loginBoxWidthPercent"
+                    type="range"
+                    min="20"
+                    max="100"
+                    step="1"
+                    value="100"
+                  />
+                  <span id="appearanceLoginBoxWidthValue" class="range-value">100%</span>
+                </div>
+              </label>
+              <label>Login Box Height
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxHeightPercent"
+                    name="loginBoxHeightPercent"
+                    type="range"
+                    min="20"
+                    max="100"
+                    step="1"
+                    value="100"
+                  />
+                  <span id="appearanceLoginBoxHeightValue" class="range-value">100%</span>
+                </div>
+              </label>
+              <label>Login Box Horizontal Position
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxPosXPercent"
+                    name="loginBoxPosXPercent"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="50"
+                  />
+                  <span id="appearanceLoginBoxPosXValue" class="range-value">50%</span>
+                </div>
+              </label>
+              <label>Login Box Vertical Position
+                <div class="range-row">
+                  <input
+                    id="appearanceLoginBoxPosYPercent"
+                    name="loginBoxPosYPercent"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="50"
+                  />
+                  <span id="appearanceLoginBoxPosYValue" class="range-value">50%</span>
+                </div>
+              </label>
+              <label>Logo Size
+                <div class="range-row">
+                  <input
+                    id="appearanceLogoSizePercent"
+                    name="logoSizePercent"
+                    type="range"
+                    min="30"
+                    max="100"
+                    step="1"
+                    value="30"
+                  />
+                  <span id="appearanceLogoSizeValue" class="range-value">30%</span>
+                </div>
+              </label>
+              <label>Logo Horizontal Position
+                <div class="range-row">
+                  <input
+                    id="appearanceLogoOffsetXPercent"
+                    name="logoOffsetXPercent"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="2"
+                  />
+                  <span id="appearanceLogoOffsetXValue" class="range-value">2%</span>
+                </div>
+              </label>
+              <label>Logo Vertical Position
+                <div class="range-row">
+                  <input
+                    id="appearanceLogoOffsetYPercent"
+                    name="logoOffsetYPercent"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="2"
+                  />
+                  <span id="appearanceLogoOffsetYValue" class="range-value">2%</span>
+                </div>
+              </label>
+              <label>Background Zoom
+                <div class="range-row">
+                  <input
+                    id="appearanceBackgroundZoomPercent"
+                    name="backgroundZoomPercent"
+                    type="range"
+                    min="50"
+                    max="200"
+                    step="1"
+                    value="100"
+                  />
+                  <span id="appearanceBackgroundZoomValue" class="range-value">100%</span>
+                </div>
+              </label>
+              <div class="mode-toggle-wrap">
+                <span class="mode-toggle-label">Login Box Mode</span>
+                <div class="mode-toggle" role="radiogroup" aria-label="Login box mode">
+                  <label class="mode-toggle-option">
+                    <input
+                      id="appearanceLoginBoxModeDark"
+                      type="radio"
+                      name="appearanceLoginBoxMode"
+                      value="dark"
+                      checked
+                    />
+                    <span>Dark (A)</span>
+                  </label>
+                  <label class="mode-toggle-option">
+                    <input
+                      id="appearanceLoginBoxModeLight"
+                      type="radio"
+                      name="appearanceLoginBoxMode"
+                      value="light"
+                    />
+                    <span>Light (B)</span>
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <div class="button-row">
+              <button id="appearanceSaveBtn" type="submit">Save Theme</button>
+              <button id="appearanceRenameBtn" type="button">Rename Theme</button>
+              <button id="appearanceDeleteBtn" type="button">Delete Theme</button>
+              <button id="appearanceCancelBtn" type="button" class="ghost-btn">Cancel</button>
+            </div>
+          </form>
+        </section>
+      </section>
+    </aside>
+
+    <script type="module" src="/manager/app.js"></script>
+  </body>
+</html>

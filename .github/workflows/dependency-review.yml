@@ -1,0 +1,28 @@
+name: Dependency Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependency review
+        id: dependency_review
+        continue-on-error: true
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+      - name: Dependency review unsupported warning
+        if: ${{ steps.dependency_review.outcome == 'failure' }}
+        run: |
+          echo "::warning::Dependency review could not run in this repository. If this is due to disabled Dependency Graph, enable it at:"
+          echo "::warning::https://github.com/${{ github.repository }}/settings/security_analysis"

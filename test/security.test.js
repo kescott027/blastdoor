@@ -44,6 +44,10 @@ test("safeNextPath prevents open redirects", () => {
   assert.equal(safeNextPath("/game"), "/game");
   assert.equal(safeNextPath("//evil.example"), "/");
   assert.equal(safeNextPath("http://evil.example"), "/");
+  assert.equal(safeNextPath("/../../etc/passwd"), "/");
+  assert.equal(safeNextPath("/\\windows"), "/");
+  assert.equal(safeNextPath("/ok\r\nx"), "/");
+  assert.equal(safeNextPath("   /trimmed  "), "/trimmed");
   assert.equal(safeNextPath(undefined, "/fallback"), "/fallback");
 });
 

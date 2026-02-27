@@ -11,6 +11,7 @@ Secure front-end authentication gateway for a self-hosted Foundry VTT instance.
 - Login rate limiting and CSRF protection
 - Reverse proxy to Foundry (including websocket traffic)
 - Fantasy/sci-fi themed responsive frontend
+- Local GUI management console for setup/config, launch control, and monitoring
 
 ## Architecture
 
@@ -21,28 +22,42 @@ Secure front-end authentication gateway for a self-hosted Foundry VTT instance.
 
 ## Quick start
 
-1. Install dependencies:
+Node.js 22+ is required.
+
+1. Create and configure your env file:
 
 ```bash
-npm install
+make setup-env
 ```
 
-2. Generate secrets and password hash:
+`make setup-env` now auto-checks dependencies and runs `npm install` when `node_modules` (or required packages like `otplib`/`pg`) are missing.
+It then launches the interactive setup wizard.
+For `DB_BACKEND`, you can type `A` for SQLite or `B` for PostgreSQL.
+
+2. Generate secrets and password hash manually (optional helper path):
 
 ```bash
 npm run gen-secret
 npm run hash-password -- 'replace-with-long-random-password'
 ```
 
-3. Create and configure your env file:
+3. During setup, Blastdoor offers:
+- Option A: SQLite (local file)
+- Option B: PostgreSQL
 
-```bash
-make setup-env
-```
+If PostgreSQL is selected, setup will:
+- Probe connectivity to `POSTGRES_URL`
+- If not reachable, offer:
+- `1` specify a different `POSTGRES_URL`
+- `2` install PostgreSQL
+- On install path, detect Docker and offer:
+- `1` Docker container install (`postgres:16`) with persistence (`blastdoor-postgres-data` volume + restart policy)
+- `2` local Linux/WSL install (apt + service start + bootstrap user/db)
+- After install, wait and retry until PostgreSQL is actually ready before continuing.
 
-`make setup-env` walks every setting with defaults, asks for a password, and hashes it automatically.
+If DB-backed modes are enabled, setup also initializes credentials and config records in the selected database.
 
-4. If you prefer manual setup, copy `.env.example` to `.env` and fill:
+4. If you prefer bypassing the wizard, copy `.env.example` to `.env` and fill:
 
 - `FOUNDRY_TARGET` (example: `http://127.0.0.1:30000`)
 - `SESSION_SECRET`
@@ -52,6 +67,26 @@ Password store options:
 
 - `PASSWORD_STORE_MODE=env` uses `AUTH_USERNAME` + `AUTH_PASSWORD_HASH`
 - `PASSWORD_STORE_MODE=file` uses `PASSWORD_STORE_FILE`
+- `PASSWORD_STORE_MODE=sqlite` uses the `users` table in `DATABASE_FILE`
+- `PASSWORD_STORE_MODE=postgres` uses the `users` table in PostgreSQL (`POSTGRES_URL`)
+
+Config store options:
+
+- `CONFIG_STORE_MODE=env` keeps config only in environment/.env
+- `CONFIG_STORE_MODE=sqlite` stores config values and config files in `DATABASE_FILE`
+- `CONFIG_STORE_MODE=postgres` stores config values and config files in PostgreSQL
+
+When either mode uses sqlite, set:
+
+- `DATABASE_FILE` (example: `data/blastdoor.sqlite`)
+
+When either mode uses postgres, set:
+
+- `POSTGRES_URL` (example: `postgres://blastdoor:blastdoor@127.0.0.1:5432/blastdoor`)
+- `POSTGRES_SSL` (`true`/`false`)
+
+When `CONFIG_STORE_MODE=sqlite` or `CONFIG_STORE_MODE=postgres`, Blastdoor snapshots `.env` and `.env.example` into the database at startup.
+This provides persistence across application restarts when using PostgreSQL.
 
 Optional tuning values:
 
@@ -80,12 +115,33 @@ Password-store interface is implemented in `src/password-store.js` with:
 - `PasswordStore` base interface (`getUserByUsername`)
 - `EnvPasswordStore`
 - `FilePasswordStore` (mock backend for local testing)
+- `SqlitePasswordStore`
+- `PostgresPasswordStore`
+
+Database schema/helpers are implemented in `src/database-store.js` for both SQLite and PostgreSQL:
+
+- `users` table for auth users and password hashes
+- `app_config` table for key/value configuration settings
+- `config_files` table for file snapshots like `.env`
 
 5. Start Blastdoor:
 
 ```bash
 npm start
 ```
+
+Launch the local management console:
+
+```bash
+make manager-launch
+```
+
+Default manager URL: `http://127.0.0.1:8090/manager/`
+
+Manager host/port can be overridden with:
+
+- `MANAGER_HOST` (default `127.0.0.1`)
+- `MANAGER_PORT` (default `8090`)
 
 ## Testing
 
@@ -95,6 +151,55 @@ Run the full test suite:
 npm test
 ```
 
+Run lint checks:
+
+```bash
+npm run lint
+```
+
+## Local Pre-Commit Hooks
+
+Blastdoor includes a local pre-commit toolchain (Husky) that runs:
+
+- `npm run lint`
+- `npm test`
+
+Install hooks locally:
+
+```bash
+make precommit-install
+```
+
+or:
+
+```bash
+npm run prepare
+```
+
+## GitHub CI and Security
+
+This repo now includes a comprehensive GitHub Actions pipeline:
+
+- `CI` (`.github/workflows/ci.yml`)
+- Runs on push + PR
+- Node matrix: `22.x`, `24.x`
+- Performs syntax checks + full test suite
+
+- `Dependency Review` (`.github/workflows/dependency-review.yml`)
+- Runs on PRs
+- Fails PR if dependency changes introduce `high`/`critical` risk
+
+- `Security Scans` (`.github/workflows/security.yml`)
+- Runs on PRs, pushes to `main`, weekly schedule, and manual dispatch
+- `npm audit` for production deps (`high`+)
+- Trivy filesystem vulnerability scan with SARIF upload to Security tab
+- Optional CodeQL:
+- Auto-enabled for public repos
+- For private repos, set repository variable `ENABLE_CODEQL=true` to enable
+
+- Dependabot (`.github/dependabot.yml`)
+- Weekly dependency update PRs for npm and GitHub Actions
+
 ## Makefile shortcuts
 
 ```bash
@@ -103,12 +208,32 @@ make launch
 
 Launches Blastdoor using `.env`.
 If `.env` does not exist, it launches the interactive setup wizard first.
+It also auto-installs dependencies if needed.
+
+```bash
+make manager-launch
+```
+
+Launches the GUI management console used to configure `.env`, start/stop/restart Blastdoor, and monitor runtime/debug logs.
+
+```bash
+make lint
+```
+
+Runs local ESLint checks (auto-installs dev dependencies if needed).
+
+```bash
+make precommit-install
+```
+
+Installs/refreshes local Husky git hooks.
 
 ```bash
 make test-launch
 ```
 
 Starts a local mock VTT backend and launches Blastdoor against it.  
+Also auto-installs dependencies if needed.
 Default URLs:
 
 - Gateway: `http://127.0.0.1:8080`
@@ -121,6 +246,7 @@ Debug launch with forced password authentication:
 make debug-launch
 ```
 
+Also auto-installs dependencies if needed.
 This runs with `DEBUG_MODE=true` and forces auth to:
 
 - Username: `gm` (or `DEBUG_FORCED_USERNAME`)
@@ -134,6 +260,23 @@ make test-launch DEBUG_MODE=true DEBUG_LOG_FILE=logs/test-launch-debug.log
 
 Debug logs never include plaintext passwords and only include hashed user fingerprints.
 Each HTTP response includes `x-request-id` so you can match browser failures to logfile entries.
+
+## Troubleshooting install issues
+
+If you see `ERR_MODULE_NOT_FOUND` for packages like `otplib` on WSL/Linux:
+
+```bash
+rm -rf node_modules
+npm install
+make setup-env
+```
+
+If setup fails with `ECONNREFUSED 127.0.0.1:5432`, PostgreSQL is not reachable at the configured URL.
+Start PostgreSQL, verify `POSTGRES_URL`, then rerun:
+
+```bash
+make setup-env
+```
 
 ## Production hardening checklist
 

@@ -12,14 +12,18 @@ DEBUG_FORCED_USERNAME ?= gm
 DEBUG_FORCED_PASSWORD ?= R@ndomPa55w0rd!
 ALLOW_NULL_ORIGIN ?= false
 
-.PHONY: help install test setup-env launch mock-vtt test-launch debug-launch
+.PHONY: help install ensure-deps ensure-dev-deps lint test precommit-install setup-env launch launch-env manager-launch mock-vtt test-launch debug-launch
 
 help:
 	@echo "Targets:"
 	@echo "  make install       Install Node dependencies"
+	@echo "  make lint          Run ESLint checks"
 	@echo "  make test          Run unit/integration tests"
+	@echo "  make precommit-install  Install local git hooks (husky)"
 	@echo "  make setup-env     Interactive .env setup wizard"
-	@echo "  make launch        Launch Blastdoor using .env"
+	@echo "  make launch        Launch interactive control console (manager + service controls)"
+	@echo "  make launch-env    Launch Blastdoor service using .env (legacy behavior)"
+	@echo "  make manager-launch Launch local Blastdoor management UI"
 	@echo "  make mock-vtt      Launch standalone mock VTT backend"
 	@echo "  make test-launch   Launch Blastdoor against the mock VTT backend"
 	@echo "  make debug-launch  Launch in debug mode with forced password auth"
@@ -27,23 +31,51 @@ help:
 install:
 	npm install
 
-test:
+ensure-deps:
+	@if [ ! -d node_modules ] || [ ! -f node_modules/otplib/package.json ] || [ ! -f node_modules/pg/package.json ]; then \
+		echo "Installing Node dependencies..."; \
+		npm install; \
+	fi
+
+ensure-dev-deps: ensure-deps
+	@if [ ! -f node_modules/eslint/package.json ] || [ ! -f node_modules/husky/package.json ]; then \
+		echo "Installing development dependencies..."; \
+		npm install; \
+	fi
+
+lint: ensure-dev-deps
+	npm run lint
+
+test: ensure-deps
 	npm test
 
-setup-env:
+precommit-install: ensure-dev-deps
+	npm run prepare
+
+setup-env: ensure-deps
 	node scripts/setup-env.js
 
-launch:
+launch-env: ensure-deps
 	@if [ ! -f .env ]; then \
 		echo "No .env found. Starting interactive setup..."; \
 		node scripts/setup-env.js; \
 	fi
 	npm start
 
-mock-vtt:
+launch: ensure-deps
+	@if [ ! -f .env ]; then \
+		echo "No .env found. Starting interactive setup..."; \
+		node scripts/setup-env.js; \
+	fi
+	node scripts/launch-control.js
+
+manager-launch: ensure-deps
+	npm run manager
+
+mock-vtt: ensure-deps
 	MOCK_VTT_HOST=127.0.0.1 MOCK_VTT_PORT=$(MOCK_VTT_PORT) node scripts/mock-vtt.js
 
-test-launch:
+test-launch: ensure-deps
 	@echo "Starting mock VTT on http://127.0.0.1:$(MOCK_VTT_PORT)"
 	@echo "Starting Blastdoor on http://127.0.0.1:$(GATEWAY_PORT)"
 	@echo "Test login credentials loaded from $(PASSWORD_STORE_FILE)"
@@ -69,7 +101,7 @@ test-launch:
 	DEBUG_LOG_FILE='$(DEBUG_LOG_FILE)' \
 	node src/server.js
 
-debug-launch:
+debug-launch: ensure-deps
 	@echo "Starting mock VTT on http://127.0.0.1:$(MOCK_VTT_PORT)"
 	@echo "Starting Blastdoor on http://127.0.0.1:$(GATEWAY_PORT) in DEBUG mode"
 	@echo "Auth is forced to a fixed debug password configured by DEBUG_FORCED_PASSWORD."
