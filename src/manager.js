@@ -25,6 +25,7 @@ const __dirname = path.dirname(__filename);
 
 const DEFAULT_MANAGER_HOST = process.env.MANAGER_HOST || "127.0.0.1";
 const DEFAULT_MANAGER_PORT = Number.parseInt(process.env.MANAGER_PORT || "8090", 10);
+const DEFAULT_THEME_ID = "blastdoor-default";
 
 const CONFIG_FIELDS = [
   "HOST",
@@ -1231,6 +1232,93 @@ export function createManagerApp(options = {}) {
         ok: true,
         activeThemeId: updatedStore.activeThemeId || "",
         updatedTheme: mapThemeForClient(updatedTheme),
+        themes: (updatedStore.themes || []).map(mapThemeForClient),
+        assets,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/themes/rename", async (req, res) => {
+    try {
+      const themeId = normalizeString(req.body?.themeId, "");
+      if (!themeId) {
+        throw new Error("themeId is required.");
+      }
+
+      const name = normalizeThemeName(req.body?.name);
+      if (!name) {
+        throw new Error("Theme name is required.");
+      }
+
+      const [store, assets] = await Promise.all([readThemeStore(themeStorePath), listThemeAssets(graphicsDir)]);
+      const themeIndex = (store.themes || []).findIndex((theme) => theme.id === themeId);
+      if (themeIndex < 0) {
+        throw new Error("Requested theme was not found.");
+      }
+
+      const existingTheme = store.themes[themeIndex];
+      const updatedTheme = {
+        ...existingTheme,
+        name,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const nextThemes = [...(store.themes || [])];
+      nextThemes[themeIndex] = updatedTheme;
+      const updatedStore = await writeThemeStore(themeStorePath, {
+        activeThemeId: store.activeThemeId,
+        themes: nextThemes,
+      });
+
+      res.json({
+        ok: true,
+        activeThemeId: updatedStore.activeThemeId || "",
+        updatedTheme: mapThemeForClient(updatedTheme),
+        themes: (updatedStore.themes || []).map(mapThemeForClient),
+        assets,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/themes/delete", async (req, res) => {
+    try {
+      const themeId = normalizeString(req.body?.themeId, "");
+      if (!themeId) {
+        throw new Error("themeId is required.");
+      }
+      if (themeId === DEFAULT_THEME_ID) {
+        throw new Error("Default theme cannot be deleted.");
+      }
+
+      const [store, assets] = await Promise.all([readThemeStore(themeStorePath), listThemeAssets(graphicsDir)]);
+      const existingTheme = (store.themes || []).find((theme) => theme.id === themeId);
+      if (!existingTheme) {
+        throw new Error("Requested theme was not found.");
+      }
+
+      const nextThemes = (store.themes || []).filter((theme) => theme.id !== themeId);
+      const nextActiveThemeId =
+        store.activeThemeId === themeId
+          ? nextThemes[0]?.id || DEFAULT_THEME_ID
+          : store.activeThemeId;
+
+      const updatedStore = await writeThemeStore(themeStorePath, {
+        activeThemeId: nextActiveThemeId,
+        themes: nextThemes,
+      });
+
+      res.json({
+        ok: true,
+        deletedThemeId: themeId,
+        activeThemeId: updatedStore.activeThemeId || "",
         themes: (updatedStore.themes || []).map(mapThemeForClient),
         assets,
       });

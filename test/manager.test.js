@@ -437,18 +437,42 @@ test("manager creates and applies login themes from graphics assets", async () =
       assert.equal(updated.body.updatedTheme.closedBackgroundPath, "background/open.png");
       assert.equal(updated.body.updatedTheme.openBackgroundPath, "background/closed.png");
 
+      const renamed = await request(port, {
+        method: "POST",
+        pathname: "/api/themes/rename",
+        body: {
+          themeId: created.body.createdTheme.id,
+          name: "Crystal Watch Final",
+        },
+      });
+      assert.equal(renamed.status, 200);
+      assert.equal(renamed.body.ok, true);
+      assert.equal(renamed.body.updatedTheme.id, created.body.createdTheme.id);
+      assert.equal(renamed.body.updatedTheme.name, "Crystal Watch Final");
+
       const applied = await request(port, {
         method: "POST",
         pathname: "/api/themes/apply",
-        body: { themeId: updated.body.updatedTheme.id },
+        body: { themeId: renamed.body.updatedTheme.id },
       });
       assert.equal(applied.status, 200);
       assert.equal(applied.body.ok, true);
-      assert.equal(applied.body.activeThemeId, updated.body.updatedTheme.id);
+      assert.equal(applied.body.activeThemeId, renamed.body.updatedTheme.id);
+
+      const deleted = await request(port, {
+        method: "POST",
+        pathname: "/api/themes/delete",
+        body: { themeId: renamed.body.updatedTheme.id },
+      });
+      assert.equal(deleted.status, 200);
+      assert.equal(deleted.body.ok, true);
+      assert.equal(deleted.body.deletedThemeId, renamed.body.updatedTheme.id);
+      assert.equal(deleted.body.activeThemeId, "blastdoor-default");
+      assert.equal(deleted.body.themes.length, 1);
 
       const rawThemeStore = await fs.readFile(themeStorePath, "utf8");
       assert.match(rawThemeStore, /"activeThemeId"/);
-      assert.match(rawThemeStore, /Crystal Watch Prime/);
+      assert.doesNotMatch(rawThemeStore, /Crystal Watch Final/);
     } finally {
       await closeServer(server);
     }
