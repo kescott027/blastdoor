@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import os from "node:os";
@@ -964,6 +965,12 @@ export function createManagerApp(options = {}) {
   const processFactory = options.processFactory || spawn;
   const commandRunner = options.commandRunner || runDiagnosticCommand;
   const processState = createProcessState({ workspaceDir, processFactory });
+  const managerWriteRateLimitWindowMs = Number.isInteger(options.managerWriteRateLimitWindowMs)
+    ? options.managerWriteRateLimitWindowMs
+    : 15 * 60 * 1000;
+  const managerWriteRateLimitMax = Number.isInteger(options.managerWriteRateLimitMax)
+    ? options.managerWriteRateLimitMax
+    : 120;
 
   const app = express();
   app.disable("x-powered-by");
@@ -986,14 +993,22 @@ export function createManagerApp(options = {}) {
     }),
   );
 
+  const managerWriteLimiter = rateLimit({
+    windowMs: managerWriteRateLimitWindowMs,
+    max: managerWriteRateLimitMax,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many manager write requests. Try again shortly.",
+  });
+
   const registerApiGet = (routePath, handler) => {
     app.get(`/api${routePath}`, handler);
     app.get(`/manager/api${routePath}`, handler);
   };
 
   const registerApiPost = (routePath, handler) => {
-    app.post(`/api${routePath}`, handler);
-    app.post(`/manager/api${routePath}`, handler);
+    app.post(`/api${routePath}`, managerWriteLimiter, handler);
+    app.post(`/manager/api${routePath}`, managerWriteLimiter, handler);
   };
 
   app.get("/", (_req, res) => {

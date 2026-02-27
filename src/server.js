@@ -711,14 +711,6 @@ export function createApp(config, options = {}) {
     }),
   );
 
-  const loginLimiter = rateLimit({
-    windowMs: config.loginRateLimitWindowMs,
-    max: config.loginRateLimitMax,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: "Too many login attempts. Try again in 15 minutes.",
-  });
-
   function authGuard(req, res, next) {
     if (req.session?.authenticated) {
       return next();
@@ -791,7 +783,16 @@ export function createApp(config, options = {}) {
     );
   });
 
-  app.post("/login", loginLimiter, async (req, res) => {
+  app.post(
+    "/login",
+    rateLimit({
+      windowMs: config.loginRateLimitWindowMs,
+      max: config.loginRateLimitMax,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: "Too many login attempts. Try again in 15 minutes.",
+    }),
+    async (req, res) => {
     const originResult = evaluateSameOrigin(req, {
       allowedOrigins: config.allowedOrigins,
       allowNullOrigin: config.allowNullOrigin,
@@ -947,7 +948,8 @@ export function createApp(config, options = {}) {
           });
       });
     });
-  });
+    },
+  );
 
   function clearSession(req, res) {
     req.session.destroy(() => {
