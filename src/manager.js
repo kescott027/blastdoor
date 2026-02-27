@@ -182,12 +182,99 @@ function validateManagedUsername(value) {
   return username;
 }
 
+function isAsciiVisible(value) {
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (code < 33 || code > 126) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isAlphaNumeric(value) {
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    if (!isDigit && !isUpper && !isLower) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isDomainLabel(label) {
+  if (!label || label.length > 63) {
+    return false;
+  }
+  if (label.startsWith("-") || label.endsWith("-")) {
+    return false;
+  }
+  for (const char of label) {
+    const code = char.charCodeAt(0);
+    const isDigit = code >= 48 && code <= 57;
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    if (!isDigit && !isUpper && !isLower && char !== "-") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isValidEmailAddress(candidate) {
+  if (!candidate || candidate.length > 254) {
+    return false;
+  }
+  if (!isAsciiVisible(candidate)) {
+    return false;
+  }
+
+  const atIndex = candidate.indexOf("@");
+  if (atIndex < 1) {
+    return false;
+  }
+  if (candidate.indexOf("@", atIndex + 1) !== -1) {
+    return false;
+  }
+
+  const localPart = candidate.slice(0, atIndex);
+  const domainPart = candidate.slice(atIndex + 1);
+
+  if (!localPart || !domainPart || localPart.length > 64 || domainPart.length > 253) {
+    return false;
+  }
+  if (localPart.startsWith(".") || localPart.endsWith(".") || localPart.includes("..")) {
+    return false;
+  }
+  if (domainPart.startsWith(".") || domainPart.endsWith(".") || domainPart.includes("..")) {
+    return false;
+  }
+
+  const labels = domainPart.split(".");
+  if (labels.length < 2) {
+    return false;
+  }
+  if (!labels.every(isDomainLabel)) {
+    return false;
+  }
+
+  const tld = labels[labels.length - 1];
+  if (tld.length < 2 || !isAlphaNumeric(tld)) {
+    return false;
+  }
+
+  return true;
+}
+
 function sanitizeEmail(value) {
   const email = normalizeString(value, "").toLowerCase();
   if (!email) {
     return "";
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (!isValidEmailAddress(email)) {
     throw new Error("Email must be valid.");
   }
   return email;

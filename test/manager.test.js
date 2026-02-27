@@ -1201,6 +1201,72 @@ test("manager user management supports create update filters and token actions",
   });
 });
 
+test("manager user management rejects malformed email input", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const passwordStoreFile = path.join(workspaceDir, "mock", "password-store.json");
+    await fs.mkdir(path.dirname(passwordStoreFile), { recursive: true });
+    await fs.writeFile(
+      passwordStoreFile,
+      JSON.stringify(
+        {
+          users: [{ username: "gm", passwordHash: "scrypt$seed$hash", disabled: false }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=file",
+        `PASSWORD_STORE_FILE=${passwordStoreFile}`,
+        "AUTH_USERNAME=",
+        "AUTH_PASSWORD_HASH=",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "SESSION_MAX_AGE_HOURS=12",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/users/create",
+        body: {
+          username: "pilot-2",
+          password: "Correct Horse Battery Staple 123!",
+          friendlyName: "Pilot Two",
+          email: "pilot@!.",
+          status: "active",
+          displayInfo: "",
+          notes: "",
+        },
+      });
+      assert.equal(created.status, 400);
+      assert.match(String(created.body.error || ""), /email must be valid/i);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager TLS endpoints detect environment, generate plan, and save config", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");
@@ -1291,6 +1357,53 @@ test("manager TLS endpoints detect environment, generate plan, and save config",
       assert.match(envContent, /TLS_DOMAIN=vtt\.example\.test/);
       assert.match(envContent, /TLS_CERT_FILE=/);
       assert.match(envContent, /TLS_KEY_FILE=/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager TLS endpoints reject malformed email input", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerDir: path.resolve(process.cwd(), "public", "manager"),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const plan = await request(port, {
+        method: "POST",
+        pathname: "/api/tls/letsencrypt-plan",
+        body: {
+          tlsDomain: "vtt.example.test",
+          tlsEmail: "admin@!.",
+          tlsChallengeMethod: "webroot",
+          tlsWebrootPath: "/var/www/html",
+        },
+      });
+      assert.equal(plan.status, 400);
+      assert.match(String(plan.body.error || ""), /email must be valid/i);
     } finally {
       await closeServer(server);
     }
