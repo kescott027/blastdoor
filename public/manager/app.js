@@ -356,10 +356,12 @@ async function refreshThemes() {
 }
 
 function openAppearanceModal() {
+  appearanceModal.hidden = false;
   appearanceModal.classList.remove("hidden");
 }
 
 function closeAppearanceModal() {
+  appearanceModal.hidden = true;
   appearanceModal.classList.add("hidden");
 }
 
@@ -598,3 +600,4 @@ document.getElementById("tsCopyScriptBtn").addEventListener("click", async () =>
 
 refreshAll();
 setInterval(refreshAll, 3000);
+closeAppearanceModal();
