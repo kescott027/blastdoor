@@ -448,12 +448,12 @@ This repo now includes a comprehensive GitHub Actions pipeline:
 - Runs on PRs, pushes to `main`, weekly schedule, and manual dispatch
 - `npm audit` for production deps (`high`+)
 - Trivy filesystem vulnerability scan with SARIF upload to Security tab
-- Trivy container image vulnerability scan with SARIF upload to Security tab
+- Trivy container image vulnerability scan with SARIF upload to Security tab (fails on `critical` only)
 - CodeQL static analysis (enabled by default in workflow)
 
 - `Secret Scan` (`.github/workflows/secret-scan.yml`)
 - Runs on PRs, pushes to `main`, weekly schedule, and manual dispatch
-- Uses Gitleaks filesystem scan (`--no-git`) with SARIF upload to Security tab
+- Uses Gitleaks filesystem scan (`--no-git`) with project allowlist config (`.gitleaks.toml`) and SARIF upload
 
 - Dependabot (`.github/dependabot.yml`)
 - Weekly dependency update PRs for npm and GitHub Actions

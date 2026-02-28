@@ -1,0 +1,20 @@
+title = "blastdoor gitleaks config"
+
+[allowlist]
+description = "Allow known non-production test/example placeholders"
+regexes = [
+  '''blastdoor-local-test-session-secret-please-change-me-123456''',
+  '''blastdoor-test-password-123!''',
+  '''R@ndomPa55w0rd!''',
+  '''token-(abc|123)''',
+  '''change-this-postgres-password''',
+  '''admin@example\.com'''
+]
+paths = [
+  '''^README\.md$''',
+  '''^Makefile$''',
+  '''^docker/blastdoor\.env\.example$''',
+  '''^test/''',
+  '''^e2e/''',
+  '''^mock/'''
+]
