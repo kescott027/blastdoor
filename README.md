@@ -453,7 +453,7 @@ This repo now includes a comprehensive GitHub Actions pipeline:
 
 - `Secret Scan` (`.github/workflows/secret-scan.yml`)
 - Runs on PRs, pushes to `main`, weekly schedule, and manual dispatch
-- Uses Gitleaks with SARIF upload to Security tab
+- Uses Gitleaks filesystem scan (`--no-git`) with SARIF upload to Security tab
 
 - Dependabot (`.github/dependabot.yml`)
 - Weekly dependency update PRs for npm and GitHub Actions
