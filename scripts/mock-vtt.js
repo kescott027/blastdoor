@@ -47,7 +47,7 @@ const server = http.createServer((req, res) => {
   <body>
     <main>
       <h1>Mock Foundry VTT</h1>
-      <p>Gateway proxy reached <code>${req.url}</code></p>
+      <p>Gateway proxy is reachable.</p>
     </main>
   </body>
 </html>`);
