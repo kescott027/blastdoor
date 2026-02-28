@@ -9,15 +9,6 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("MOCK_VTT_PORT must be a valid TCP port.");
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 const server = http.createServer((req, res) => {
   if ((req.headers.accept || "").includes("application/json")) {
     res.writeHead(200, { "content-type": "application/json" });
@@ -25,7 +16,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const safeUrl = escapeHtml(req.url || "/");
   res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   res.end(`<!doctype html>
 <html lang="en">
@@ -57,7 +47,7 @@ const server = http.createServer((req, res) => {
   <body>
     <main>
       <h1>Mock Foundry VTT</h1>
-      <p>Gateway proxy reached <code>${safeUrl}</code></p>
+      <p>Gateway proxy is reachable.</p>
     </main>
   </body>
 </html>`);
