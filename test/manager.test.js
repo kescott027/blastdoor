@@ -1490,6 +1490,169 @@ test("manager TLS endpoints reject malformed email input", async () => {
   });
 });
 
+test("manager assistant workflows return status and grimoire blocks", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=heuristic",
+        "ASSISTANT_URL=",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const status = await request(port, { pathname: "/api/assistant/status" });
+      assert.equal(status.status, 200);
+      assert.equal(status.body.ok, true);
+      assert.equal(status.body.status.mode, "local");
+
+      const grimoire = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/workflow/grimoire",
+        body: {
+          intent: "create user and restart blastdoor service",
+        },
+      });
+      assert.equal(grimoire.status, 200);
+      assert.equal(grimoire.body.ok, true);
+      assert.equal(grimoire.body.result.workflowId, "grimoire-api-intent-block-builder");
+      assert.equal(grimoire.body.result.blockChain.length >= 1, true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager exposes plugin UI manifest for enabled plugins", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, { pathname: "/api/plugins/ui" });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+      assert.equal(Array.isArray(response.body.plugins), true);
+
+      const intelligence = response.body.plugins.find((entry) => entry.pluginId === "intelligence");
+      assert.ok(intelligence);
+      assert.equal(intelligence.jsPath, "/manager/plugins/intelligence.js");
+      assert.equal(intelligence.cssPath, "/manager/plugins/intelligence.css");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager assistant threat workflow can auto-lock blast doors", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const logsDir = path.join(workspaceDir, "logs");
+    await fs.mkdir(logsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(logsDir, "blastdoor-debug.log"),
+      [
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        '{"level":"warn","message":"auth.login.failed","ip":"203.0.113.88"}',
+        "GET /?q=%3Cscript%3Ealert(1)%3C/script%3E",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "BLAST_DOORS_CLOSED=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=heuristic",
+        "ASSISTANT_URL=",
+        "ASSISTANT_AUTO_LOCK_ON_THREAT=true",
+        "ASSISTANT_THREAT_SCORE_THRESHOLD=20",
+        "DEBUG_LOG_FILE=logs/blastdoor-debug.log",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const result = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/workflow/threat-monitor",
+        body: {
+          applyLockdown: true,
+        },
+      });
+      assert.equal(result.status, 200);
+      assert.equal(result.body.ok, true);
+      assert.equal(result.body.result.shouldLockdown, true);
+      assert.equal(result.body.lockdown.applied, true);
+
+      const config = await request(port, { pathname: "/api/config" });
+      assert.equal(config.status, 200);
+      assert.equal(config.body.config.BLAST_DOORS_CLOSED, "true");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("formatManagerListenError explains when manager port is already in use", () => {
   const message = formatManagerListenError({ code: "EADDRINUSE" }, { host: "127.0.0.1", port: 8090 });
   assert.match(message, /already in use/);

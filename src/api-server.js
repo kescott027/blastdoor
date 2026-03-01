@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBlastdoorApi, createLocalBlastdoorApi, loadBlastdoorApiRuntimeConfig } from "./blastdoor-api.js";
+import { createPluginManager } from "./plugins/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +53,7 @@ export function createBlastdoorApiApp(options = {}) {
   const config = options.config || loadBlastdoorApiRuntimeConfig(options.env || process.env);
   const token = normalizeString(options.token ?? config.blastdoorApiToken ?? DEFAULT_API_TOKEN, "");
   const postgresPoolFactory = options.postgresPoolFactory;
+  const pluginManager = options.pluginManager || createPluginManager({ env: options.env || process.env });
 
   const api =
     options.api ||
@@ -185,6 +187,12 @@ export function createBlastdoorApiApp(options = {}) {
   registerRead("/internal/themes/assets", async (_req, res) => {
     const assets = await api.listThemeAssets();
     res.json({ ok: true, assets });
+  });
+
+  pluginManager.registerApiServerRoutes({
+    registerRead,
+    registerWrite,
+    api,
   });
 
   return { app, api };

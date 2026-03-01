@@ -16,7 +16,7 @@ DEBUG_FORCED_PASSWORD ?= R@ndomPa55w0rd!
 ALLOW_NULL_ORIGIN ?= false
 INSTALL_CONFIG_PATH ?= data/installation_config.json
 
-.PHONY: help install configure deps-install ensure-install-config ensure-deps ensure-dev-deps lint test coverage integration-test precommit-install setup-env launch launch-local launch-container launch-env manager-launch api-launch monitor monitor-local monitor-container debug debug-local debug-container troubleshoot troubleshoot-local troubleshoot-container mock-vtt test-launch debug-launch ensure-docker-env docker-build docker-up docker-down docker-logs basic-install basic-configure basic-launch basic-launch-env basic-monitor basic-troubleshoot resilient-install resilient-configure resilient-up resilient-down resilient-monitor resilient-troubleshoot
+.PHONY: help install configure deps-install ensure-install-config ensure-deps ensure-dev-deps lint test coverage integration-test precommit-install setup-env launch launch-local launch-container launch-env manager-launch api-launch assistant-launch monitor monitor-local monitor-container debug debug-local debug-container troubleshoot troubleshoot-local troubleshoot-container mock-vtt test-launch debug-launch ensure-docker-env docker-build docker-up docker-down docker-logs basic-install basic-configure basic-launch basic-launch-env basic-monitor basic-troubleshoot resilient-install resilient-configure resilient-up resilient-down resilient-monitor resilient-troubleshoot
 
 help:
 	@echo "Targets:"
@@ -30,6 +30,7 @@ help:
 	@echo "  make launch-env    Launch Blastdoor service using .env (legacy behavior)"
 	@echo "  make manager-launch Launch local Blastdoor management UI"
 	@echo "  make api-launch    Launch standalone blastdoor-api service"
+	@echo "  make assistant-launch Launch standalone blastdoor-assistant service"
 	@echo "  make lint          Run ESLint checks"
 	@echo "  make test          Run unit/integration tests"
 	@echo "  make coverage      Run test coverage with minimum thresholds"
@@ -56,7 +57,7 @@ help:
 	@echo "  make test-launch   Launch Blastdoor against the mock VTT backend"
 	@echo "  make debug-launch  Launch in debug mode with forced password auth"
 	@echo "  make docker-build  Build the Blastdoor Docker image"
-	@echo "  make docker-up     Start blastdoor + blastdoor-api + postgres + caddy with docker compose"
+	@echo "  make docker-up     Start blastdoor + blastdoor-api + blastdoor-assistant + postgres + caddy with docker compose"
 	@echo "  make docker-down   Stop docker compose services"
 	@echo "  make docker-logs   Tail docker compose logs"
 
@@ -133,6 +134,9 @@ manager-launch: ensure-deps
 api-launch: ensure-deps
 	npm run api
 
+assistant-launch: ensure-deps
+	npm run assistant
+
 monitor: ensure-install-config
 	@profile=$$(node scripts/install-profile-dispatch.js profile $(INSTALL_CONFIG_PATH)); \
 	if [ "$$profile" = "container" ]; then \
@@ -158,7 +162,7 @@ monitor-container: ensure-docker-env
 	@docker compose ps
 	@echo ""
 	@echo "Recent logs:"
-	@docker compose logs --tail=120 caddy blastdoor blastdoor-api postgres
+	@docker compose logs --tail=120 caddy blastdoor blastdoor-api blastdoor-assistant postgres
 
 debug: ensure-deps ensure-install-config
 	@profile=$$(node scripts/install-profile-dispatch.js profile $(INSTALL_CONFIG_PATH)); \
@@ -178,7 +182,7 @@ debug-local: ensure-deps
 	DEBUG_MODE=true LAUNCH_CONTROL_AUTO_DEBUG=true node scripts/launch-control.js
 
 debug-container: ensure-docker-env
-	docker compose logs -f --tail=200 caddy blastdoor blastdoor-api postgres
+	docker compose logs -f --tail=200 caddy blastdoor blastdoor-api blastdoor-assistant postgres
 
 troubleshoot: ensure-install-config
 	@profile=$$(node scripts/install-profile-dispatch.js profile $(INSTALL_CONFIG_PATH)); \
@@ -209,8 +213,11 @@ troubleshoot-container: ensure-docker-env
 	@echo "Blastdoor API internal health:"
 	@docker compose exec -T blastdoor-api node -e "fetch('http://127.0.0.1:8070/healthz').then(async (r)=>{console.log(r.status); console.log(await r.text()); process.exit(r.ok?0:1);}).catch((e)=>{console.error(e.message); process.exit(1);})" || echo "Blastdoor API health probe failed."
 	@echo ""
+	@echo "Blastdoor Assistant internal health:"
+	@docker compose exec -T blastdoor-assistant node -e "fetch('http://127.0.0.1:8060/healthz').then(async (r)=>{console.log(r.status); console.log(await r.text()); process.exit(r.ok?0:1);}).catch((e)=>{console.error(e.message); process.exit(1);})" || echo "Blastdoor assistant health probe failed."
+	@echo ""
 	@echo "Recent service logs:"
-	@docker compose logs --tail=200 caddy blastdoor blastdoor-api postgres
+	@docker compose logs --tail=200 caddy blastdoor blastdoor-api blastdoor-assistant postgres
 
 mock-vtt: ensure-deps
 	MOCK_VTT_HOST=127.0.0.1 MOCK_VTT_PORT=$(MOCK_VTT_PORT) node scripts/mock-vtt.js

@@ -1,6 +1,7 @@
 import { createPasswordStore } from "./password-store.js";
 import { createUserAdminStore } from "./user-admin-store.js";
 import { listThemeAssets, mapThemeForClient, readThemeStore, resolveActiveTheme, writeThemeStore } from "./login-theme.js";
+import { createPluginManager } from "./plugins/index.js";
 
 function fallbackTheme() {
   return {
@@ -95,6 +96,7 @@ export function createLocalBlastdoorApi(options = {}) {
 
   let passwordStore = null;
   let userAdminStore = null;
+  const pluginManager = createPluginManager({ env: options.env || process.env });
 
   function getPasswordStore() {
     if (passwordStore) {
@@ -129,7 +131,7 @@ export function createLocalBlastdoorApi(options = {}) {
     return mapThemeForClient(activeTheme);
   }
 
-  return {
+  const api = {
     async getUserCredential(username) {
       return await getPasswordStore().getUserByUsername(username);
     },
@@ -199,9 +201,16 @@ export function createLocalBlastdoorApi(options = {}) {
       }
     },
   };
+
+  pluginManager.decorateLocalBlastdoorApi(api, {
+    config,
+    options,
+  });
+  return api;
 }
 
 export function createRemoteBlastdoorApi(options = {}) {
+  const config = options.config || loadBlastdoorApiRuntimeConfig(options.env || process.env);
   const baseUrl = normalizeApiBaseUrl(options.baseUrl || options.config?.blastdoorApiUrl || process.env.BLASTDOOR_API_URL);
   if (!baseUrl) {
     throw new Error("Remote Blastdoor API requires a non-empty base URL.");
@@ -227,6 +236,7 @@ export function createRemoteBlastdoorApi(options = {}) {
   );
   const circuitResetMs = toPositiveInteger(options.circuitResetMs || options.config?.blastdoorApiCircuitResetMs, 10000);
   const logger = options.logger || null;
+  const pluginManager = createPluginManager({ env: options.env || process.env });
 
   const circuit = {
     consecutiveFailures: 0,
@@ -364,7 +374,7 @@ export function createRemoteBlastdoorApi(options = {}) {
     throw lastError || createRemoteApiError("Blastdoor API request failed.", 502);
   }
 
-  return {
+  const api = {
     async getUserCredential(username) {
       const body = await request("/internal/users/credential/get", {
         method: "POST",
@@ -491,10 +501,18 @@ export function createRemoteBlastdoorApi(options = {}) {
 
     async close() {},
   };
+
+  pluginManager.decorateRemoteBlastdoorApi(api, {
+    request,
+    config,
+    options,
+  });
+  return api;
 }
 
 export function loadBlastdoorApiRuntimeConfig(env = process.env) {
   const passwordStoreMode = String(env.PASSWORD_STORE_MODE || "env").toLowerCase();
+  const pluginManager = createPluginManager({ env });
   return {
     passwordStoreMode,
     passwordStoreFile: env.PASSWORD_STORE_FILE || "mock/password-store.json",
@@ -514,6 +532,7 @@ export function loadBlastdoorApiRuntimeConfig(env = process.env) {
     blastdoorApiRetryMaxDelayMs: toPositiveInteger(env.BLASTDOOR_API_RETRY_MAX_DELAY_MS, 1200),
     blastdoorApiCircuitFailureThreshold: toPositiveInteger(env.BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD, 5),
     blastdoorApiCircuitResetMs: toPositiveInteger(env.BLASTDOOR_API_CIRCUIT_RESET_MS, 10000),
+    ...pluginManager.loadServerConfigFromEnv(env),
   };
 }
 

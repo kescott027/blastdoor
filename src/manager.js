@@ -14,6 +14,7 @@ import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./serv
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
 import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
+import { createPluginManager } from "./plugins/index.js";
 import {
   createThemeId,
   mapThemeForClient,
@@ -27,8 +28,9 @@ const __dirname = path.dirname(__filename);
 const DEFAULT_MANAGER_HOST = process.env.MANAGER_HOST || "127.0.0.1";
 const DEFAULT_MANAGER_PORT = Number.parseInt(process.env.MANAGER_PORT || "8090", 10);
 const DEFAULT_THEME_ID = "blastdoor-default";
+const pluginManager = createPluginManager({ env: process.env });
 
-const CONFIG_FIELDS = [
+const BASE_CONFIG_FIELDS = [
   "HOST",
   "PORT",
   "FOUNDRY_TARGET",
@@ -84,7 +86,7 @@ const CONFIG_FIELDS = [
   "DEBUG_LOG_FILE",
 ];
 
-const CONFIG_DEFAULTS = {
+const BASE_CONFIG_DEFAULTS = {
   HOST: "127.0.0.1",
   PORT: "8080",
   FOUNDRY_TARGET: "http://127.0.0.1:30000",
@@ -140,14 +142,21 @@ const CONFIG_DEFAULTS = {
   DEBUG_LOG_FILE: "logs/blastdoor-debug.log",
 };
 
-const SENSITIVE_CONFIG_KEYS = new Set([
+const BASE_SENSITIVE_CONFIG_KEYS = [
   "AUTH_PASSWORD_HASH",
   "SESSION_SECRET",
   "TOTP_SECRET",
   "TLS_PASSPHRASE",
   "BLASTDOOR_API_TOKEN",
   "SMTP_PASS",
-]);
+];
+const managerPluginConfig = pluginManager.getManagerConfigExtensions();
+const CONFIG_FIELDS = [...BASE_CONFIG_FIELDS, ...managerPluginConfig.fields];
+const CONFIG_DEFAULTS = {
+  ...BASE_CONFIG_DEFAULTS,
+  ...managerPluginConfig.defaults,
+};
+const SENSITIVE_CONFIG_KEYS = new Set([...BASE_SENSITIVE_CONFIG_KEYS, ...managerPluginConfig.sensitiveKeys]);
 const REDACTED_MARKER = "[REDACTED]";
 const MANAGED_USER_STATUSES = new Set(["active", "deactivated", "banned"]);
 const USER_FILTER_OPTIONS = new Set(["active", "inactive", "authenticated", "all"]);
@@ -539,14 +548,13 @@ function validateThemeAssetSelection(
 }
 
 function scrubConfigForClient(config) {
-  return {
-    ...config,
-    AUTH_PASSWORD_HASH: "",
-    SESSION_SECRET: config.SESSION_SECRET ? "********" : "",
-    TOTP_SECRET: config.TOTP_SECRET ? "********" : "",
-    BLASTDOOR_API_TOKEN: config.BLASTDOOR_API_TOKEN ? "********" : "",
-    hasAuthPasswordHash: Boolean(config.AUTH_PASSWORD_HASH),
-  };
+  const output = { ...config };
+  output.AUTH_PASSWORD_HASH = "";
+  for (const key of SENSITIVE_CONFIG_KEYS) {
+    output[key] = config[key] ? "********" : "";
+  }
+  output.hasAuthPasswordHash = Boolean(config.AUTH_PASSWORD_HASH);
+  return output;
 }
 
 function sanitizePostgresUrl(urlValue) {
@@ -624,6 +632,9 @@ function createDiagnosticsSummary(report) {
   const usesSqlite = config.PASSWORD_STORE_MODE === "sqlite" || config.CONFIG_STORE_MODE === "sqlite";
   const backend = usesPostgres ? "postgres" : usesSqlite ? "sqlite" : "env/file";
 
+  const pluginLines = pluginManager.getManagerDiagnosticsSummaryLines(config);
+  const redactionKeys = ["AUTH_PASSWORD_HASH", ...SENSITIVE_CONFIG_KEYS, "POSTGRES_URL credentials"];
+
   const lines = [
     `Generated: ${report.generatedAt}`,
     `Gateway Bind: ${config.HOST || "unset"}:${config.PORT || "unset"}`,
@@ -636,10 +647,11 @@ function createDiagnosticsSummary(report) {
     `Config Store Mode: ${config.CONFIG_STORE_MODE || "unset"}`,
     `Database Backend: ${backend}`,
     `Postgres URL: ${config.POSTGRES_URL || "n/a"}`,
+    ...pluginLines,
     `Debug Mode: ${config.DEBUG_MODE || "false"} (log: ${config.DEBUG_LOG_FILE || "unset"})`,
     `Manager UI: http://${env.managerHost || DEFAULT_MANAGER_HOST}:${env.managerPort || DEFAULT_MANAGER_PORT}/manager/`,
     `Runtime: ${env.platform || "unknown"} ${env.arch || "unknown"}, Node ${env.nodeVersion || "unknown"}${env.isWsl ? `, WSL (${env.wslDistro || "unknown"})` : ""}`,
-    "Redactions: AUTH_PASSWORD_HASH, SESSION_SECRET, TOTP_SECRET, BLASTDOOR_API_TOKEN, POSTGRES_URL credentials",
+    `Redactions: ${redactionKeys.join(", ")}`,
   ];
 
   return lines.join("\n");
@@ -1282,6 +1294,8 @@ export function createManagerApp(options = {}) {
   const workspaceDir = path.resolve(options.workspaceDir || path.join(__dirname, ".."));
   const envPath = options.envPath || path.join(workspaceDir, ".env");
   const runtimeStatePath = options.runtimeStatePath || path.join(workspaceDir, "data", "runtime-state.json");
+  const installationConfigPath =
+    options.installationConfigPath || path.join(workspaceDir, "data", "installation_config.json");
   const managerDir = options.managerDir || path.join(workspaceDir, "public", "manager");
   const graphicsDir = options.graphicsDir || path.join(workspaceDir, "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
@@ -1319,6 +1333,32 @@ export function createManagerApp(options = {}) {
         await blastdoorApi.close();
       }
     }
+  }
+
+  async function applyThreatLockdown(existingConfig) {
+    const mergedConfig = {
+      ...existingConfig,
+      BLAST_DOORS_CLOSED: "true",
+      SESSION_SECRET: createSessionSecret(),
+    };
+
+    validateConfig(loadConfigFromEnv({ ...mergedConfig }));
+    await writeEnvConfig(envPath, mergedConfig);
+    await writeBlastDoorsState(runtimeStatePath, true);
+
+    let serviceRestarted = false;
+    if (processState.getStatus().running) {
+      await processState.stop();
+      await processState.start();
+      serviceRestarted = true;
+    }
+
+    return {
+      serviceRestarted,
+      sessionSecretRotated: true,
+      blastDoorsLocked: true,
+      config: scrubConfigForClient(mergedConfig),
+    };
   }
 
   async function buildManagedUserList({ filter = "active" } = {}) {
@@ -1520,17 +1560,10 @@ export function createManagerApp(options = {}) {
         incoming.AUTH_PASSWORD_HASH = existing.AUTH_PASSWORD_HASH || "";
       }
 
-      if (incoming.SESSION_SECRET === "********") {
-        incoming.SESSION_SECRET = existing.SESSION_SECRET || "";
-      }
-      if (incoming.TOTP_SECRET === "********") {
-        incoming.TOTP_SECRET = existing.TOTP_SECRET || "";
-      }
-      if (incoming.BLASTDOOR_API_TOKEN === "********") {
-        incoming.BLASTDOOR_API_TOKEN = existing.BLASTDOOR_API_TOKEN || "";
-      }
-      if (incoming.SMTP_PASS === "********") {
-        incoming.SMTP_PASS = existing.SMTP_PASS || "";
+      for (const key of SENSITIVE_CONFIG_KEYS) {
+        if (incoming[key] === "********") {
+          incoming[key] = existing[key] || "";
+        }
       }
 
       const wasBlastDoorsClosed = parseBooleanLike(existing.BLAST_DOORS_CLOSED, false);
@@ -2392,6 +2425,35 @@ export function createManagerApp(options = {}) {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  });
+
+  registerApiGet("/plugins/ui", async (_req, res) => {
+    res.json({
+      ok: true,
+      plugins: pluginManager.getManagerUiAssets(),
+    });
+  });
+
+  pluginManager.registerManagerRoutes({
+    registerApiGet,
+    registerApiPost,
+    readEnvConfig,
+    withBlastdoorApi,
+    processState,
+    workspaceDir,
+    envPath,
+    checkBlastdoorHealth,
+    checkFoundryTargetHealth,
+    detectEnvironmentInfo,
+    sanitizeConfigForDiagnostics,
+    createTroubleshootReport,
+    tailFile,
+    parseBooleanLike,
+    parseBooleanLikeBody,
+    normalizeString,
+    applyThreatLockdown,
+    CONFIG_DEFAULTS,
+    installationConfigPath,
   });
 
   return { app, envPath };

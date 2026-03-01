@@ -30,6 +30,23 @@ Blastdoor now uses a shared data API boundary in `src/blastdoor-api.js`:
 - Admin manager (`src/manager.js`) calls this API for user/theme data.
 - Backing store selection (env/file/sqlite/postgres) is isolated behind the API module.
 
+### Integrated Assistant (Phase 2)
+
+Blastdoor includes an integrated assistant interface with four workflows:
+
+1. Environment inferred configuration recommendations.
+2. Error troubleshooting recommendations (optional RAG/web lookup).
+3. Threat monitoring from logs with optional blast-door lockdown.
+4. Grimoire API-intent block generation for scriptable workflows.
+
+Manager/API interface:
+
+- `GET /api/assistant/status`
+- `POST /api/assistant/workflow/config-recommendations`
+- `POST /api/assistant/workflow/troubleshoot-recommendation`
+- `POST /api/assistant/workflow/threat-monitor`
+- `POST /api/assistant/workflow/grimoire`
+
 ### Standalone blastdoor-api Service
 
 Blastdoor can run a separate API process (`src/api-server.js`) for data access.
@@ -103,7 +120,7 @@ make basic-troubleshoot
 ### Standard-Resilient
 
 Use this model for orchestrated container deployment with layered services:
-`caddy` (TLS edge) -> `blastdoor` (portal/proxy) -> `blastdoor-api` (data API) -> `postgres`.
+`caddy` (TLS edge) -> `blastdoor` (portal/proxy) -> `blastdoor-api` (data API) -> `blastdoor-assistant` (AI workflows) -> `postgres`.
 
 Automated workflow:
 
@@ -227,6 +244,14 @@ Optional tuning values:
 - `BLASTDOOR_API_RETRY_MAX_DELAY_MS` (default `1200`)
 - `BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD` (default `5`)
 - `BLASTDOOR_API_CIRCUIT_RESET_MS` (default `10000`)
+- `ASSISTANT_ENABLED` (`true`/`false`)
+- `ASSISTANT_URL` (optional; if empty, embedded workflows are used)
+- `ASSISTANT_TOKEN` (optional shared token when using standalone assistant service)
+- `ASSISTANT_PROVIDER` (`heuristic` or `ollama`)
+- `ASSISTANT_OLLAMA_URL`, `ASSISTANT_OLLAMA_MODEL`
+- `ASSISTANT_TIMEOUT_MS`, `ASSISTANT_RETRY_MAX_ATTEMPTS`
+- `ASSISTANT_RAG_ENABLED`, `ASSISTANT_ALLOW_WEB_SEARCH`
+- `ASSISTANT_AUTO_LOCK_ON_THREAT`, `ASSISTANT_THREAT_SCORE_THRESHOLD`
 - `EMAIL_PROVIDER` (`disabled`, `console`, `smtp`)
 - `EMAIL_FROM` (required when `EMAIL_PROVIDER=smtp`)
 - `EMAIL_ADMIN_TO` (used by user `Message Admin` action)
@@ -307,6 +332,12 @@ Launch standalone blastdoor-api locally:
 make api-launch
 ```
 
+Launch standalone blastdoor-assistant locally:
+
+```bash
+make assistant-launch
+```
+
 Manager host/port can be overridden with:
 
 - `MANAGER_HOST` (default `127.0.0.1`)
@@ -317,7 +348,7 @@ Manager host/port can be overridden with:
 This repo now includes:
 
 - `Dockerfile` for Blastdoor
-- `docker-compose.yml` with `blastdoor`, `blastdoor-api`, `postgres`, and `caddy`
+- `docker-compose.yml` with `blastdoor`, `blastdoor-api`, `blastdoor-assistant`, `postgres`, and `caddy`
 - `docker/Caddyfile` for TLS termination and reverse proxy
 - `docker/blastdoor.env.example` for stack configuration
 

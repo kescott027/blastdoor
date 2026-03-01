@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "api": "node src/api-server.js",
+    "assistant": "node src/assistant-service.js",
     "manager": "node src/manager.js",
     "dev": "node --watch src/server.js",
     "hash-password": "node scripts/hash-password.js",

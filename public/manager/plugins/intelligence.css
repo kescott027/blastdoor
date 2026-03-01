@@ -1,0 +1,30 @@
+.intelligence-plugin-panel .intel-config-form {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: rgba(10, 14, 24, 0.45);
+}
+
+.intelligence-plugin-panel .intel-workflows {
+  margin-top: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: rgba(10, 14, 24, 0.45);
+}
+
+.intelligence-plugin-panel .intel-workflows h3,
+.intelligence-plugin-panel .intel-output-wrap h3 {
+  margin: 0 0 0.45rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.intelligence-plugin-panel .intel-output-wrap {
+  margin-top: 0.8rem;
+}
+
+.intelligence-plugin-panel .log-box {
+  min-height: 170px;
+  max-height: 300px;
+}

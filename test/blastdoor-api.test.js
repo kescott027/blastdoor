@@ -240,3 +240,57 @@ test("blastdoor-api server enforces token and serves credential list", async () 
     }
   });
 });
+
+test("createBlastdoorApi local adapter exposes intelligence plugin workflow interface", async () => {
+  const api = createBlastdoorApi({
+    config: {
+      passwordStoreMode: "env",
+      passwordStoreFile: "mock/password-store.json",
+      authUsername: "gm",
+      authPasswordHash: "scrypt$a$b",
+      totpSecret: "",
+      databaseFile: "",
+      configStoreMode: "env",
+      postgresUrl: "",
+      postgresSsl: false,
+      sessionMaxAgeHours: 12,
+      assistantEnabled: true,
+      assistantProvider: "heuristic",
+      assistantUrl: "",
+      assistantRagEnabled: false,
+      assistantAllowWebSearch: false,
+      assistantThreatScoreThreshold: 80,
+    },
+  });
+
+  try {
+    const intelligence = api.plugins?.intelligence;
+    assert.ok(intelligence);
+
+    const status = await intelligence.getStatus();
+    assert.equal(status.enabled, true);
+    assert.equal(status.mode, "local");
+
+    const configWorkflow = await intelligence.runConfigRecommendations({
+      diagnosticsReport: {
+        config: {
+          HOST: "127.0.0.1",
+        },
+      },
+      installationConfig: {
+        installType: "local",
+      },
+    });
+    assert.equal(configWorkflow.workflowId, "environment-inferred-configuration-recommendations");
+    assert.equal(Array.isArray(configWorkflow.recommendations), true);
+
+    const threatWorkflow = await intelligence.runThreatMonitor({
+      logLines: ["GET /?x=%3Cscript%3Ealert(1)%3C/script%3E"],
+      threatScoreThreshold: 20,
+      blastDoorsClosed: false,
+    });
+    assert.equal(threatWorkflow.workflowId, "threat-monitoring-and-lockdown");
+  } finally {
+    await api.close();
+  }
+});

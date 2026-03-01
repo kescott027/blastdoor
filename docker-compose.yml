@@ -55,6 +55,8 @@ services:
     env_file:
       - ./docker/blastdoor.env
     depends_on:
+      blastdoor-assistant:
+        condition: service_healthy
       postgres:
         condition: service_healthy
     environment:
@@ -74,6 +76,35 @@ services:
           "node",
           "-e",
           "fetch('http://127.0.0.1:8070/healthz').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  blastdoor-assistant:
+    image: blastdoor-gateway:latest
+    restart: unless-stopped
+    env_file:
+      - ./docker/blastdoor.env
+    environment:
+      ASSISTANT_HOST: 0.0.0.0
+      ASSISTANT_PORT: 8060
+    command: ["node", "src/assistant-service.js"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    expose:
+      - "8060"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8060/healthz').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
         ]
       interval: 10s
       timeout: 5s

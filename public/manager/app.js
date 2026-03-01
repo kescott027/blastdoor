@@ -12,6 +12,7 @@ const tsStatusMessage = document.getElementById("tsStatusMessage");
 const tsHints = document.getElementById("tsHints");
 const tsOutput = document.getElementById("tsOutput");
 const tsScript = document.getElementById("tsScript");
+const pluginPanelsContainer = document.getElementById("pluginPanels");
 const appearanceModal = document.getElementById("appearanceModal");
 const appearanceStatusMessage = document.getElementById("appearanceStatusMessage");
 const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
@@ -185,6 +186,12 @@ let latestUsers = [];
 let selectedUserUsername = "";
 let userEditorMode = "new";
 let latestTlsPlan = "";
+const managerPluginState = {
+  loaded: false,
+  modules: [],
+  refreshHandlers: [],
+  styles: new Set(),
+};
 
 function bindClick(id, handler) {
   const element = document.getElementById(id);
@@ -354,6 +361,190 @@ async function saveConfig(payload, successMessage) {
   setMessage(successMessage);
   await refreshAll();
   return result;
+}
+
+function normalizeConfigValue(value) {
+  if (typeof value === "boolean") {
+    return toBooleanString(value);
+  }
+  if (value === undefined || value === null) {
+    return "";
+  }
+  return String(value);
+}
+
+async function saveConfigPatch(configPatch = {}, successMessage = "Configuration saved.") {
+  const payload = {};
+  for (const [key, value] of Object.entries(configPatch || {})) {
+    payload[key] = normalizeConfigValue(value);
+  }
+  return await saveConfig(payload, successMessage);
+}
+
+function resolveManagerAssetUrl(assetPath) {
+  return new URL(String(assetPath || ""), window.location.origin).toString();
+}
+
+function ensurePluginStylesheet(cssPath) {
+  if (!cssPath) {
+    return;
+  }
+
+  const href = resolveManagerAssetUrl(cssPath);
+  if (managerPluginState.styles.has(href)) {
+    return;
+  }
+
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  link.dataset.pluginCss = "true";
+  document.head.append(link);
+  managerPluginState.styles.add(href);
+}
+
+function createPluginPanel({ pluginId, title, note = "", className = "" }) {
+  if (!pluginPanelsContainer) {
+    throw new Error("Plugin panel container is not available in this admin UI build.");
+  }
+
+  const root = document.createElement("section");
+  root.className = `panel plugin-panel ${className}`.trim();
+  root.dataset.pluginId = String(pluginId || "");
+
+  const heading = document.createElement("h2");
+  heading.textContent = String(title || pluginId || "Plugin");
+  root.append(heading);
+
+  if (note) {
+    const noteEl = document.createElement("p");
+    noteEl.className = "panel-note";
+    noteEl.textContent = String(note);
+    root.append(noteEl);
+  }
+
+  const statusEl = document.createElement("p");
+  statusEl.className = "status-message";
+  root.append(statusEl);
+
+  const body = document.createElement("div");
+  body.className = "plugin-panel-body";
+  root.append(body);
+
+  pluginPanelsContainer.append(root);
+
+  return {
+    root,
+    body,
+    statusEl,
+    setStatus(message, isError = false) {
+      statusEl.textContent = String(message || "");
+      statusEl.style.color = isError ? "#ff8a8a" : "#9be0ff";
+    },
+  };
+}
+
+async function runPluginRefreshHandlers() {
+  if (managerPluginState.refreshHandlers.length === 0) {
+    return;
+  }
+
+  await Promise.all(
+    managerPluginState.refreshHandlers.map(async ({ pluginId, onRefresh }) => {
+      try {
+        await onRefresh();
+      } catch (error) {
+        console.warn(`[manager-ui] plugin refresh failed (${pluginId}):`, error);
+      }
+    }),
+  );
+}
+
+function buildPluginInitContext(pluginDef = {}) {
+  return {
+    pluginId: String(pluginDef.pluginId || ""),
+    apiGet: async (routePath) => await api("GET", routePath),
+    apiPost: async (routePath, body) => await api("POST", routePath, body || {}),
+    saveConfigPatch,
+    refreshManager: async () => {
+      await refreshAll();
+    },
+    setGlobalMessage: setMessage,
+    createPanel: (panelOptions = {}) =>
+      createPluginPanel({
+        pluginId: panelOptions.pluginId || pluginDef.pluginId || "",
+        title: panelOptions.title || pluginDef.pluginId || "Plugin",
+        note: panelOptions.note || "",
+        className: panelOptions.className || "",
+      }),
+    copyToClipboard,
+    resolveAssetUrl: resolveManagerAssetUrl,
+  };
+}
+
+async function loadManagerPlugins() {
+  if (managerPluginState.loaded) {
+    return;
+  }
+  managerPluginState.loaded = true;
+
+  if (!pluginPanelsContainer) {
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await api("GET", "/plugins/ui");
+  } catch (error) {
+    console.warn("[manager-ui] failed to load plugin manifest:", error);
+    return;
+  }
+
+  const plugins = Array.isArray(payload?.plugins) ? payload.plugins : [];
+  for (const pluginDef of plugins) {
+    const pluginId = String(pluginDef?.pluginId || "").trim();
+    const jsPath = String(pluginDef?.jsPath || "").trim();
+    if (!pluginId || !jsPath) {
+      continue;
+    }
+
+    try {
+      ensurePluginStylesheet(pluginDef?.cssPath);
+      const moduleUrl = resolveManagerAssetUrl(jsPath);
+      const moduleExports = await import(moduleUrl);
+      const register = moduleExports.registerManagerPlugin || moduleExports.default;
+      if (typeof register !== "function") {
+        console.warn(`[manager-ui] plugin '${pluginId}' has no registerManagerPlugin export`);
+        continue;
+      }
+
+      const instance = (await register(buildPluginInitContext(pluginDef))) || {};
+      if (typeof instance.onRefresh === "function") {
+        managerPluginState.refreshHandlers.push({
+          pluginId,
+          onRefresh: instance.onRefresh,
+        });
+      }
+
+      managerPluginState.modules.push({
+        pluginId,
+        dispose: typeof instance.dispose === "function" ? instance.dispose : null,
+      });
+    } catch (error) {
+      console.warn(`[manager-ui] failed to initialize plugin '${pluginId}':`, error);
+      try {
+        const panel = createPluginPanel({
+          pluginId,
+          title: `Plugin Error: ${pluginId}`,
+          note: "This plugin failed to load. Check manager console logs for details.",
+          className: "plugin-panel-error",
+        });
+        panel.setStatus(error?.message || String(error), true);
+      } catch (panelError) {
+        console.warn("[manager-ui] failed to render plugin error panel:", panelError);
+      }
+    }
+  }
 }
 
 async function api(method, routePath, body) {
@@ -1575,6 +1766,7 @@ async function refreshAll() {
     const [configResult, monitorResult] = await Promise.all([api("GET", "/config"), api("GET", "/monitor")]);
     fillForm(configResult.config);
     updateStatusCards(monitorResult);
+    await runPluginRefreshHandlers();
   } catch (error) {
     setMessage(error.message || String(error), true);
   }
@@ -2324,8 +2516,17 @@ if (tlsForm) {
   });
 }
 
-refreshAll();
-setInterval(refreshAll, 3000);
 closeAppearanceModal();
 closeUserModal();
 closeTlsModal();
+
+loadManagerPlugins()
+  .catch((error) => {
+    console.warn("[manager-ui] plugin bootstrap failed:", error);
+  })
+  .finally(async () => {
+    await refreshAll();
+    setInterval(() => {
+      refreshAll().catch(() => {});
+    }, 3000);
+  });
