@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
-import { createPasswordHash } from "./security.js";
+import { createPasswordHash, verifyPassword } from "./security.js";
 import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
@@ -31,6 +31,12 @@ import {
   normalizeThemeAssetPath,
   normalizeThemeLayoutSettings,
 } from "./login-theme.js";
+import {
+  normalizeManagerConsoleSettings,
+  readManagerConsoleSettings,
+  sanitizeManagerConsoleSettingsForClient,
+  writeManagerConsoleSettings,
+} from "./manager-console-settings.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -170,6 +176,7 @@ const SENSITIVE_CONFIG_KEYS = new Set([...BASE_SENSITIVE_CONFIG_KEYS, ...manager
 const REDACTED_MARKER = "[REDACTED]";
 const MANAGED_USER_STATUSES = new Set(["active", "deactivated", "banned"]);
 const USER_FILTER_OPTIONS = new Set(["active", "inactive", "authenticated", "all"]);
+const MANAGER_AUTH_COOKIE_NAME = "blastdoor.manager.sid";
 const CONFIG_BACKUP_NAME_PATTERN = /[^a-zA-Z0-9_-]+/g;
 const CONFIG_BACKUP_ID_PATTERN = /^[a-zA-Z0-9_-]{6,120}$/;
 const CONFIG_BACKUP_VIEW_MAX_BYTES = 512 * 1024;
@@ -251,6 +258,14 @@ function validateManagedUsername(value) {
   const username = normalizeUsername(value);
   if (!/^[a-z0-9._-]{3,64}$/.test(username)) {
     throw new Error("Username must be 3-64 chars using a-z, 0-9, '.', '_', or '-'.");
+  }
+  return username;
+}
+
+function validateManagedUsernameForActions(value) {
+  const username = normalizeUsername(value);
+  if (!/^[a-z0-9._-]{1,64}$/.test(username)) {
+    throw new Error("Username must be 1-64 chars using a-z, 0-9, '.', '_', or '-'.");
   }
   return username;
 }
@@ -743,6 +758,156 @@ async function tailFile(filePath, lineLimit = 200) {
 
     throw new Error(`Failed to read log file ${filePath}: ${error.message}`, { cause: error });
   }
+}
+
+function parseCookies(headerValue) {
+  const cookies = {};
+  const raw = String(headerValue || "");
+  if (!raw) {
+    return cookies;
+  }
+
+  for (const chunk of raw.split(";")) {
+    const [namePart, ...valueParts] = chunk.split("=");
+    const name = String(namePart || "").trim();
+    if (!name) {
+      continue;
+    }
+    const value = valueParts.join("=").trim();
+    try {
+      cookies[name] = decodeURIComponent(value);
+    } catch {
+      cookies[name] = value;
+    }
+  }
+
+  return cookies;
+}
+
+function createCookieHeader(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(String(value || ""))}`];
+  parts.push(`Path=${options.path || "/"}`);
+  if (Number.isInteger(options.maxAge)) {
+    parts.push(`Max-Age=${options.maxAge}`);
+  }
+  if (options.httpOnly !== false) {
+    parts.push("HttpOnly");
+  }
+  if (options.sameSite) {
+    parts.push(`SameSite=${options.sameSite}`);
+  }
+  if (options.secure) {
+    parts.push("Secure");
+  }
+  return parts.join("; ");
+}
+
+function normalizeManagerNextPath(value, fallback = "/manager/") {
+  const candidate = String(value || "").trim();
+  if (!candidate || !candidate.startsWith("/") || candidate.startsWith("//")) {
+    return fallback;
+  }
+  if (candidate.includes("..") || candidate.includes("\\")) {
+    return fallback;
+  }
+  if (!candidate.startsWith("/manager")) {
+    return "/manager/";
+  }
+  return candidate;
+}
+
+function renderManagerLoginPage({ error = "", nextPath = "/manager/" } = {}) {
+  const safeNext = normalizeManagerNextPath(nextPath, "/manager/");
+  const safeError = normalizeString(error, "");
+  const errorBlock = safeError
+    ? `<p class="manager-login-error">${safeError.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`
+    : "";
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blastdoor Manager Login</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 15% 15%, rgba(155, 224, 255, 0.14), transparent 32%),
+          radial-gradient(circle at 88% 18%, rgba(182, 255, 172, 0.1), transparent 30%),
+          linear-gradient(180deg, #131926, #090b10);
+        color: #e7edf6;
+      }
+      main {
+        width: min(420px, 92vw);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 14px;
+        padding: 1.1rem 1.1rem 1.2rem;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(10, 14, 24, 0.92));
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.28rem;
+      }
+      p {
+        margin: 0 0 0.8rem;
+        color: #9ca8bd;
+        font-size: 0.92rem;
+      }
+      label {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 0.85rem;
+      }
+      input {
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(10, 14, 24, 0.95);
+        color: #e7edf6;
+        padding: 0.55rem 0.6rem;
+        font-size: 0.95rem;
+      }
+      button {
+        margin-top: 0.8rem;
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: linear-gradient(180deg, #263557, #1b2741);
+        color: #e7edf6;
+        padding: 0.55rem 0.7rem;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }
+      .manager-login-error {
+        margin: 0 0 0.8rem;
+        color: #ff9a9a;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Blastdoor Manager Login</h1>
+      <p>Manager access is password protected.</p>
+      ${errorBlock}
+      <form method="post" action="/api/manager-auth/login-form">
+        <input type="hidden" name="next" value="${safeNext.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}" />
+        <label>
+          Password
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">Unlock Manager</button>
+      </form>
+    </main>
+  </body>
+</html>`;
 }
 
 function createProcessState({ workspaceDir, processFactory }) {
@@ -1747,11 +1912,15 @@ export function createManagerApp(options = {}) {
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
   const userProfileStorePath = options.userProfileStorePath || path.join(workspaceDir, "data", "user-profiles.json");
   const failureStorePath = options.failureStorePath || path.join(workspaceDir, "data", "launch-failures.json");
+  const managerConsoleSettingsPath =
+    options.managerConsoleSettingsPath || path.join(workspaceDir, "data", "manager-console-settings.json");
   const processFactory = options.processFactory || spawn;
   const commandRunner = options.commandRunner || runDiagnosticCommand;
   const postgresPoolFactory = options.postgresPoolFactory;
   const processState = createProcessState({ workspaceDir, processFactory });
   const managerStartedAtMs = Date.now();
+  const managerAuthSessions = new Map();
+  let managerConsoleSettingsCache = null;
   const controlPlaneCache = {
     payload: null,
     updatedAtMs: 0,
@@ -1805,6 +1974,119 @@ export function createManagerApp(options = {}) {
       });
     } catch {
       // Failure recording should never crash manager operations.
+    }
+  }
+
+  async function readConsoleSettings() {
+    if (managerConsoleSettingsCache) {
+      return managerConsoleSettingsCache;
+    }
+    managerConsoleSettingsCache = await readManagerConsoleSettings(managerConsoleSettingsPath);
+    return managerConsoleSettingsCache;
+  }
+
+  async function writeConsoleSettings(nextSettings) {
+    const normalized = normalizeManagerConsoleSettings(nextSettings);
+    const saved = await writeManagerConsoleSettings(managerConsoleSettingsPath, normalized);
+    managerConsoleSettingsCache = saved;
+    return saved;
+  }
+
+  function purgeExpiredManagerAuthSessions(nowMs = Date.now()) {
+    for (const [token, session] of managerAuthSessions.entries()) {
+      const expiresAtMs = new Date(session?.expiresAt || "").getTime();
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
+        managerAuthSessions.delete(token);
+      }
+    }
+  }
+
+  function getManagerAuthSession(req) {
+    const cookies = parseCookies(req.headers?.cookie || "");
+    const token = String(cookies[MANAGER_AUTH_COOKIE_NAME] || "");
+    if (!token) {
+      return null;
+    }
+    purgeExpiredManagerAuthSessions();
+    const session = managerAuthSessions.get(token);
+    if (!session) {
+      return null;
+    }
+    return {
+      token,
+      ...session,
+    };
+  }
+
+  function createManagerAuthSession({ ttlHours = 12 } = {}) {
+    purgeExpiredManagerAuthSessions();
+    const token = randomBytes(32).toString("base64url");
+    const nowMs = Date.now();
+    const expiresAtMs = nowMs + Math.max(1, Number.parseInt(String(ttlHours || "12"), 10)) * 60 * 60 * 1000;
+    managerAuthSessions.set(token, {
+      createdAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    });
+    return token;
+  }
+
+  function clearManagerAuthSession(req) {
+    const existing = getManagerAuthSession(req);
+    if (existing?.token) {
+      managerAuthSessions.delete(existing.token);
+    }
+  }
+
+  function isManagerAuthBypassPath(pathname = "") {
+    return (
+      pathname === "/manager/login" ||
+      pathname === "/api/manager-auth/login" ||
+      pathname === "/api/manager-auth/login-form" ||
+      pathname === "/api/manager-auth/logout" ||
+      pathname === "/api/manager-auth/state" ||
+      pathname === "/manager/api/manager-auth/login" ||
+      pathname === "/manager/api/manager-auth/login-form" ||
+      pathname === "/manager/api/manager-auth/logout" ||
+      pathname === "/manager/api/manager-auth/state"
+    );
+  }
+
+  async function enforceManagerAccess(req, res, next) {
+    try {
+      const settings = await readConsoleSettings();
+      if (!settings.access.requirePassword) {
+        next();
+        return;
+      }
+
+      if (isManagerAuthBypassPath(req.path)) {
+        next();
+        return;
+      }
+
+      const session = getManagerAuthSession(req);
+      if (session) {
+        next();
+        return;
+      }
+
+      if (req.path.startsWith("/api/") || req.path.startsWith("/manager/api/")) {
+        res.status(401).json({
+          error: "Manager authentication required.",
+          managerAuthRequired: true,
+        });
+        return;
+      }
+
+      if (req.path.startsWith("/manager")) {
+        const nextPath = normalizeManagerNextPath(`${req.path}${req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""}`);
+        res.redirect(`/manager/login?next=${encodeURIComponent(nextPath)}`);
+        return;
+      }
+
+      next();
+    } catch (error) {
+      next(error);
     }
   }
 
@@ -2584,6 +2866,38 @@ export function createManagerApp(options = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
+  app.use(express.urlencoded({ extended: false, limit: "16kb" }));
+  app.use(
+    "/graphics",
+    express.static(graphicsDir, {
+      etag: true,
+      maxAge: "1h",
+    }),
+  );
+  app.use((req, res, next) => {
+    void enforceManagerAccess(req, res, next);
+  });
+  app.get("/manager/login", async (req, res, next) => {
+    try {
+      const settings = await readConsoleSettings();
+      if (!settings.access.requirePassword) {
+        res.redirect("/manager/");
+        return;
+      }
+      if (getManagerAuthSession(req)) {
+        const nextPath = normalizeManagerNextPath(req.query?.next, "/manager/");
+        res.redirect(nextPath);
+        return;
+      }
+      const nextPath = normalizeManagerNextPath(req.query?.next, "/manager/");
+      res
+        .status(200)
+        .set("cache-control", "no-store")
+        .send(renderManagerLoginPage({ nextPath }));
+    } catch (error) {
+      next(error);
+    }
+  });
   app.use(
     "/manager",
     express.static(managerDir, {
@@ -2592,13 +2906,6 @@ export function createManagerApp(options = {}) {
       setHeaders(res) {
         res.setHeader("Cache-Control", "no-store");
       },
-    }),
-  );
-  app.use(
-    "/graphics",
-    express.static(graphicsDir, {
-      etag: true,
-      maxAge: "1h",
     }),
   );
 
@@ -2622,6 +2929,230 @@ export function createManagerApp(options = {}) {
 
   app.get("/", (_req, res) => {
     res.redirect("/manager/");
+  });
+
+  registerApiGet("/manager-auth/state", async (req, res) => {
+    try {
+      const settings = await readConsoleSettings();
+      const session = settings.access.requirePassword ? getManagerAuthSession(req) : { createdAt: null, expiresAt: null };
+      res.json({
+        ok: true,
+        requirePassword: settings.access.requirePassword,
+        authenticated: Boolean(session),
+        passwordConfigured: Boolean(settings.access.passwordHash),
+        session: session
+          ? {
+              createdAt: session.createdAt || null,
+              expiresAt: session.expiresAt || null,
+            }
+          : null,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/manager-auth/login", async (req, res) => {
+    try {
+      const settings = await readConsoleSettings();
+      const nextPath = normalizeManagerNextPath(req.body?.next, "/manager/");
+      if (!settings.access.requirePassword) {
+        res.json({
+          ok: true,
+          authenticated: true,
+          requirePassword: false,
+          nextPath,
+        });
+        return;
+      }
+
+      if (!settings.access.passwordHash) {
+        throw new Error("Manager password is required but not configured.");
+      }
+
+      const password = normalizeString(req.body?.password, "");
+      if (!verifyPassword(password, settings.access.passwordHash)) {
+        res.status(401).json({
+          error: "Invalid manager password.",
+          managerAuthRequired: true,
+        });
+        return;
+      }
+
+      const token = createManagerAuthSession({ ttlHours: settings.access.sessionTtlHours });
+      const forwardedProto = normalizeString(req.get("x-forwarded-proto"), "").split(",")[0].trim().toLowerCase();
+      const secure = req.secure || forwardedProto === "https";
+      res.setHeader(
+        "Set-Cookie",
+        createCookieHeader(MANAGER_AUTH_COOKIE_NAME, token, {
+          path: "/",
+          maxAge: Math.max(1, settings.access.sessionTtlHours) * 60 * 60,
+          sameSite: "Lax",
+          secure,
+          httpOnly: true,
+        }),
+      );
+      res.json({
+        ok: true,
+        authenticated: true,
+        requirePassword: true,
+        nextPath,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/manager-auth/login-form", async (req, res) => {
+    try {
+      const settings = await readConsoleSettings();
+      if (!settings.access.requirePassword) {
+        res.redirect("/manager/");
+        return;
+      }
+
+      if (!settings.access.passwordHash) {
+        res
+          .status(400)
+          .set("cache-control", "no-store")
+          .send(renderManagerLoginPage({ error: "Manager password is required but not configured." }));
+        return;
+      }
+
+      const password = normalizeString(req.body?.password, "");
+      const nextPath = normalizeManagerNextPath(req.body?.next, "/manager/");
+      if (!verifyPassword(password, settings.access.passwordHash)) {
+        res
+          .status(401)
+          .set("cache-control", "no-store")
+          .send(renderManagerLoginPage({ error: "Invalid password.", nextPath }));
+        return;
+      }
+
+      const token = createManagerAuthSession({ ttlHours: settings.access.sessionTtlHours });
+      const forwardedProto = normalizeString(req.get("x-forwarded-proto"), "").split(",")[0].trim().toLowerCase();
+      const secure = req.secure || forwardedProto === "https";
+      res.setHeader(
+        "Set-Cookie",
+        createCookieHeader(MANAGER_AUTH_COOKIE_NAME, token, {
+          path: "/",
+          maxAge: Math.max(1, settings.access.sessionTtlHours) * 60 * 60,
+          sameSite: "Lax",
+          secure,
+          httpOnly: true,
+        }),
+      );
+      res.redirect(nextPath);
+    } catch (error) {
+      res
+        .status(400)
+        .set("cache-control", "no-store")
+        .send(renderManagerLoginPage({ error: error instanceof Error ? error.message : String(error) }));
+    }
+  });
+
+  registerApiPost("/manager-auth/logout", async (req, res) => {
+    try {
+      clearManagerAuthSession(req);
+      const forwardedProto = normalizeString(req.get("x-forwarded-proto"), "").split(",")[0].trim().toLowerCase();
+      const secure = req.secure || forwardedProto === "https";
+      res.setHeader(
+        "Set-Cookie",
+        createCookieHeader(MANAGER_AUTH_COOKIE_NAME, "", {
+          path: "/",
+          maxAge: 0,
+          sameSite: "Lax",
+          secure,
+          httpOnly: true,
+        }),
+      );
+      res.json({
+        ok: true,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/manager-settings", async (_req, res) => {
+    try {
+      const settings = await readConsoleSettings();
+      res.json({
+        ok: true,
+        settings: sanitizeManagerConsoleSettingsForClient(settings),
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/manager-settings/layout", async (req, res) => {
+    try {
+      const current = await readConsoleSettings();
+      const next = normalizeManagerConsoleSettings({
+        ...current,
+        layout: {
+          ...(current.layout || {}),
+          darkModePercent: req.body?.darkModePercent,
+          lightModePercent: req.body?.lightModePercent,
+        },
+      });
+      const saved = await writeConsoleSettings(next);
+      res.json({
+        ok: true,
+        settings: sanitizeManagerConsoleSettingsForClient(saved),
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/manager-settings/access", async (req, res) => {
+    try {
+      const current = await readConsoleSettings();
+      const requirePassword = parseBooleanLikeBody(req.body?.requirePassword);
+      const newPassword = normalizeString(req.body?.password, "");
+      const clearPassword = parseBooleanLikeBody(req.body?.clearPassword);
+      const next = normalizeManagerConsoleSettings({
+        ...current,
+        access: {
+          ...(current.access || {}),
+          requirePassword,
+          sessionTtlHours: req.body?.sessionTtlHours,
+          passwordHash: current.access?.passwordHash || "",
+        },
+      });
+
+      if (newPassword) {
+        next.access.passwordHash = createPasswordHash(newPassword);
+      } else if (clearPassword && !requirePassword) {
+        next.access.passwordHash = "";
+      }
+
+      if (requirePassword && !next.access.passwordHash) {
+        throw new Error("Password is required when manager access protection is enabled.");
+      }
+
+      const saved = await writeConsoleSettings(next);
+      res.json({
+        ok: true,
+        settings: sanitizeManagerConsoleSettingsForClient(saved),
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   registerApiGet("/config", async (_req, res) => {
@@ -2977,6 +3508,71 @@ export function createManagerApp(options = {}) {
     }
   });
 
+  registerApiGet("/sessions", async (_req, res) => {
+    try {
+      const payload = await withBlastdoorApi(async ({ configFromEnv, blastdoorApi }) => {
+        const sessionMaxAgeHours = Number.parseInt(configFromEnv.SESSION_MAX_AGE_HOURS || "12", 10);
+        const profiles = await blastdoorApi.listUserProfiles({
+          sessionMaxAgeHours,
+        });
+        const activeSessions = (profiles || [])
+          .filter((entry) => entry.authenticatedNow)
+          .map((entry) => ({
+            username: entry.username,
+            friendlyName: entry.friendlyName || "",
+            status: entry.status || "active",
+            lastLoginAt: entry.lastLoginAt || "",
+            lastKnownIp: entry.lastKnownIp || "",
+            sessionVersion: entry.sessionVersion || 1,
+          }))
+          .sort((a, b) => String(a.username || "").localeCompare(String(b.username || "")));
+
+        return {
+          activeSessions,
+          sessionMaxAgeHours,
+        };
+      });
+
+      res.json({
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        summary: {
+          activeCount: payload.activeSessions.length,
+          sessionMaxAgeHours: payload.sessionMaxAgeHours,
+        },
+        sessions: payload.activeSessions,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/sessions/invalidate-user", async (req, res) => {
+    try {
+      const username = validateManagedUsernameForActions(req.body?.username);
+      const profile = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const users = await blastdoorApi.listCredentialUsers();
+        const existingUser = users.find((entry) => entry.username === username);
+        if (!existingUser) {
+          throw new Error("User not found.");
+        }
+        return await blastdoorApi.invalidateUserSessions(username);
+      });
+
+      res.json({
+        ok: true,
+        username,
+        sessionVersion: profile?.sessionVersion || 1,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   registerApiGet("/users", async (req, res) => {
     try {
       const view = normalizeUserFilter(req.query?.view, "active");
@@ -3042,7 +3638,7 @@ export function createManagerApp(options = {}) {
 
   registerApiPost("/users/update", async (req, res) => {
     try {
-      const username = validateManagedUsername(req.body?.username);
+      const username = validateManagedUsernameForActions(req.body?.username);
       const password = normalizeString(req.body?.password, "");
       const status = normalizeUserStatus(req.body?.status, "active");
       const friendlyName = sanitizeLongText(req.body?.friendlyName, 160);
@@ -3088,7 +3684,7 @@ export function createManagerApp(options = {}) {
 
   registerApiPost("/users/set-status", async (req, res) => {
     try {
-      const username = validateManagedUsername(req.body?.username);
+      const username = validateManagedUsernameForActions(req.body?.username);
       const status = normalizeUserStatus(req.body?.status, "active");
 
       await withBlastdoorApi(async ({ blastdoorApi }) => {
@@ -3125,7 +3721,7 @@ export function createManagerApp(options = {}) {
 
   registerApiPost("/users/reset-login-code", async (req, res) => {
     try {
-      const username = validateManagedUsername(req.body?.username);
+      const username = validateManagedUsernameForActions(req.body?.username);
       const delivery = normalizeString(req.body?.delivery, "manual") || "manual";
       const ttlMinutes = Number.parseInt(normalizeString(req.body?.ttlMinutes, "30"), 10);
 
@@ -3192,7 +3788,7 @@ export function createManagerApp(options = {}) {
 
   registerApiPost("/users/invalidate-token", async (req, res) => {
     try {
-      const username = validateManagedUsername(req.body?.username);
+      const username = validateManagedUsernameForActions(req.body?.username);
       let profile = null;
       await withBlastdoorApi(async ({ blastdoorApi }) => {
         const users = await blastdoorApi.listCredentialUsers();

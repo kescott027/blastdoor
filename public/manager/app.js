@@ -42,6 +42,20 @@ const failuresModal = document.getElementById("failuresModal");
 const failuresStatusMessage = document.getElementById("failuresStatusMessage");
 const failuresTableBody = document.getElementById("failuresTableBody");
 const failuresDetails = document.getElementById("failuresDetails");
+const sessionModal = document.getElementById("sessionModal");
+const sessionStatusMessage = document.getElementById("sessionStatusMessage");
+const sessionTableBody = document.getElementById("sessionTableBody");
+const sessionSummary = document.getElementById("sessionSummary");
+const sessionInvalidateBtn = document.getElementById("sessionInvalidateBtn");
+const layoutModal = document.getElementById("layoutModal");
+const layoutStatusMessage = document.getElementById("layoutStatusMessage");
+const layoutDarkModePercent = document.getElementById("layoutDarkModePercent");
+const layoutLightModePercent = document.getElementById("layoutLightModePercent");
+const layoutDarkModeValue = document.getElementById("layoutDarkModeValue");
+const layoutLightModeValue = document.getElementById("layoutLightModeValue");
+const layoutRequirePassword = document.getElementById("layoutRequirePassword");
+const layoutManagerPassword = document.getElementById("layoutManagerPassword");
+const layoutSessionTtlHours = document.getElementById("layoutSessionTtlHours");
 const appearanceModal = document.getElementById("appearanceModal");
 const appearanceStatusMessage = document.getElementById("appearanceStatusMessage");
 const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
@@ -218,6 +232,9 @@ let latestTlsPlan = "";
 let latestConfigBackups = [];
 let latestFailures = [];
 let selectedFailureId = "";
+let latestSessions = [];
+let selectedSessionUsername = "";
+let latestManagerSettings = null;
 const managerPluginState = {
   loaded: false,
   modules: [],
@@ -296,6 +313,22 @@ function setFailuresMessage(text, isError = false) {
   failuresStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
+function setSessionMessage(text, isError = false) {
+  if (!sessionStatusMessage) {
+    return;
+  }
+  sessionStatusMessage.textContent = text;
+  sessionStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setLayoutMessage(text, isError = false) {
+  if (!layoutStatusMessage) {
+    return;
+  }
+  layoutStatusMessage.textContent = text;
+  layoutStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
 function toBooleanString(value) {
   return value ? "true" : "false";
 }
@@ -325,6 +358,14 @@ function clampThemeLayoutNumber(value, fallback, min, max) {
   }
 
   return Math.min(max, Math.max(min, raw));
+}
+
+function clampPercent(value, fallback) {
+  const raw = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(100, raw));
 }
 
 function normalizeLoginBoxMode(value) {
@@ -516,6 +557,188 @@ async function refreshFailures(showMessage = false) {
   if (showMessage) {
     setFailuresMessage(`Loaded ${entries.length} failure record(s).`);
   }
+}
+
+function renderSessionSummary(payload = {}) {
+  if (!sessionSummary) {
+    return;
+  }
+  const summary = payload.summary || {};
+  const lines = [
+    `Generated: ${toTimestampLabel(payload.generatedAt)}`,
+    `Active Sessions: ${Number.parseInt(String(summary.activeCount || "0"), 10) || 0}`,
+    `Session TTL Window: ${Number.parseInt(String(summary.sessionMaxAgeHours || "12"), 10) || 12}h`,
+  ];
+  sessionSummary.textContent = lines.join("\n");
+}
+
+function selectSession(username) {
+  const candidate = String(username || "");
+  const exists = latestSessions.some((entry) => String(entry.username || "") === candidate);
+  selectedSessionUsername = exists ? candidate : "";
+  if (sessionInvalidateBtn) {
+    sessionInvalidateBtn.disabled = !selectedSessionUsername;
+  }
+  if (!sessionTableBody) {
+    return;
+  }
+  for (const row of sessionTableBody.querySelectorAll("tr")) {
+    const rowUsername = String(row.getAttribute("data-username") || "");
+    row.classList.toggle("selected", rowUsername === selectedSessionUsername);
+  }
+}
+
+function renderSessionTable(entries) {
+  if (!sessionTableBody) {
+    return;
+  }
+  sessionTableBody.textContent = "";
+  if (!Array.isArray(entries) || entries.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 4;
+    cell.textContent = "No active authenticated sessions found.";
+    row.append(cell);
+    sessionTableBody.append(row);
+    selectSession("");
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement("tr");
+    row.setAttribute("data-username", String(entry.username || ""));
+    row.addEventListener("click", () => {
+      selectSession(entry.username);
+    });
+
+    const userCell = document.createElement("td");
+    const label = entry.friendlyName ? `${entry.friendlyName} (${entry.username})` : String(entry.username || "");
+    userCell.textContent = label;
+    row.append(userCell);
+
+    const loginCell = document.createElement("td");
+    loginCell.textContent = toTimestampLabel(entry.lastLoginAt);
+    row.append(loginCell);
+
+    const ipCell = document.createElement("td");
+    ipCell.textContent = String(entry.lastKnownIp || "-");
+    row.append(ipCell);
+
+    const versionCell = document.createElement("td");
+    versionCell.textContent = String(entry.sessionVersion || 1);
+    row.append(versionCell);
+
+    sessionTableBody.append(row);
+  }
+
+  const preferred = selectedSessionUsername || String(entries[0]?.username || "");
+  selectSession(preferred);
+}
+
+async function refreshSessions(showMessage = true) {
+  const payload = await api("GET", "/sessions");
+  const entries = Array.isArray(payload.sessions) ? payload.sessions : [];
+  latestSessions = entries;
+  renderSessionTable(entries);
+  renderSessionSummary(payload);
+  if (showMessage) {
+    setSessionMessage(`Loaded ${entries.length} active session(s).`);
+  }
+}
+
+function openSessionModal() {
+  if (!sessionModal) {
+    return;
+  }
+  sessionModal.hidden = false;
+  sessionModal.classList.remove("hidden");
+}
+
+function closeSessionModal() {
+  if (!sessionModal) {
+    return;
+  }
+  sessionModal.hidden = true;
+  sessionModal.classList.add("hidden");
+}
+
+function applyConsoleLayout(layout = {}) {
+  const darkModePercent = clampPercent(layout.darkModePercent, 100);
+  const lightModePercent = clampPercent(layout.lightModePercent, 0);
+  const panelTopAlpha = Math.max(0.02, Math.min(0.2, 0.02 + (lightModePercent - darkModePercent) * 0.0012));
+  const panelBorderAlpha = Math.max(0.08, Math.min(0.36, 0.1 + lightModePercent * 0.0016));
+  const statusTopAlpha = Math.max(0.03, Math.min(0.24, 0.035 + lightModePercent * 0.0018));
+  const brightness = Math.max(0.7, Math.min(1.6, 0.82 + lightModePercent * 0.005 + darkModePercent * 0.001));
+  const contrast = Math.max(0.88, Math.min(1.36, 0.95 + darkModePercent * 0.002 + lightModePercent * 0.001));
+  const saturation = Math.max(0.84, Math.min(1.32, 0.92 + darkModePercent * 0.001 + lightModePercent * 0.001));
+
+  document.documentElement.style.setProperty("--panel-top-alpha", panelTopAlpha.toFixed(3));
+  document.documentElement.style.setProperty("--panel-border-alpha", panelBorderAlpha.toFixed(3));
+  document.documentElement.style.setProperty("--status-top-alpha", statusTopAlpha.toFixed(3));
+  document.documentElement.style.setProperty(
+    "--manager-filter",
+    `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturation.toFixed(3)})`,
+  );
+}
+
+function syncLayoutSliderValues() {
+  if (layoutDarkModePercent && layoutDarkModeValue) {
+    layoutDarkModeValue.textContent = `${clampPercent(layoutDarkModePercent.value, 100)}%`;
+  }
+  if (layoutLightModePercent && layoutLightModeValue) {
+    layoutLightModeValue.textContent = `${clampPercent(layoutLightModePercent.value, 0)}%`;
+  }
+}
+
+function fillLayoutSettings(settings = {}) {
+  const layout = settings.layout || {};
+  const access = settings.access || {};
+  if (layoutDarkModePercent) {
+    layoutDarkModePercent.value = String(clampPercent(layout.darkModePercent, 100));
+  }
+  if (layoutLightModePercent) {
+    layoutLightModePercent.value = String(clampPercent(layout.lightModePercent, 0));
+  }
+  if (layoutRequirePassword) {
+    layoutRequirePassword.checked = Boolean(access.requirePassword);
+  }
+  if (layoutSessionTtlHours) {
+    const ttl = Number.parseInt(String(access.sessionTtlHours || "12"), 10);
+    layoutSessionTtlHours.value = String(Number.isFinite(ttl) ? Math.max(1, Math.min(168, ttl)) : 12);
+  }
+  if (layoutManagerPassword) {
+    layoutManagerPassword.value = "";
+  }
+  syncLayoutSliderValues();
+  applyConsoleLayout({
+    darkModePercent: layoutDarkModePercent?.value || 100,
+    lightModePercent: layoutLightModePercent?.value || 0,
+  });
+}
+
+async function refreshManagerSettings(showMessage = false) {
+  const payload = await api("GET", "/manager-settings");
+  latestManagerSettings = payload.settings || null;
+  fillLayoutSettings(payload.settings || {});
+  if (showMessage) {
+    setLayoutMessage("Control console settings loaded.");
+  }
+}
+
+function openLayoutModal() {
+  if (!layoutModal) {
+    return;
+  }
+  layoutModal.hidden = false;
+  layoutModal.classList.remove("hidden");
+}
+
+function closeLayoutModal() {
+  if (!layoutModal) {
+    return;
+  }
+  layoutModal.hidden = true;
+  layoutModal.classList.add("hidden");
 }
 
 function updateStatusCards(monitor) {
@@ -869,6 +1092,11 @@ async function api(method, routePath, body) {
       }
 
       if (!response.ok) {
+        if (response.status === 401 && payload?.managerAuthRequired) {
+          const nextPath = `${window.location.pathname}${window.location.search || ""}`;
+          window.location.assign(`/manager/login?next=${encodeURIComponent(nextPath)}`);
+          throw new Error("Manager authentication required.");
+        }
         const requestError = new Error(payload.error || `Request failed (${response.status})`);
         if (hasFallback && response.status === 404) {
           lastError = requestError;
@@ -2113,14 +2341,17 @@ async function refreshTlsPanel(showMessage = true) {
 
 async function refreshAll() {
   try {
-    const [configResult, monitorResult, controlPlaneResult] = await Promise.all([
+    const [configResult, monitorResult, controlPlaneResult, managerSettingsResult] = await Promise.all([
       api("GET", "/config"),
       api("GET", "/monitor"),
       api("GET", "/control-plane-status"),
+      api("GET", "/manager-settings"),
     ]);
     fillForm(configResult.config);
     updateStatusCards(monitorResult);
     updateControlPlaneCards(controlPlaneResult);
+    latestManagerSettings = managerSettingsResult.settings || null;
+    fillLayoutSettings(managerSettingsResult.settings || {});
     await refreshFailures(false);
     await runPluginRefreshHandlers();
   } catch (error) {
@@ -2249,6 +2480,48 @@ bindClick("openPortalBtn", async () => {
     setMessage(`Opened Blastdoor portal: ${portalUrl}`);
   } catch (error) {
     setMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("sessionMgmtBtn", async () => {
+  if (!sessionModal) {
+    setMessage("Session management panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!sessionModal.hidden) {
+    closeSessionModal();
+    setSessionMessage("Session management panel closed.");
+    return;
+  }
+
+  openSessionModal();
+  setSessionMessage("Loading sessions...");
+  try {
+    await refreshSessions(true);
+  } catch (error) {
+    setSessionMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutBtn", async () => {
+  if (!layoutModal) {
+    setMessage("Control console layout panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!layoutModal.hidden) {
+    closeLayoutModal();
+    setLayoutMessage("Control console layout panel closed.");
+    return;
+  }
+
+  openLayoutModal();
+  setLayoutMessage("Loading control console settings...");
+  try {
+    await refreshManagerSettings(true);
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
   }
 });
 
@@ -2663,6 +2936,16 @@ bindClick("navServiceBtn", () => {
   scrollToSection("serviceControlSection");
 });
 
+bindClick("navSessionBtn", () => {
+  const trigger = document.getElementById("sessionMgmtBtn");
+  trigger?.click();
+});
+
+bindClick("navLayoutBtn", () => {
+  const trigger = document.getElementById("layoutBtn");
+  trigger?.click();
+});
+
 bindClick("navTlsBtn", () => {
   scrollToSection("tlsManagementSection");
 });
@@ -2761,6 +3044,126 @@ bindClick("failuresClearBtn", async () => {
     setFailuresMessage("Failure records cleared.");
   } catch (error) {
     setFailuresMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("sessionCloseBtn", () => {
+  closeSessionModal();
+});
+
+bindClick("sessionRefreshBtn", async () => {
+  try {
+    await refreshSessions(true);
+  } catch (error) {
+    setSessionMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("sessionInvalidateBtn", async () => {
+  try {
+    if (!selectedSessionUsername) {
+      throw new Error("Select a session before invalidating.");
+    }
+    await api("POST", "/sessions/invalidate-user", {
+      username: selectedSessionUsername,
+    });
+    setSessionMessage(`Session token invalidated for ${selectedSessionUsername}.`);
+    await refreshSessions(false);
+  } catch (error) {
+    setSessionMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("sessionRevokeAllBtn", async () => {
+  try {
+    const result = await api("POST", "/sessions/revoke-all", {});
+    setSessionMessage(
+      result?.serviceRestarted
+        ? "All sessions revoked. Gateway restarted."
+        : "All sessions revoked. Restart gateway to enforce immediately.",
+    );
+    await refreshSessions(false);
+    await refreshAll();
+  } catch (error) {
+    setSessionMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutCloseBtn", () => {
+  closeLayoutModal();
+});
+
+if (layoutDarkModePercent) {
+  layoutDarkModePercent.addEventListener("input", () => {
+    syncLayoutSliderValues();
+    applyConsoleLayout({
+      darkModePercent: layoutDarkModePercent.value,
+      lightModePercent: layoutLightModePercent?.value || 0,
+    });
+  });
+}
+
+if (layoutLightModePercent) {
+  layoutLightModePercent.addEventListener("input", () => {
+    syncLayoutSliderValues();
+    applyConsoleLayout({
+      darkModePercent: layoutDarkModePercent?.value || 100,
+      lightModePercent: layoutLightModePercent.value,
+    });
+  });
+}
+
+bindClick("layoutSaveBtn", async () => {
+  try {
+    const payload = await api("POST", "/manager-settings/layout", {
+      darkModePercent: layoutDarkModePercent?.value || 100,
+      lightModePercent: layoutLightModePercent?.value || 0,
+    });
+    latestManagerSettings = payload.settings || latestManagerSettings;
+    fillLayoutSettings(payload.settings || {});
+    setLayoutMessage("Console layout settings saved.");
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutResetBtn", async () => {
+  try {
+    const payload = await api("POST", "/manager-settings/layout", {
+      darkModePercent: 100,
+      lightModePercent: 0,
+    });
+    latestManagerSettings = payload.settings || latestManagerSettings;
+    fillLayoutSettings(payload.settings || {});
+    setLayoutMessage("Console layout reset to defaults.");
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutSaveAccessBtn", async () => {
+  try {
+    const payload = await api("POST", "/manager-settings/access", {
+      requirePassword: toBooleanString(Boolean(layoutRequirePassword?.checked)),
+      password: String(layoutManagerPassword?.value || ""),
+      sessionTtlHours: String(layoutSessionTtlHours?.value || "12"),
+      clearPassword: "false",
+    });
+    latestManagerSettings = payload.settings || latestManagerSettings;
+    fillLayoutSettings(payload.settings || {});
+    const protection = payload?.settings?.access?.requirePassword ? "enabled" : "disabled";
+    setLayoutMessage(`Manager access protection ${protection}.`);
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutLogoutBtn", async () => {
+  try {
+    await api("POST", "/manager-auth/logout", {});
+    window.location.assign("/manager/login?next=%2Fmanager%2F");
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
   }
 });
 
@@ -3099,6 +3502,9 @@ closeAppearanceModal();
 closeUserModal();
 closeTlsModal();
 closeFailuresModal();
+closeSessionModal();
+closeLayoutModal();
+selectSession("");
 
 loadManagerPlugins()
   .catch((error) => {

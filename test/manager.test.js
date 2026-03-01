@@ -8,21 +8,31 @@ import { EventEmitter, once } from "node:events";
 import dotenv from "dotenv";
 import { createManagerApp, createManagerServer, formatManagerListenError } from "../src/manager.js";
 
-function request(port, { method = "GET", pathname = "/", body = null }) {
+function request(port, { method = "GET", pathname = "/", body = null, headers = {} }) {
   return new Promise((resolve, reject) => {
-    const payload = body ? JSON.stringify(body) : "";
+    const isObjectBody = body && typeof body === "object" && !Buffer.isBuffer(body);
+    const payload =
+      body === null || body === undefined
+        ? ""
+        : isObjectBody
+          ? JSON.stringify(body)
+          : String(body);
+    const requestHeaders = {
+      ...headers,
+    };
+    if (payload.length > 0 && !requestHeaders["content-type"]) {
+      requestHeaders["content-type"] = isObjectBody ? "application/json" : "text/plain; charset=utf-8";
+    }
+    if (payload.length > 0 && !requestHeaders["content-length"]) {
+      requestHeaders["content-length"] = Buffer.byteLength(payload);
+    }
     const req = http.request(
       {
         host: "127.0.0.1",
         port,
         path: pathname,
         method,
-        headers: body
-          ? {
-              "content-type": "application/json",
-              "content-length": Buffer.byteLength(payload),
-            }
-          : {},
+        headers: requestHeaders,
       },
       (res) => {
         let raw = "";
@@ -43,6 +53,7 @@ function request(port, { method = "GET", pathname = "/", body = null }) {
           resolve({
             status: res.statusCode,
             body: parsed,
+            headers: res.headers,
           });
         });
       },
@@ -472,7 +483,7 @@ test("manager failures endpoints list and clear recorded failures", async () => 
         "PORT=8080",
         "FOUNDRY_TARGET=http://127.0.0.1:30000",
         "PASSWORD_STORE_MODE=env",
-        "AUTH_USERNAME=gm",
+        "AUTH_USERNAME=gamemaster",
         "AUTH_PASSWORD_HASH=scrypt$demo$demo",
         "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "REQUIRE_TOTP=false",
@@ -537,6 +548,174 @@ test("manager failures endpoints list and clear recorded failures", async () => 
       assert.equal(listedAfterClear.status, 200);
       assert.equal(listedAfterClear.body.summary.count, 0);
       assert.equal(listedAfterClear.body.entries.length, 0);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager session endpoints list active sessions and invalidate selected user", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const profileStorePath = path.join(workspaceDir, "data", "user-profiles.json");
+    await fs.mkdir(path.dirname(profileStorePath), { recursive: true });
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$demo$demo",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      profileStorePath,
+      `${JSON.stringify(
+        {
+          users: {
+            gamemaster: {
+              username: "gamemaster",
+              status: "active",
+              friendlyName: "Game Master",
+              email: "gm@example.test",
+              lastKnownIp: "192.168.1.40",
+              lastLoginAt: new Date().toISOString(),
+              sessionVersion: 1,
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      userProfileStorePath: profileStorePath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const listed = await request(port, { pathname: "/api/sessions" });
+      assert.equal(listed.status, 200);
+      assert.equal(listed.body.ok, true);
+      assert.equal(listed.body.summary.activeCount, 1);
+      assert.equal(Array.isArray(listed.body.sessions), true);
+      assert.equal(listed.body.sessions[0].username, "gamemaster");
+
+      const users = await request(port, { pathname: "/api/users?view=all" });
+      assert.equal(users.status, 200);
+      assert.equal(Array.isArray(users.body.users), true);
+      assert.equal(users.body.users.length >= 1, true);
+      const targetUsername = String(users.body.users[0].username || "");
+      assert.ok(targetUsername);
+
+      const invalidated = await request(port, {
+        method: "POST",
+        pathname: "/api/sessions/invalidate-user",
+        body: { username: targetUsername },
+      });
+      assert.equal(invalidated.status, 200, JSON.stringify(invalidated.body));
+      assert.equal(invalidated.body.ok, true);
+      assert.equal(invalidated.body.username, targetUsername);
+      assert.equal(invalidated.body.sessionVersion, 2);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager optional password protection gates manager APIs when enabled", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const managerConsoleSettingsPath = path.join(workspaceDir, "data", "manager-console-settings.json");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$demo$demo",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerConsoleSettingsPath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const enabled = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-settings/access",
+        body: {
+          requirePassword: "true",
+          password: "Manager-Password-123",
+          sessionTtlHours: "12",
+        },
+      });
+      assert.equal(enabled.status, 200);
+      assert.equal(enabled.body.ok, true);
+      assert.equal(enabled.body.settings.access.requirePassword, true);
+      assert.equal(enabled.body.settings.access.passwordConfigured, true);
+
+      const blocked = await request(port, { pathname: "/api/config" });
+      assert.equal(blocked.status, 401);
+      assert.equal(blocked.body.managerAuthRequired, true);
+
+      const badLogin = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-auth/login",
+        body: {
+          password: "incorrect-password",
+        },
+      });
+      assert.equal(badLogin.status, 401);
+      assert.equal(badLogin.body.managerAuthRequired, true);
+
+      const goodLogin = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-auth/login",
+        body: {
+          password: "Manager-Password-123",
+        },
+      });
+      assert.equal(goodLogin.status, 200);
+      assert.equal(goodLogin.body.ok, true);
+      const setCookie = Array.isArray(goodLogin.headers["set-cookie"])
+        ? goodLogin.headers["set-cookie"][0]
+        : goodLogin.headers["set-cookie"];
+      assert.match(String(setCookie || ""), /blastdoor\.manager\.sid=/);
+      const cookieHeader = String(setCookie || "").split(";")[0];
+
+      const allowed = await request(port, {
+        pathname: "/api/config",
+        headers: {
+          cookie: cookieHeader,
+        },
+      });
+      assert.equal(allowed.status, 200);
+      assert.equal(allowed.body.config.HOST, "127.0.0.1");
     } finally {
       await closeServer(server);
     }

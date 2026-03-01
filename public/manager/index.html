@@ -63,6 +63,8 @@
         <h2>Controls</h2>
         <div class="dock-menu">
           <button id="navServiceBtn" type="button">Service Control</button>
+          <button id="navSessionBtn" type="button">Session Management</button>
+          <button id="navLayoutBtn" type="button">Control Console Layout</button>
           <button id="navTlsBtn" type="button">TLS Management</button>
           <button id="navLoginBtn" type="button">Login Screen Management</button>
           <button id="navUserBtn" type="button">User Management</button>
@@ -93,6 +95,8 @@
           <button id="revokeSessionsBtn" type="button">Revoke Sessions</button>
           <button id="refreshBtn" type="button">Refresh</button>
           <button id="openPortalBtn" type="button">Open Portal</button>
+          <button id="sessionMgmtBtn" type="button">Session Management</button>
+          <button id="layoutBtn" type="button">Control Console Layout</button>
           <button id="appearanceBtn" type="button">Login Appearance</button>
           <button id="tlsBtn" type="button">Manage TLS</button>
           <button id="userMgmtBtn" type="button">User Management</button>
@@ -271,6 +275,107 @@
       </section>
       </main>
     </div>
+
+    <aside
+      id="sessionModal"
+      class="session-dock hidden"
+      hidden
+      role="region"
+      aria-labelledby="sessionTitle"
+    >
+      <section class="session-dock-panel">
+        <header class="session-dock-header">
+          <h2 id="sessionTitle">Session Management</h2>
+          <button id="sessionCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          View currently authenticated sessions and invalidate access tokens when needed.
+        </p>
+        <p class="status-message" id="sessionStatusMessage"></p>
+
+        <div class="button-row">
+          <button id="sessionRefreshBtn" type="button">Refresh Sessions</button>
+          <button id="sessionInvalidateBtn" type="button">Invalidate Selected</button>
+          <button id="sessionRevokeAllBtn" type="button">Revoke All Sessions</button>
+        </div>
+
+        <div class="session-list-wrap">
+          <table class="session-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Last Login</th>
+                <th>Last IP</th>
+                <th>Version</th>
+              </tr>
+            </thead>
+            <tbody id="sessionTableBody"></tbody>
+          </table>
+        </div>
+
+        <h3>Summary</h3>
+        <pre id="sessionSummary" class="log-box"></pre>
+      </section>
+    </aside>
+
+    <aside
+      id="layoutModal"
+      class="layout-dock hidden"
+      hidden
+      role="region"
+      aria-labelledby="layoutTitle"
+    >
+      <section class="layout-dock-panel">
+        <header class="layout-dock-header">
+          <h2 id="layoutTitle">Control Console Layout</h2>
+          <button id="layoutCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          Configure control console look-and-feel and optional manager password access protection.
+        </p>
+        <p class="status-message" id="layoutStatusMessage"></p>
+
+        <section class="layout-settings-box">
+          <h3>Appearance</h3>
+          <label>Dark Mode Strength
+            <div class="range-row">
+              <input id="layoutDarkModePercent" type="range" min="0" max="100" step="1" value="100" />
+              <span id="layoutDarkModeValue" class="range-value">100%</span>
+            </div>
+          </label>
+          <label>Light Mode Strength
+            <div class="range-row">
+              <input id="layoutLightModePercent" type="range" min="0" max="100" step="1" value="0" />
+              <span id="layoutLightModeValue" class="range-value">0%</span>
+            </div>
+          </label>
+          <div class="button-row">
+            <button id="layoutSaveBtn" type="button">Save Layout</button>
+            <button id="layoutResetBtn" type="button">Reset Defaults</button>
+          </div>
+        </section>
+
+        <section class="layout-settings-box">
+          <h3>Access Protection</h3>
+          <label class="checkbox-label">
+            <input id="layoutRequirePassword" type="checkbox" />
+            Require password for Blastdoor Control Console
+          </label>
+          <label>New Manager Password (optional)
+            <input id="layoutManagerPassword" type="password" autocomplete="new-password" />
+          </label>
+          <label>Session TTL (hours)
+            <input id="layoutSessionTtlHours" type="number" min="1" max="168" step="1" value="12" />
+          </label>
+          <div class="button-row">
+            <button id="layoutSaveAccessBtn" type="button">Save Access Settings</button>
+            <button id="layoutLogoutBtn" type="button">Logout Manager Session</button>
+          </div>
+        </section>
+      </section>
+    </aside>
 
     <aside
       id="failuresModal"
