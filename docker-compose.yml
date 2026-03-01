@@ -34,6 +34,8 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./graphics:/app/graphics
+    ports:
+      - "8080:8080"
     expose:
       - "8080"
     healthcheck:
@@ -67,6 +69,8 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./graphics:/app/graphics
+    ports:
+      - "127.0.0.1:8070:8070"
     expose:
       - "8070"
     healthcheck:

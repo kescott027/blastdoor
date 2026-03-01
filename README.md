@@ -390,6 +390,8 @@ Notes:
 
 - Caddy obtains and renews Let's Encrypt certificates automatically when DNS and ports are correct.
 - Required inbound ports for public TLS issuance: `80/tcp` and `443/tcp`.
+- Blastdoor portal is also published directly on `8080/tcp` (`http://<host>:8080`) for resilient-mode access/testing.
+- Blastdoor API is published on localhost `127.0.0.1:8070` for local diagnostics (`/healthz`, internal checks).
 - Blastdoor runs behind Caddy with `TRUST_PROXY=1` and `COOKIE_SECURE=true`.
 - Blastdoor gateway talks to the internal `blastdoor-api` container (`BLASTDOOR_API_URL=http://blastdoor-api:8070`).
 - PostgreSQL data persists in Docker volume `postgres-data`.
