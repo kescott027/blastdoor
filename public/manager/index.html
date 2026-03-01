@@ -13,8 +13,61 @@
       <p>Configure, launch, and monitor your Foundry gateway.</p>
     </header>
 
-    <main class="layout">
-      <section class="panel service-panel">
+    <section class="top-status-bar" id="topStatusBar">
+      <div class="status-card">
+        <h3>Blastdoor Admin Control Console</h3>
+        <p>Running: <strong id="adminRunningValue">Unknown</strong></p>
+        <p>PID: <strong id="adminPidValue">-</strong></p>
+        <p>Uptime: <strong id="adminUptimeValue">-</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Blastdoor Portal</h3>
+        <p>Running: <strong id="portalRunningValue">Unknown</strong></p>
+        <p>PID: <strong id="portalPidValue">-</strong></p>
+        <p>Uptime: <strong id="portalUptimeValue">-</strong></p>
+        <p>Health: <strong id="portalHealthValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Blastdoor API</h3>
+        <p>Running: <strong id="apiRunningValue">Unknown</strong></p>
+        <p>PID: <strong id="apiPidValue">-</strong></p>
+        <p>Uptime: <strong id="apiUptimeValue">-</strong></p>
+        <p>Health: <strong id="apiHealthValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>PostgreSQL</h3>
+        <p>Running: <strong id="postgresRunningValue">Unknown</strong></p>
+        <p>PID: <strong id="postgresPidValue">-</strong></p>
+        <p>Uptime: <strong id="postgresUptimeValue">-</strong></p>
+        <p>Health: <strong id="postgresHealthValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Object Store</h3>
+        <p>Type: <strong id="objectStoreTypeValue">Unknown</strong></p>
+        <p>Reachable: <strong id="objectStoreReachableValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Plugins</h3>
+        <pre id="pluginsStatusValue" class="mini-log">No plugins detected.</pre>
+      </div>
+    </section>
+
+    <div class="console-shell">
+      <aside class="left-dock">
+        <h2>Controls</h2>
+        <div class="dock-menu">
+          <button id="navServiceBtn" type="button">Service Control</button>
+          <button id="navTlsBtn" type="button">TLS Management</button>
+          <button id="navLoginBtn" type="button">Login Screen Management</button>
+          <button id="navUserBtn" type="button">User Management</button>
+          <button id="navBackupBtn" type="button">Backup Management</button>
+          <button id="navDiagBtn" type="button">Diagnostics and Troubleshooting</button>
+          <button id="navModulesBtn" type="button">Modules</button>
+        </div>
+      </aside>
+
+      <main class="layout">
+      <section class="panel service-panel" id="serviceControlSection">
         <h2>Service Control</h2>
         <div class="blastdoors-control">
           <div>
@@ -44,6 +97,30 @@
           <div><dt>Health</dt><dd id="healthValue">Unknown</dd></div>
         </dl>
         <p class="status-message" id="statusMessage"></p>
+      </section>
+
+      <section class="panel management-menu-panel" id="tlsManagementSection">
+        <h2>TLS Management</h2>
+        <p class="panel-note">Manage certificates, detection, and Let's Encrypt planning.</p>
+        <div class="button-row">
+          <button id="openTlsFromPanelBtn" type="button">Open TLS Management</button>
+        </div>
+      </section>
+
+      <section class="panel management-menu-panel" id="loginManagementSection">
+        <h2>Login Screen Management</h2>
+        <p class="panel-note">Create and apply Blastdoor portal login themes.</p>
+        <div class="button-row">
+          <button id="openAppearanceFromPanelBtn" type="button">Open Login Screen Management</button>
+        </div>
+      </section>
+
+      <section class="panel management-menu-panel" id="userManagementSection">
+        <h2>User Management</h2>
+        <p class="panel-note">Create users, set status, rotate temporary access, and invalidate user sessions.</p>
+        <div class="button-row">
+          <button id="openUserMgmtFromPanelBtn" type="button">Open User Management</button>
+        </div>
       </section>
 
       <section class="panel config-panel">
@@ -101,7 +178,7 @@
         </form>
       </section>
 
-      <section class="panel config-maint-panel">
+      <section class="panel config-maint-panel" id="backupManagementSection">
         <h2>Config Backups</h2>
         <p class="panel-note">
           Back up and restore install/runtime config files. Clean Install resets installation profile and env files to defaults.
@@ -126,7 +203,7 @@
         <pre id="configBackupDetails" class="log-box"></pre>
       </section>
 
-      <section class="panel diagnostics-panel">
+      <section class="panel diagnostics-panel" id="diagnosticsSection">
         <h2>Diagnostics</h2>
         <p class="panel-note">
           Generates a sanitized report for troubleshooting. Secrets are automatically redacted.
@@ -166,6 +243,14 @@
         <pre id="tsScript" class="log-box"></pre>
       </section>
 
+      <section class="panel modules-panel" id="modulesSection">
+        <h2>Modules</h2>
+        <p class="panel-note">Loaded modules and plugin runtime state.</p>
+        <ul id="modulesList" class="modules-list">
+          <li>Intelligence Module</li>
+        </ul>
+      </section>
+
       <section id="pluginPanels" class="plugin-panels"></section>
 
       <section class="panel runtime-panel">
@@ -177,7 +262,8 @@
         <h2>Debug Log Tail</h2>
         <pre id="debugLogs" class="log-box"></pre>
       </section>
-    </main>
+      </main>
+    </div>
 
     <aside
       id="appearanceModal"

@@ -12,11 +12,30 @@ const tsStatusMessage = document.getElementById("tsStatusMessage");
 const tsHints = document.getElementById("tsHints");
 const tsOutput = document.getElementById("tsOutput");
 const tsScript = document.getElementById("tsScript");
+const adminRunningValue = document.getElementById("adminRunningValue");
+const adminPidValue = document.getElementById("adminPidValue");
+const adminUptimeValue = document.getElementById("adminUptimeValue");
+const portalRunningValue = document.getElementById("portalRunningValue");
+const portalPidValue = document.getElementById("portalPidValue");
+const portalUptimeValue = document.getElementById("portalUptimeValue");
+const portalHealthValue = document.getElementById("portalHealthValue");
+const apiRunningValue = document.getElementById("apiRunningValue");
+const apiPidValue = document.getElementById("apiPidValue");
+const apiUptimeValue = document.getElementById("apiUptimeValue");
+const apiHealthValue = document.getElementById("apiHealthValue");
+const postgresRunningValue = document.getElementById("postgresRunningValue");
+const postgresPidValue = document.getElementById("postgresPidValue");
+const postgresUptimeValue = document.getElementById("postgresUptimeValue");
+const postgresHealthValue = document.getElementById("postgresHealthValue");
+const objectStoreTypeValue = document.getElementById("objectStoreTypeValue");
+const objectStoreReachableValue = document.getElementById("objectStoreReachableValue");
+const pluginsStatusValue = document.getElementById("pluginsStatusValue");
 const configBackupStatusMessage = document.getElementById("configBackupStatusMessage");
 const configBackupName = document.getElementById("configBackupName");
 const configBackupSelect = document.getElementById("configBackupSelect");
 const configBackupDetails = document.getElementById("configBackupDetails");
 const pluginPanelsContainer = document.getElementById("pluginPanels");
+const modulesList = document.getElementById("modulesList");
 const appearanceModal = document.getElementById("appearanceModal");
 const appearanceStatusMessage = document.getElementById("appearanceStatusMessage");
 const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
@@ -317,6 +336,23 @@ function toSecondsLabel(seconds) {
   return `${h}h ${rm}m`;
 }
 
+function yesNoLabel(value) {
+  return value ? "Yes" : "No";
+}
+
+function healthLabel(health = {}) {
+  if (health.ok) {
+    return health.statusCode ? `Healthy (${health.statusCode})` : "Healthy";
+  }
+  if (health.statusCode) {
+    return `Unhealthy (${health.statusCode})`;
+  }
+  if (health.error) {
+    return `Unreachable (${health.error})`;
+  }
+  return "Unknown";
+}
+
 function updateStatusCards(monitor) {
   const status = monitor?.status || {};
   const health = monitor?.health || {};
@@ -335,6 +371,78 @@ function updateStatusCards(monitor) {
 
   document.getElementById("runtimeLogs").textContent = (monitor.runtimeLogLines || []).join("\n");
   document.getElementById("debugLogs").textContent = (monitor.debugLogLines || []).join("\n");
+}
+
+function updateControlPlaneCards(payload = {}) {
+  const admin = payload.admin || {};
+  const portal = payload.portal || {};
+  const apiStatus = payload.api || {};
+  const postgres = payload.postgres || {};
+  const objectStore = payload.objectStore || {};
+  const plugins = Array.isArray(payload.plugins) ? payload.plugins : [];
+
+  if (adminRunningValue) {
+    adminRunningValue.textContent = yesNoLabel(Boolean(admin.running));
+    adminPidValue.textContent = admin.pid || "-";
+    adminUptimeValue.textContent = toSecondsLabel(admin.uptimeSeconds || 0);
+  }
+
+  if (portalRunningValue) {
+    portalRunningValue.textContent = yesNoLabel(Boolean(portal.running));
+    portalPidValue.textContent = portal.pid || "-";
+    portalUptimeValue.textContent = toSecondsLabel(portal.uptimeSeconds || 0);
+    portalHealthValue.textContent = healthLabel(portal.health || {});
+  }
+
+  if (apiRunningValue) {
+    apiRunningValue.textContent = yesNoLabel(Boolean(apiStatus.running));
+    apiPidValue.textContent = apiStatus.pid || "-";
+    apiUptimeValue.textContent = toSecondsLabel(apiStatus.uptimeSeconds || 0);
+    apiHealthValue.textContent = healthLabel(apiStatus.health || {});
+  }
+
+  if (postgresRunningValue) {
+    postgresRunningValue.textContent = yesNoLabel(Boolean(postgres.running));
+    postgresPidValue.textContent = postgres.pid || "-";
+    postgresUptimeValue.textContent = toSecondsLabel(postgres.uptimeSeconds || 0);
+    postgresHealthValue.textContent = healthLabel(postgres.health || {});
+  }
+
+  if (objectStoreTypeValue) {
+    objectStoreTypeValue.textContent = String(objectStore.type || "unknown");
+    objectStoreReachableValue.textContent = yesNoLabel(Boolean(objectStore.reachable));
+  }
+
+  if (pluginsStatusValue) {
+    if (plugins.length === 0) {
+      pluginsStatusValue.textContent = "No plugins detected.";
+    } else {
+      pluginsStatusValue.textContent = plugins
+        .map((plugin) => {
+          const running = yesNoLabel(Boolean(plugin.running));
+          const pid = plugin.pid || "-";
+          const uptime = plugin.uptimeSeconds ? toSecondsLabel(plugin.uptimeSeconds) : "-";
+          const health = healthLabel(plugin.health || {});
+          return `${plugin.name || plugin.id}: run=${running} pid=${pid} up=${uptime} health=${health}`;
+        })
+        .join("\n");
+    }
+  }
+
+  if (modulesList) {
+    modulesList.textContent = "";
+    if (plugins.length === 0) {
+      const li = document.createElement("li");
+      li.textContent = "No modules loaded.";
+      modulesList.append(li);
+    } else {
+      for (const plugin of plugins) {
+        const li = document.createElement("li");
+        li.textContent = `${plugin.name || plugin.id} | running: ${yesNoLabel(Boolean(plugin.running))} | health: ${healthLabel(plugin.health || {})}`;
+        modulesList.append(li);
+      }
+    }
+  }
 }
 
 function fillForm(config) {
@@ -1837,9 +1945,14 @@ async function refreshTlsPanel(showMessage = true) {
 
 async function refreshAll() {
   try {
-    const [configResult, monitorResult] = await Promise.all([api("GET", "/config"), api("GET", "/monitor")]);
+    const [configResult, monitorResult, controlPlaneResult] = await Promise.all([
+      api("GET", "/config"),
+      api("GET", "/monitor"),
+      api("GET", "/control-plane-status"),
+    ]);
     fillForm(configResult.config);
     updateStatusCards(monitorResult);
+    updateControlPlaneCards(controlPlaneResult);
     await runPluginRefreshHandlers();
   } catch (error) {
     setMessage(error.message || String(error), true);
@@ -2367,6 +2480,57 @@ bindClick("tsCopyScriptBtn", async () => {
   } catch (error) {
     setTsMessage(error.message || String(error), true);
   }
+});
+
+function scrollToSection(id) {
+  const element = document.getElementById(id);
+  if (!element) {
+    return;
+  }
+  element.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+bindClick("navServiceBtn", () => {
+  scrollToSection("serviceControlSection");
+});
+
+bindClick("navTlsBtn", () => {
+  scrollToSection("tlsManagementSection");
+});
+
+bindClick("navLoginBtn", () => {
+  scrollToSection("loginManagementSection");
+});
+
+bindClick("navUserBtn", () => {
+  scrollToSection("userManagementSection");
+});
+
+bindClick("navBackupBtn", () => {
+  scrollToSection("backupManagementSection");
+});
+
+bindClick("navDiagBtn", () => {
+  scrollToSection("diagnosticsSection");
+});
+
+bindClick("navModulesBtn", () => {
+  scrollToSection("modulesSection");
+});
+
+bindClick("openTlsFromPanelBtn", () => {
+  const trigger = document.getElementById("tlsBtn");
+  trigger?.click();
+});
+
+bindClick("openAppearanceFromPanelBtn", () => {
+  const trigger = document.getElementById("appearanceBtn");
+  trigger?.click();
+});
+
+bindClick("openUserMgmtFromPanelBtn", () => {
+  const trigger = document.getElementById("userMgmtBtn");
+  trigger?.click();
 });
 
 bindClick("configBackupRefreshBtn", async () => {

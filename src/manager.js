@@ -3,6 +3,7 @@ import express from "express";
 import rateLimit from "express-rate-limit";
 import fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -18,6 +19,7 @@ import {
   defaultInstallationConfig,
   detectPlatformType,
   normalizeInstallationConfig,
+  readInstallationConfig,
   syncRuntimeEnvFromInstallation,
   writeInstallationConfig,
 } from "./installation-config.js";
@@ -929,6 +931,296 @@ async function checkFoundryTargetHealth(config) {
   }
 }
 
+function elapsedSeconds(startedAt) {
+  const startedMs = new Date(startedAt).getTime();
+  if (!Number.isFinite(startedMs)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+}
+
+function formatPluginName(pluginId) {
+  const normalized = normalizeString(pluginId, "");
+  if (!normalized) {
+    return "Plugin";
+  }
+  return `${normalized
+    .split(/[-_]+/)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ")} Module`;
+}
+
+function parseComposePsOutput(raw) {
+  const text = String(raw || "").trim();
+  if (!text) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry) => entry && typeof entry === "object");
+    }
+    if (parsed && typeof parsed === "object") {
+      return [parsed];
+    }
+  } catch {
+    // Fall through to line-delimited parsing.
+  }
+
+  const entries = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object") {
+        entries.push(parsed);
+      }
+    } catch {
+      // Ignore unparseable line.
+    }
+  }
+  return entries;
+}
+
+function toServiceHealthFromDocker({ running = false, healthStatus = "", state = "" } = {}) {
+  const normalizedHealth = String(healthStatus || "").trim().toLowerCase();
+  const normalizedState = String(state || "").trim().toLowerCase();
+  if (!running) {
+    return {
+      ok: false,
+      statusCode: null,
+      error: normalizedState || "stopped",
+    };
+  }
+
+  if (normalizedHealth === "healthy") {
+    return { ok: true, statusCode: 200 };
+  }
+  if (normalizedHealth === "starting") {
+    return { ok: false, statusCode: null, error: "starting" };
+  }
+  if (normalizedHealth && normalizedHealth !== "none") {
+    return { ok: false, statusCode: null, error: normalizedHealth };
+  }
+
+  return { ok: true, statusCode: 200 };
+}
+
+async function inspectDockerContainerState({ commandRunner, workspaceDir, containerId }) {
+  const result = await commandRunner({
+    command: "docker",
+    args: ["inspect", "--format", "{{json .State}}", containerId],
+    cwd: workspaceDir,
+    timeoutMs: 4500,
+  });
+
+  if (!result.ok) {
+    return {
+      running: false,
+      pid: null,
+      uptimeSeconds: 0,
+      health: {
+        ok: false,
+        statusCode: null,
+        error: normalizeString(result.error || result.stderr || result.stdout, "inspect-failed"),
+      },
+    };
+  }
+
+  const parsedState = (() => {
+    try {
+      return JSON.parse(String(result.stdout || "").trim());
+    } catch {
+      return null;
+    }
+  })();
+
+  const running = Boolean(parsedState?.Running);
+  const healthStatus = normalizeString(parsedState?.Health?.Status, "");
+  const startedAt = normalizeString(parsedState?.StartedAt, "");
+  const pidValue = Number.parseInt(String(parsedState?.Pid || ""), 10);
+
+  return {
+    running,
+    pid: Number.isInteger(pidValue) && pidValue > 0 ? pidValue : null,
+    startedAt: startedAt || null,
+    uptimeSeconds: running ? elapsedSeconds(startedAt) : 0,
+    health: toServiceHealthFromDocker({
+      running,
+      healthStatus,
+      state: parsedState?.Status || "",
+    }),
+  };
+}
+
+async function loadComposeServiceStates({ commandRunner, workspaceDir }) {
+  const composeResult = await commandRunner({
+    command: "docker",
+    args: ["compose", "-f", "docker-compose.yml", "--env-file", "docker/blastdoor.env", "ps", "--format", "json"],
+    cwd: workspaceDir,
+    timeoutMs: 4500,
+  });
+
+  if (!composeResult.ok) {
+    return {
+      ok: false,
+      services: {},
+      error: normalizeString(composeResult.error || composeResult.stderr || composeResult.stdout, "compose-unavailable"),
+    };
+  }
+
+  const composeRows = parseComposePsOutput(composeResult.stdout);
+  const services = {};
+  for (const row of composeRows) {
+    const serviceName = normalizeString(row.Service || row.service || "", "").toLowerCase();
+    const containerId = normalizeString(row.ID || row.Id || row.id || "", "");
+    if (!serviceName || !containerId) {
+      continue;
+    }
+    services[serviceName] = await inspectDockerContainerState({
+      commandRunner,
+      workspaceDir,
+      containerId,
+    });
+  }
+
+  return { ok: true, services };
+}
+
+async function probeHttpHealth(url, timeoutMs = 1500) {
+  let targetUrl;
+  try {
+    targetUrl = new URL(String(url || ""));
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      url: String(url || ""),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(targetUrl, { signal: controller.signal });
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      url: targetUrl.toString(),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      url: targetUrl.toString(),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function probeTcpPort({ host, port, timeoutMs = 1500 }) {
+  return await new Promise((resolve) => {
+    const socket = net.createConnection({
+      host,
+      port,
+    });
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => {
+      finish({ ok: true });
+    });
+    socket.once("timeout", () => {
+      finish({ ok: false, error: `timeout (${timeoutMs}ms)` });
+    });
+    socket.once("error", (error) => {
+      finish({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    });
+  });
+}
+
+function parsePostgresUrlEndpoint(postgresUrl) {
+  const raw = normalizeString(postgresUrl, "");
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const host = normalizeString(parsed.hostname, "");
+    const port = Number.parseInt(parsed.port || "5432", 10);
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+      return null;
+    }
+
+    return { host, port };
+  } catch {
+    return null;
+  }
+}
+
+async function detectHostProcessState({ commandRunner, workspaceDir, matchers = [] }) {
+  const result = await commandRunner({
+    command: "ps",
+    args: ["-axo", "pid=,etimes=,command="],
+    cwd: workspaceDir,
+    timeoutMs: 3000,
+  });
+
+  if (!result.ok) {
+    return null;
+  }
+
+  const normalizedMatchers = matchers.map((value) => normalizeString(value, "").toLowerCase()).filter(Boolean);
+  if (normalizedMatchers.length === 0) {
+    return null;
+  }
+
+  for (const line of String(result.stdout || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const parts = trimmed.split(/\s+/, 3);
+    if (parts.length < 3) {
+      continue;
+    }
+
+    const pid = Number.parseInt(parts[0], 10);
+    const etimes = Number.parseInt(parts[1], 10);
+    const command = parts[2] || "";
+    const commandLower = command.toLowerCase();
+    if (!normalizedMatchers.some((matcher) => commandLower.includes(matcher))) {
+      continue;
+    }
+
+    return {
+      running: true,
+      pid: Number.isInteger(pid) ? pid : null,
+      uptimeSeconds: Number.isInteger(etimes) && etimes >= 0 ? etimes : 0,
+    };
+  }
+
+  return null;
+}
+
 function parseBooleanLike(value, fallback = false) {
   if (value === undefined || value === null || value === "") {
     return fallback;
@@ -1345,6 +1637,12 @@ export function createManagerApp(options = {}) {
   const commandRunner = options.commandRunner || runDiagnosticCommand;
   const postgresPoolFactory = options.postgresPoolFactory;
   const processState = createProcessState({ workspaceDir, processFactory });
+  const managerStartedAtMs = Date.now();
+  const controlPlaneCache = {
+    payload: null,
+    updatedAtMs: 0,
+    inflight: null,
+  };
   const managerWriteRateLimitWindowMs = Number.isInteger(options.managerWriteRateLimitWindowMs)
     ? options.managerWriteRateLimitWindowMs
     : 15 * 60 * 1000;
@@ -1799,6 +2097,340 @@ export function createManagerApp(options = {}) {
       TLS_CA_FILE: caFile,
       TLS_PASSPHRASE: passphrase,
     };
+  }
+
+  async function buildObjectStoreStatus(config, installationConfig) {
+    const fromEnv = normalizeString(config.OBJECT_STORAGE_MODE, "").toLowerCase();
+    const fromInstall = normalizeString(installationConfig?.objectStorage, "").toLowerCase();
+    const type = fromEnv || fromInstall || "local";
+    if (type === "local") {
+      try {
+        await fs.access(graphicsDir);
+        return { type, reachable: true };
+      } catch (error) {
+        return {
+          type,
+          reachable: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+
+    return {
+      type,
+      reachable: false,
+      error: "not-implemented",
+    };
+  }
+
+  async function resolveControlPlaneStatus() {
+    const [config, installationConfigRaw] = await Promise.all([
+      readEnvConfig(envPath),
+      readInstallationConfig(installationConfigPath),
+    ]);
+
+    const installationConfig = installationConfigRaw || null;
+    const installType = normalizeString(installationConfig?.installType, "local").toLowerCase();
+    const portal = processState.getStatus();
+    const portalHealth = await checkBlastdoorHealth(config);
+    const adminUptimeSeconds = Math.max(0, Math.floor((Date.now() - managerStartedAtMs) / 1000));
+    const objectStore = await buildObjectStoreStatus(config, installationConfig);
+    const enabledPlugins = pluginManager.getEnabledPlugins();
+
+    const response = {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      installation: {
+        profile: installType === "container" ? "container" : "local",
+      },
+      admin: {
+        running: true,
+        pid: process.pid,
+        uptimeSeconds: adminUptimeSeconds,
+        health: { ok: true, statusCode: 200 },
+      },
+      portal: {
+        running: portal.running,
+        pid: portal.pid,
+        uptimeSeconds: portal.uptimeSeconds || 0,
+        health: portalHealth,
+      },
+      api: {
+        running: false,
+        pid: null,
+        uptimeSeconds: 0,
+        health: { ok: false, statusCode: null, error: "unknown" },
+      },
+      postgres: {
+        running: false,
+        pid: null,
+        uptimeSeconds: 0,
+        health: { ok: false, statusCode: null, error: "not-configured" },
+      },
+      objectStore,
+      plugins: [],
+    };
+
+    if (installType === "container") {
+      const composeState = await loadComposeServiceStates({
+        commandRunner,
+        workspaceDir,
+      });
+      const services = composeState.services || {};
+
+      const portalContainer = services.blastdoor || null;
+      if (portalContainer) {
+        response.portal = {
+          running: Boolean(portalContainer.running),
+          pid: portalContainer.pid || null,
+          uptimeSeconds: portalContainer.uptimeSeconds || 0,
+          health: portalContainer.health || portalHealth,
+        };
+      }
+
+      const apiContainer = services["blastdoor-api"] || null;
+      response.api = apiContainer
+        ? {
+            running: Boolean(apiContainer.running),
+            pid: apiContainer.pid || null,
+            uptimeSeconds: apiContainer.uptimeSeconds || 0,
+            health: apiContainer.health || { ok: false, statusCode: null, error: "unknown" },
+          }
+        : {
+            running: false,
+            pid: null,
+            uptimeSeconds: 0,
+            health: composeState.ok
+              ? { ok: false, statusCode: null, error: "not-running" }
+              : { ok: false, statusCode: null, error: composeState.error || "compose-unavailable" },
+          };
+
+      const postgresContainer = services.postgres || null;
+      response.postgres = postgresContainer
+        ? {
+            running: Boolean(postgresContainer.running),
+            pid: postgresContainer.pid || null,
+            uptimeSeconds: postgresContainer.uptimeSeconds || 0,
+            health: postgresContainer.health || { ok: false, statusCode: null, error: "unknown" },
+          }
+        : {
+            running: false,
+            pid: null,
+            uptimeSeconds: 0,
+            health: composeState.ok
+              ? { ok: false, statusCode: null, error: "not-running" }
+              : { ok: false, statusCode: null, error: composeState.error || "compose-unavailable" },
+          };
+
+      response.plugins = enabledPlugins.map((plugin) => {
+        const id = normalizeString(plugin?.id, "");
+        const assistantContainer = id === "intelligence" ? services["blastdoor-assistant"] || null : null;
+        if (assistantContainer) {
+          return {
+            id,
+            name: formatPluginName(id),
+            running: Boolean(assistantContainer.running),
+            pid: assistantContainer.pid || null,
+            uptimeSeconds: assistantContainer.uptimeSeconds || 0,
+            health: assistantContainer.health || { ok: false, statusCode: null, error: "unknown" },
+          };
+        }
+        return {
+          id,
+          name: formatPluginName(id),
+          running: true,
+          pid: null,
+          uptimeSeconds: adminUptimeSeconds,
+          health: { ok: true, statusCode: 200 },
+        };
+      });
+
+      return response;
+    }
+
+    const apiUrl = normalizeString(config.BLASTDOOR_API_URL, "");
+    if (apiUrl) {
+      const healthUrl = (() => {
+        try {
+          const parsed = new URL(apiUrl);
+          parsed.pathname = "/healthz";
+          parsed.search = "";
+          parsed.hash = "";
+          return parsed.toString();
+        } catch {
+          return apiUrl;
+        }
+      })();
+
+      const apiHealth = await probeHttpHealth(healthUrl, 1500);
+      const apiProcess = await detectHostProcessState({
+        commandRunner,
+        workspaceDir,
+        matchers: ["blastdoor-api", "src/api-server.js"],
+      });
+      response.api = {
+        running: apiProcess?.running || apiHealth.ok,
+        pid: apiProcess?.pid || null,
+        uptimeSeconds: apiProcess?.uptimeSeconds || 0,
+        health: apiHealth,
+      };
+    } else {
+      const apiProcess = await detectHostProcessState({
+        commandRunner,
+        workspaceDir,
+        matchers: ["blastdoor-api", "src/api-server.js"],
+      });
+      response.api = apiProcess
+        ? {
+            running: true,
+            pid: apiProcess.pid || null,
+            uptimeSeconds: apiProcess.uptimeSeconds || 0,
+            health: { ok: true, statusCode: 200 },
+          }
+        : {
+            running: response.portal.running,
+            pid: response.portal.pid,
+            uptimeSeconds: response.portal.uptimeSeconds,
+            health: response.portal.health,
+          };
+    }
+
+    const postgresMode =
+      normalizeString(config.PASSWORD_STORE_MODE, "").toLowerCase() === "postgres" ||
+      normalizeString(config.CONFIG_STORE_MODE, "").toLowerCase() === "postgres";
+    if (postgresMode) {
+      const endpoint = parsePostgresUrlEndpoint(config.POSTGRES_URL);
+      if (!endpoint) {
+        response.postgres = {
+          running: false,
+          pid: null,
+          uptimeSeconds: 0,
+          health: {
+            ok: false,
+            statusCode: null,
+            error: "invalid-postgres-url",
+          },
+        };
+      } else {
+        const [tcpHealth, processHealth] = await Promise.all([
+          probeTcpPort({
+            host: endpoint.host,
+            port: endpoint.port,
+            timeoutMs: 1500,
+          }),
+          detectHostProcessState({
+            commandRunner,
+            workspaceDir,
+            matchers: ["postgres"],
+          }),
+        ]);
+
+        response.postgres = {
+          running: processHealth?.running || tcpHealth.ok,
+          pid: processHealth?.pid || null,
+          uptimeSeconds: processHealth?.uptimeSeconds || 0,
+          health: tcpHealth.ok
+            ? {
+                ok: true,
+                statusCode: 200,
+                detail: `${endpoint.host}:${endpoint.port}`,
+              }
+            : {
+                ok: false,
+                statusCode: null,
+                error: tcpHealth.error || "unreachable",
+                detail: `${endpoint.host}:${endpoint.port}`,
+              },
+        };
+      }
+    }
+
+    response.plugins = await Promise.all(
+      enabledPlugins.map(async (plugin) => {
+        const id = normalizeString(plugin?.id, "");
+        if (id === "intelligence") {
+          const enabled = parseBooleanLike(config.ASSISTANT_ENABLED, true);
+          if (!enabled) {
+            return {
+              id,
+              name: formatPluginName(id),
+              running: false,
+              pid: null,
+              uptimeSeconds: 0,
+              health: { ok: false, statusCode: null, error: "disabled" },
+            };
+          }
+
+          const assistantUrl = normalizeString(config.ASSISTANT_URL, "");
+          if (assistantUrl) {
+            const healthUrl = (() => {
+              try {
+                const parsed = new URL(assistantUrl);
+                parsed.pathname = "/healthz";
+                parsed.search = "";
+                parsed.hash = "";
+                return parsed.toString();
+              } catch {
+                return assistantUrl;
+              }
+            })();
+
+            const assistantHealth = await probeHttpHealth(healthUrl, 1500);
+            return {
+              id,
+              name: formatPluginName(id),
+              running: assistantHealth.ok,
+              pid: null,
+              uptimeSeconds: 0,
+              health: assistantHealth,
+            };
+          }
+
+          return {
+            id,
+            name: formatPluginName(id),
+            running: true,
+            pid: null,
+            uptimeSeconds: adminUptimeSeconds,
+            health: { ok: true, statusCode: 200 },
+          };
+        }
+
+        return {
+          id,
+          name: formatPluginName(id),
+          running: true,
+          pid: null,
+          uptimeSeconds: adminUptimeSeconds,
+          health: { ok: true, statusCode: 200 },
+        };
+      }),
+    );
+
+    return response;
+  }
+
+  async function getControlPlaneStatusCached() {
+    const now = Date.now();
+    if (controlPlaneCache.payload && now - controlPlaneCache.updatedAtMs < 2000) {
+      return controlPlaneCache.payload;
+    }
+
+    if (controlPlaneCache.inflight) {
+      return await controlPlaneCache.inflight;
+    }
+
+    controlPlaneCache.inflight = resolveControlPlaneStatus()
+      .then((payload) => {
+        controlPlaneCache.payload = payload;
+        controlPlaneCache.updatedAtMs = Date.now();
+        return payload;
+      })
+      .finally(() => {
+        controlPlaneCache.inflight = null;
+      });
+
+    return await controlPlaneCache.inflight;
   }
 
   const app = express();
@@ -2417,6 +3049,18 @@ export function createManagerApp(options = {}) {
       });
     } catch (error) {
       res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/control-plane-status", async (_req, res) => {
+    try {
+      const status = await getControlPlaneStatusCached();
+      res.json(status);
+    } catch (error) {
+      res.status(500).json({
+        ok: false,
         error: error instanceof Error ? error.message : String(error),
       });
     }

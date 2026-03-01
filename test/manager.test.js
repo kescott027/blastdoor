@@ -315,6 +315,151 @@ test("manager clean install config resets installation/env files to defaults", a
   });
 });
 
+test("manager control-plane endpoint returns local status summary", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const graphicsDir = path.join(workspaceDir, "graphics");
+    await fs.mkdir(graphicsDir, { recursive: true });
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "CONFIG_STORE_MODE=env",
+        "OBJECT_STORAGE_MODE=local",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      graphicsDir,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const result = await request(port, { pathname: "/api/control-plane-status" });
+      assert.equal(result.status, 200);
+      assert.equal(result.body.ok, true);
+      assert.equal(result.body.admin.running, true);
+      assert.equal(typeof result.body.admin.pid, "number");
+      assert.equal(typeof result.body.portal.running, "boolean");
+      assert.equal(typeof result.body.api.running, "boolean");
+      assert.equal(typeof result.body.postgres.running, "boolean");
+      assert.equal(result.body.objectStore.type, "local");
+      assert.equal(result.body.objectStore.reachable, true);
+      assert.equal(Array.isArray(result.body.plugins), true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager control-plane endpoint maps container service states", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const installationConfigPath = path.join(workspaceDir, "data", "installation_config.json");
+    await fs.mkdir(path.dirname(installationConfigPath), { recursive: true });
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=0.0.0.0",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=postgres",
+        "CONFIG_STORE_MODE=postgres",
+        "POSTGRES_URL=postgres://blastdoor:blastdoor@127.0.0.1:5432/blastdoor",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      installationConfigPath,
+      `${JSON.stringify({ installType: "container", gatewayPort: 8080, managerPort: 8090 }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const startedAt = new Date(Date.now() - 120_000).toISOString();
+    const dockerStates = new Map([
+      ["portal-id", { Running: true, Pid: 1111, StartedAt: startedAt, Health: { Status: "healthy" } }],
+      ["api-id", { Running: true, Pid: 2222, StartedAt: startedAt, Health: { Status: "healthy" } }],
+      ["pg-id", { Running: true, Pid: 3333, StartedAt: startedAt, Health: { Status: "healthy" } }],
+      ["assistant-id", { Running: true, Pid: 4444, StartedAt: startedAt, Health: { Status: "unhealthy" } }],
+    ]);
+
+    const commandRunner = async ({ command, args = [] }) => {
+      if (command !== "docker") {
+        return { ok: false, error: "unexpected command", stdout: "", stderr: "", exitCode: 1 };
+      }
+
+      if (args.includes("compose") && args.includes("ps")) {
+        return {
+          ok: true,
+          stdout: JSON.stringify([
+            { Service: "blastdoor", ID: "portal-id" },
+            { Service: "blastdoor-api", ID: "api-id" },
+            { Service: "postgres", ID: "pg-id" },
+            { Service: "blastdoor-assistant", ID: "assistant-id" },
+          ]),
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+
+      if (args[0] === "inspect") {
+        const containerId = String(args[args.length - 1] || "");
+        const state = dockerStates.get(containerId);
+        if (!state) {
+          return { ok: false, error: "missing container", stdout: "", stderr: "", exitCode: 1 };
+        }
+        return {
+          ok: true,
+          stdout: JSON.stringify(state),
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+
+      return { ok: false, error: "unsupported args", stdout: "", stderr: "", exitCode: 1 };
+    };
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      installationConfigPath,
+      commandRunner,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const result = await request(port, { pathname: "/api/control-plane-status" });
+      assert.equal(result.status, 200);
+      assert.equal(result.body.ok, true);
+      assert.equal(result.body.installation.profile, "container");
+      assert.equal(result.body.portal.running, true);
+      assert.equal(result.body.portal.pid, 1111);
+      assert.equal(result.body.api.running, true);
+      assert.equal(result.body.api.pid, 2222);
+      assert.equal(result.body.postgres.running, true);
+      assert.equal(result.body.postgres.pid, 3333);
+      const intelligence = (result.body.plugins || []).find((entry) => entry.id === "intelligence");
+      assert.ok(intelligence);
+      assert.equal(intelligence.pid, 4444);
+      assert.equal(intelligence.health.ok, false);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager can start stop and monitor gateway process", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");
