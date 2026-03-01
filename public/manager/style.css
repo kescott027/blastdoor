@@ -64,24 +64,38 @@ body {
   backdrop-filter: blur(2px);
 }
 
-.panel:nth-child(1) {
+.service-panel {
   grid-column: span 4;
 }
 
-.panel:nth-child(2) {
+.config-panel {
   grid-column: span 8;
 }
 
-.panel:nth-child(3) {
+.diagnostics-panel {
   grid-column: span 12;
 }
 
-.panel:nth-child(4) {
+.troubleshooting-panel {
   grid-column: span 12;
 }
 
-.panel:nth-child(5),
-.panel:nth-child(6) {
+.plugin-panels {
+  grid-column: span 12;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 1rem;
+}
+
+.plugin-panel {
+  grid-column: span 6;
+}
+
+.runtime-panel {
+  grid-column: span 6;
+}
+
+.debug-panel {
   grid-column: span 6;
 }
 
@@ -712,12 +726,13 @@ textarea:focus {
 }
 
 @media (max-width: 980px) {
-  .panel:nth-child(1),
-  .panel:nth-child(2),
-  .panel:nth-child(3),
-  .panel:nth-child(4),
-  .panel:nth-child(5),
-  .panel:nth-child(6) {
+  .service-panel,
+  .config-panel,
+  .diagnostics-panel,
+  .troubleshooting-panel,
+  .plugin-panel,
+  .runtime-panel,
+  .debug-panel {
     grid-column: span 12;
   }
 

@@ -1,0 +1,313 @@
+import {
+  buildGrimoireWorkflow,
+  generateTroubleshootingRecommendation,
+  inferEnvironmentConfigurationRecommendations,
+  monitorThreatSignals,
+} from "./assistant-workflows.js";
+
+function normalizeString(value, fallback = "") {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  return String(value).trim();
+}
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
+}
+
+function toPositiveInteger(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function computeRetryDelayMs(baseDelayMs, attemptIndex) {
+  return Math.min(5000, baseDelayMs * 2 ** Math.max(0, attemptIndex - 1));
+}
+
+function withTimeoutController(timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    clear() {
+      clearTimeout(timeout);
+    },
+  };
+}
+
+async function parseJsonBody(response) {
+  const raw = await response.text();
+  if (!raw) {
+    return {};
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { error: raw.slice(0, 500) };
+  }
+}
+
+async function maybeGenerateOllamaNarrative(config, prompt) {
+  if (normalizeString(config.assistantProvider, "heuristic").toLowerCase() !== "ollama") {
+    return "";
+  }
+
+  const ollamaUrl = normalizeString(config.assistantOllamaUrl, "http://127.0.0.1:11434").replace(/\/+$/, "");
+  const ollamaModel = normalizeString(config.assistantOllamaModel, "llama3.1:8b");
+  if (!ollamaUrl || !ollamaModel || !prompt) {
+    return "";
+  }
+
+  const timeoutMs = toPositiveInteger(config.assistantTimeoutMs, 6000);
+  const { signal, clear } = withTimeoutController(timeoutMs);
+  try {
+    const response = await fetch(`${ollamaUrl}/api/generate`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: ollamaModel,
+        prompt,
+        stream: false,
+      }),
+      signal,
+    });
+
+    if (!response.ok) {
+      return "";
+    }
+    const payload = await parseJsonBody(response);
+    return normalizeString(payload?.response, "");
+  } catch {
+    return "";
+  } finally {
+    clear();
+  }
+}
+
+export function loadAssistantRuntimeConfig(env = process.env) {
+  return {
+    assistantEnabled: parseBoolean(env.ASSISTANT_ENABLED, true),
+    assistantUrl: normalizeString(env.ASSISTANT_URL, ""),
+    assistantToken: normalizeString(env.ASSISTANT_TOKEN, ""),
+    assistantProvider: normalizeString(env.ASSISTANT_PROVIDER, "heuristic").toLowerCase(),
+    assistantOllamaUrl: normalizeString(env.ASSISTANT_OLLAMA_URL, "http://127.0.0.1:11434"),
+    assistantOllamaModel: normalizeString(env.ASSISTANT_OLLAMA_MODEL, "llama3.1:8b"),
+    assistantTimeoutMs: toPositiveInteger(env.ASSISTANT_TIMEOUT_MS, 6000),
+    assistantRetryMaxAttempts: toPositiveInteger(env.ASSISTANT_RETRY_MAX_ATTEMPTS, 2),
+    assistantRagEnabled: parseBoolean(env.ASSISTANT_RAG_ENABLED, false),
+    assistantAllowWebSearch: parseBoolean(env.ASSISTANT_ALLOW_WEB_SEARCH, false),
+    assistantAutoLockOnThreat: parseBoolean(env.ASSISTANT_AUTO_LOCK_ON_THREAT, false),
+    assistantThreatScoreThreshold: toPositiveInteger(env.ASSISTANT_THREAT_SCORE_THRESHOLD, 80),
+  };
+}
+
+function createDisabledAssistantClient() {
+  const disabledResponse = (workflowId) => ({
+    workflowId,
+    generatedAt: new Date().toISOString(),
+    disabled: true,
+    message: "Assistant is disabled (ASSISTANT_ENABLED=false).",
+  });
+
+  return {
+    async getStatus() {
+      return {
+        enabled: false,
+        mode: "disabled",
+      };
+    },
+    async runConfigRecommendations() {
+      return disabledResponse("environment-inferred-configuration-recommendations");
+    },
+    async runTroubleshootRecommendation() {
+      return disabledResponse("error-troubleshooting-recommendation");
+    },
+    async runThreatMonitor() {
+      return disabledResponse("threat-monitoring-and-lockdown");
+    },
+    async runGrimoireWorkflow() {
+      return disabledResponse("grimoire-api-intent-block-builder");
+    },
+    async close() {},
+  };
+}
+
+function createLocalAssistantClient(config) {
+  return {
+    async getStatus() {
+      return {
+        enabled: true,
+        mode: "local",
+        provider: normalizeString(config.assistantProvider, "heuristic"),
+        ragEnabled: Boolean(config.assistantRagEnabled),
+        allowWebSearch: Boolean(config.assistantAllowWebSearch),
+      };
+    },
+
+    async runConfigRecommendations(payload = {}) {
+      const result = inferEnvironmentConfigurationRecommendations(payload);
+      const narrative = await maybeGenerateOllamaNarrative(
+        config,
+        [
+          "You are Blastdoor assistant.",
+          "Summarize the following config recommendations into concise operator instructions:",
+          JSON.stringify(result, null, 2),
+        ].join("\n"),
+      );
+      if (narrative) {
+        result.assistantNarrative = narrative;
+      }
+      return result;
+    },
+
+    async runTroubleshootRecommendation(payload = {}) {
+      const result = await generateTroubleshootingRecommendation(payload, {
+        ragEnabled: config.assistantRagEnabled,
+        allowWebSearch: config.assistantAllowWebSearch,
+      });
+      const narrative = await maybeGenerateOllamaNarrative(
+        config,
+        [
+          "You are Blastdoor assistant.",
+          "Summarize this troubleshooting plan into ordered remediation steps.",
+          JSON.stringify(result, null, 2),
+        ].join("\n"),
+      );
+      if (narrative) {
+        result.assistantNarrative = narrative;
+      }
+      return result;
+    },
+
+    async runThreatMonitor(payload = {}) {
+      return monitorThreatSignals({
+        ...payload,
+        threatScoreThreshold:
+          payload?.threatScoreThreshold !== undefined
+            ? payload.threatScoreThreshold
+            : config.assistantThreatScoreThreshold,
+      });
+    },
+
+    async runGrimoireWorkflow(payload = {}) {
+      const result = buildGrimoireWorkflow(payload);
+      const narrative = await maybeGenerateOllamaNarrative(
+        config,
+        [
+          "You are Blastdoor assistant.",
+          "Explain this API block chain in plain language with operator checks.",
+          JSON.stringify(result, null, 2),
+        ].join("\n"),
+      );
+      if (narrative) {
+        result.assistantNarrative = narrative;
+      }
+      return result;
+    },
+
+    async close() {},
+  };
+}
+
+function createRemoteAssistantClient(config) {
+  const baseUrl = normalizeString(config.assistantUrl, "").replace(/\/+$/, "");
+  const token = normalizeString(config.assistantToken, "");
+  const timeoutMs = toPositiveInteger(config.assistantTimeoutMs, 6000);
+  const retryMaxAttempts = toPositiveInteger(config.assistantRetryMaxAttempts, 2);
+  const retryBaseDelayMs = 150;
+
+  async function request(pathname, payload = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= retryMaxAttempts; attempt += 1) {
+      const { signal, clear } = withTimeoutController(timeoutMs);
+      try {
+        const response = await fetch(`${baseUrl}${pathname}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(token ? { "x-assistant-token": token } : {}),
+          },
+          body: JSON.stringify(payload || {}),
+          signal,
+        });
+
+        const body = await parseJsonBody(response);
+        if (!response.ok) {
+          lastError = new Error(body?.error || `Assistant request failed with HTTP ${response.status}.`);
+          if (attempt < retryMaxAttempts && [408, 429, 500, 502, 503, 504].includes(response.status)) {
+            await new Promise((resolve) => {
+              setTimeout(resolve, computeRetryDelayMs(retryBaseDelayMs, attempt));
+            });
+            continue;
+          }
+          throw lastError;
+        }
+
+        return body;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (attempt < retryMaxAttempts) {
+          await new Promise((resolve) => {
+            setTimeout(resolve, computeRetryDelayMs(retryBaseDelayMs, attempt));
+          });
+          continue;
+        }
+        throw lastError;
+      } finally {
+        clear();
+      }
+    }
+
+    throw lastError || new Error("Assistant request failed.");
+  }
+
+  return {
+    async getStatus() {
+      const response = await request("/v1/status", {});
+      return response.status || {};
+    },
+    async runConfigRecommendations(payload = {}) {
+      const response = await request("/v1/workflows/config-recommendations", payload);
+      return response.result || {};
+    },
+    async runTroubleshootRecommendation(payload = {}) {
+      const response = await request("/v1/workflows/troubleshoot-recommendation", payload);
+      return response.result || {};
+    },
+    async runThreatMonitor(payload = {}) {
+      const response = await request("/v1/workflows/threat-monitor", payload);
+      return response.result || {};
+    },
+    async runGrimoireWorkflow(payload = {}) {
+      const response = await request("/v1/workflows/grimoire", payload);
+      return response.result || {};
+    },
+    async close() {},
+  };
+}
+
+export function createAssistantClient(options = {}) {
+  const config = {
+    ...loadAssistantRuntimeConfig(options.env || process.env),
+    ...(options.config && typeof options.config === "object" ? options.config : {}),
+  };
+
+  if (!config.assistantEnabled) {
+    return createDisabledAssistantClient();
+  }
+
+  const forceLocal = options.forceLocal === true;
+  if (!forceLocal && normalizeString(config.assistantUrl, "")) {
+    return createRemoteAssistantClient(config);
+  }
+  return createLocalAssistantClient(config);
+}

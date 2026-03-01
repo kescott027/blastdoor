@@ -27,6 +27,7 @@ import { createConfigStore } from "./config-store.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { createBlastDoorsStateController } from "./blastdoors-state.js";
 import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
+import { createPluginManager } from "./plugins/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -191,8 +192,9 @@ export function detectSelfProxyTarget(config) {
 
 export function loadConfigFromEnv(env = process.env) {
   const passwordStoreMode = String(env.PASSWORD_STORE_MODE || "env").toLowerCase();
+  const pluginManager = createPluginManager({ env });
 
-  return {
+  const baseConfig = {
     host: env.HOST || "0.0.0.0",
     port: Number.parseInt(env.PORT || "8080", 10),
     foundryTarget: requiredEnv(env, "FOUNDRY_TARGET"),
@@ -247,6 +249,11 @@ export function loadConfigFromEnv(env = process.env) {
     passwordStoreMode,
     passwordStoreFile: env.PASSWORD_STORE_FILE || "mock/password-store.json",
     blastDoorsClosed: parseBoolean(env.BLAST_DOORS_CLOSED, false),
+  };
+
+  return {
+    ...baseConfig,
+    ...pluginManager.loadServerConfigFromEnv(env),
   };
 }
 
@@ -325,6 +332,9 @@ export function validateConfig(config) {
   if (!Number.isInteger(blastdoorApiCircuitResetMs) || blastdoorApiCircuitResetMs < 100) {
     throw new Error("BLASTDOOR_API_CIRCUIT_RESET_MS must be at least 100.");
   }
+
+  const pluginManager = createPluginManager({ env: process.env });
+  pluginManager.validateServerConfig(config);
 
   const tlsChallengeMethod = String(config.tlsChallengeMethod || "webroot").toLowerCase();
   if (!["webroot", "standalone"].includes(tlsChallengeMethod)) {
@@ -2039,6 +2049,8 @@ async function persistConfigSnapshot(config, configStore, logger) {
     DEBUG_MODE: String(Boolean(config.debugMode)),
     DEBUG_LOG_FILE: String(config.debugLogFile || ""),
   };
+  const pluginManager = createPluginManager({ env: process.env });
+  Object.assign(values, pluginManager.getPersistedServerValues(config));
 
   try {
     for (const [key, value] of Object.entries(values)) {

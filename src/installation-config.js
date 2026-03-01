@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import dotenv from "dotenv";
+import { createPluginManager } from "./plugins/index.js";
 
 export const INSTALLATION_CONFIG_VERSION = 1;
 
@@ -272,6 +273,7 @@ function randomSecret(length = 48) {
 }
 
 function buildCommonEnvValues(config, existing = {}, { forDocker = false } = {}) {
+  const pluginManager = createPluginManager({ env: process.env });
   const database = normalizeEnum(config.database, DATABASE_TYPES, "sqlite");
   const objectStorage = normalizeEnum(config.objectStorage, OBJECT_STORAGE_TYPES, "local");
   const blastdoorApiUrl = config.useExternalBlastdoorApi ? String(config.blastdoorApiUrl || "").trim() : "";
@@ -334,9 +336,16 @@ function buildCommonEnvValues(config, existing = {}, { forDocker = false } = {})
     DEBUG_LOG_FILE: String(existing.DEBUG_LOG_FILE || "logs/blastdoor-debug.log"),
   };
 
+  const pluginContribution = pluginManager.getInstallationEnvContribution({
+    forDocker,
+    installationConfig: config,
+    existing,
+  });
+
   return {
     ...existing,
     ...base,
+    ...(pluginContribution.values || {}),
   };
 }
 
@@ -381,9 +390,20 @@ export async function syncRuntimeEnvFromInstallation({
 }) {
   const currentLocal = await readEnvFileObject(envPath);
   const currentDocker = await readEnvFileObject(dockerEnvPath);
+  const pluginManager = createPluginManager({ env: process.env });
 
   const localValues = buildCommonEnvValues(installationConfig, currentLocal, { forDocker: false });
   const dockerValues = buildCommonEnvValues(installationConfig, currentDocker, { forDocker: true });
+  const pluginLocal = pluginManager.getInstallationEnvContribution({
+    forDocker: false,
+    installationConfig,
+    existing: currentLocal,
+  });
+  const pluginDocker = pluginManager.getInstallationEnvContribution({
+    forDocker: true,
+    installationConfig,
+    existing: currentDocker,
+  });
 
   dockerValues.BLASTDOOR_DOMAIN = String(dockerValues.BLASTDOOR_DOMAIN || "blastdoor.example.com");
   dockerValues.LETSENCRYPT_EMAIL = String(dockerValues.LETSENCRYPT_EMAIL || "admin@example.com");
@@ -391,12 +411,11 @@ export async function syncRuntimeEnvFromInstallation({
   dockerValues.POSTGRES_USER = String(dockerValues.POSTGRES_USER || "blastdoor");
   dockerValues.POSTGRES_PASSWORD = String(dockerValues.POSTGRES_PASSWORD || "change-this-postgres-password");
 
-  await writeEnvObject(envPath, localValues, LOCAL_ENV_ORDER);
-  await writeEnvObject(dockerEnvPath, dockerValues, DOCKER_ENV_ORDER);
+  await writeEnvObject(envPath, localValues, [...LOCAL_ENV_ORDER, ...(pluginLocal.order || [])]);
+  await writeEnvObject(dockerEnvPath, dockerValues, [...DOCKER_ENV_ORDER, ...(pluginDocker.order || [])]);
 
   return {
     localValues,
     dockerValues,
   };
 }
-

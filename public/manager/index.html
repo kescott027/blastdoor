@@ -14,7 +14,7 @@
     </header>
 
     <main class="layout">
-      <section class="panel">
+      <section class="panel service-panel">
         <h2>Service Control</h2>
         <div class="blastdoors-control">
           <div>
@@ -46,7 +46,7 @@
         <p class="status-message" id="statusMessage"></p>
       </section>
 
-      <section class="panel">
+      <section class="panel config-panel">
         <h2>Configuration</h2>
         <form id="configForm">
           <input type="hidden" name="BLAST_DOORS_CLOSED" id="blastDoorsClosedField" />
@@ -141,12 +141,14 @@
         <pre id="tsScript" class="log-box"></pre>
       </section>
 
-      <section class="panel">
+      <section id="pluginPanels" class="plugin-panels"></section>
+
+      <section class="panel runtime-panel">
         <h2>Runtime Logs</h2>
         <pre id="runtimeLogs" class="log-box"></pre>
       </section>
 
-      <section class="panel">
+      <section class="panel debug-panel">
         <h2>Debug Log Tail</h2>
         <pre id="debugLogs" class="log-box"></pre>
       </section>
