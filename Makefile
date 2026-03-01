@@ -78,13 +78,13 @@ ensure-install-config:
 	fi
 
 ensure-deps:
-	@if [ ! -d node_modules ] || [ ! -f node_modules/otplib/package.json ] || [ ! -f node_modules/pg/package.json ]; then \
+	@if ! node scripts/check-deps.js >/dev/null 2>&1; then \
 		echo "Installing Node dependencies..."; \
 		npm install; \
 	fi
 
 ensure-dev-deps: ensure-deps
-	@if [ ! -f node_modules/eslint/package.json ] || [ ! -f node_modules/husky/package.json ]; then \
+	@if ! node scripts/check-deps.js --dev >/dev/null 2>&1; then \
 		echo "Installing development dependencies..."; \
 		npm install; \
 	fi
