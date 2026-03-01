@@ -12,6 +12,10 @@ const tsStatusMessage = document.getElementById("tsStatusMessage");
 const tsHints = document.getElementById("tsHints");
 const tsOutput = document.getElementById("tsOutput");
 const tsScript = document.getElementById("tsScript");
+const configBackupStatusMessage = document.getElementById("configBackupStatusMessage");
+const configBackupName = document.getElementById("configBackupName");
+const configBackupSelect = document.getElementById("configBackupSelect");
+const configBackupDetails = document.getElementById("configBackupDetails");
 const pluginPanelsContainer = document.getElementById("pluginPanels");
 const appearanceModal = document.getElementById("appearanceModal");
 const appearanceStatusMessage = document.getElementById("appearanceStatusMessage");
@@ -186,6 +190,7 @@ let latestUsers = [];
 let selectedUserUsername = "";
 let userEditorMode = "new";
 let latestTlsPlan = "";
+let latestConfigBackups = [];
 const managerPluginState = {
   loaded: false,
   modules: [],
@@ -225,6 +230,14 @@ function setDiagMessage(text, isError = false) {
 function setTsMessage(text, isError = false) {
   tsStatusMessage.textContent = text;
   tsStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setConfigBackupMessage(text, isError = false) {
+  if (!configBackupStatusMessage) {
+    return;
+  }
+  configBackupStatusMessage.textContent = text;
+  configBackupStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
 function setAppearanceMessage(text, isError = false) {
@@ -702,6 +715,67 @@ function renderTroubleshootActionResult(result) {
     ...(result.outputs || []).map(formatActionOutputEntry),
   ];
   tsOutput.textContent = lines.join("\n\n");
+}
+
+function renderConfigBackupList(payload = {}, preferredBackupId = "") {
+  latestConfigBackups = Array.isArray(payload.backups) ? payload.backups : [];
+  if (!configBackupSelect) {
+    return;
+  }
+
+  configBackupSelect.innerHTML = "";
+  if (latestConfigBackups.length === 0) {
+    configBackupSelect.disabled = true;
+    configBackupSelect.append(optionMarkup("", "No backups found", true));
+    return;
+  }
+
+  configBackupSelect.disabled = false;
+  const targetId = preferredBackupId || latestConfigBackups[0].backupId || "";
+  for (const backup of latestConfigBackups) {
+    const label = `${backup.name || backup.backupId} (${backup.createdAt || "unknown"})`;
+    configBackupSelect.append(optionMarkup(backup.backupId, label, backup.backupId === targetId));
+  }
+}
+
+function getSelectedConfigBackupId() {
+  if (!configBackupSelect || configBackupSelect.disabled) {
+    return "";
+  }
+  return String(configBackupSelect.value || "");
+}
+
+function renderConfigBackupView(payload = {}) {
+  if (!configBackupDetails) {
+    return;
+  }
+  const backup = payload.backup || {};
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const lines = [
+    `Backup: ${backup.name || backup.backupId || "unknown"}`,
+    `Backup ID: ${backup.backupId || "unknown"}`,
+    `Created: ${backup.createdAt || "unknown"}`,
+    "",
+  ];
+
+  for (const file of files) {
+    lines.push(`# ${file.relativePath} (${file.exists ? `${file.sizeBytes || 0} bytes` : "missing"})`);
+    lines.push(file.content || "");
+    lines.push("");
+  }
+  configBackupDetails.textContent = lines.join("\n");
+}
+
+async function refreshConfigBackups(showMessage = false) {
+  if (!configBackupSelect) {
+    return;
+  }
+  const currentId = getSelectedConfigBackupId();
+  const payload = await api("GET", "/config-backups");
+  renderConfigBackupList(payload, currentId);
+  if (showMessage) {
+    setConfigBackupMessage(`Loaded ${latestConfigBackups.length} backup(s).`);
+  }
 }
 
 function optionMarkup(value, label, selected = false) {
@@ -2295,6 +2369,116 @@ bindClick("tsCopyScriptBtn", async () => {
   }
 });
 
+bindClick("configBackupRefreshBtn", async () => {
+  try {
+    await refreshConfigBackups(true);
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupCreateBtn", async () => {
+  try {
+    const payload = await api("POST", "/config-backups/create", {
+      name: String(configBackupName?.value || ""),
+    });
+    renderConfigBackupList(payload, payload.backup?.backupId || "");
+    if (configBackupName) {
+      configBackupName.value = "";
+    }
+    setConfigBackupMessage(`Backup created: ${payload.backup?.backupId || "unknown"}.`);
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupViewBtn", async () => {
+  try {
+    const backupId = getSelectedConfigBackupId();
+    if (!backupId) {
+      throw new Error("Select a backup to view.");
+    }
+    const payload = await api("GET", `/config-backups/view?backupId=${encodeURIComponent(backupId)}`);
+    renderConfigBackupView(payload);
+    setConfigBackupMessage(`Loaded backup view for ${backupId}.`);
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupRestoreBtn", async () => {
+  try {
+    const backupId = getSelectedConfigBackupId();
+    if (!backupId) {
+      throw new Error("Select a backup to restore.");
+    }
+    if (!window.confirm(`Restore configuration from backup '${backupId}'?`)) {
+      return;
+    }
+
+    const payload = await api("POST", "/config-backups/restore", {
+      backupId,
+    });
+    renderConfigBackupList(payload, backupId);
+    await refreshAll();
+    setConfigBackupMessage(
+      payload.result?.serviceRestarted
+        ? `Backup restored (${backupId}) and service restarted.`
+        : `Backup restored (${backupId}). Restart service if needed.`,
+    );
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupDeleteBtn", async () => {
+  try {
+    const backupId = getSelectedConfigBackupId();
+    if (!backupId) {
+      throw new Error("Select a backup to delete.");
+    }
+    if (!window.confirm(`Delete backup '${backupId}'? This cannot be undone.`)) {
+      return;
+    }
+
+    const payload = await api("POST", "/config-backups/delete", {
+      backupId,
+    });
+    renderConfigBackupList(payload);
+    if (configBackupDetails) {
+      configBackupDetails.textContent = "";
+    }
+    setConfigBackupMessage(`Backup deleted: ${backupId}.`);
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupCleanBtn", async () => {
+  try {
+    if (
+      !window.confirm(
+        "Clean install config will reset installation_config.json, .env, and docker/blastdoor.env to defaults. Continue?",
+      )
+    ) {
+      return;
+    }
+    const payload = await api("POST", "/config-backups/clean-install", {});
+    await refreshAll();
+    await refreshConfigBackups(false);
+    if (configBackupDetails) {
+      configBackupDetails.textContent = JSON.stringify(payload.result || {}, null, 2);
+    }
+    setConfigBackupMessage(
+      payload.result?.serviceRestarted
+        ? "Clean install config complete. Service restarted."
+        : "Clean install config complete. Restart service if needed.",
+    );
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
 bindClick("userMgmtBtn", async () => {
   if (!userModal) {
     setMessage("User management panel is unavailable in this UI build.", true);
@@ -2526,6 +2710,11 @@ loadManagerPlugins()
   })
   .finally(async () => {
     await refreshAll();
+    try {
+      await refreshConfigBackups(false);
+    } catch (error) {
+      setConfigBackupMessage(error.message || String(error), true);
+    }
     setInterval(() => {
       refreshAll().catch(() => {});
     }, 3000);

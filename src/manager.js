@@ -14,6 +14,13 @@ import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./serv
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
 import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
+import {
+  defaultInstallationConfig,
+  detectPlatformType,
+  normalizeInstallationConfig,
+  syncRuntimeEnvFromInstallation,
+  writeInstallationConfig,
+} from "./installation-config.js";
 import { createPluginManager } from "./plugins/index.js";
 import {
   createThemeId,
@@ -160,6 +167,9 @@ const SENSITIVE_CONFIG_KEYS = new Set([...BASE_SENSITIVE_CONFIG_KEYS, ...manager
 const REDACTED_MARKER = "[REDACTED]";
 const MANAGED_USER_STATUSES = new Set(["active", "deactivated", "banned"]);
 const USER_FILTER_OPTIONS = new Set(["active", "inactive", "authenticated", "all"]);
+const CONFIG_BACKUP_NAME_PATTERN = /[^a-zA-Z0-9_-]+/g;
+const CONFIG_BACKUP_ID_PATTERN = /^[a-zA-Z0-9_-]{6,120}$/;
+const CONFIG_BACKUP_VIEW_MAX_BYTES = 512 * 1024;
 
 function formatEnvValue(value) {
   if (value === "") {
@@ -203,6 +213,35 @@ function normalizeUserFilter(value, fallback = "active") {
     return normalized;
   }
   return fallback;
+}
+
+function normalizeConfigBackupName(value, fallback = "config") {
+  const sanitized = normalizeString(value, "")
+    .replace(CONFIG_BACKUP_NAME_PATTERN, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+  if (!sanitized) {
+    return fallback;
+  }
+  return sanitized.slice(0, 48);
+}
+
+function createConfigBackupId(name) {
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\..+$/, "")
+    .replace("T", "");
+  return `${timestamp}_${normalizeConfigBackupName(name)}`.slice(0, 120);
+}
+
+function validateConfigBackupId(backupId) {
+  const normalized = normalizeString(backupId, "");
+  if (!CONFIG_BACKUP_ID_PATTERN.test(normalized)) {
+    throw new Error("Invalid backup identifier.");
+  }
+  return normalized;
 }
 
 function validateManagedUsername(value) {
@@ -1296,6 +1335,8 @@ export function createManagerApp(options = {}) {
   const runtimeStatePath = options.runtimeStatePath || path.join(workspaceDir, "data", "runtime-state.json");
   const installationConfigPath =
     options.installationConfigPath || path.join(workspaceDir, "data", "installation_config.json");
+  const dockerEnvPath = options.dockerEnvPath || path.join(workspaceDir, "docker", "blastdoor.env");
+  const configBackupDir = options.configBackupDir || path.join(workspaceDir, "data", "config-backups");
   const managerDir = options.managerDir || path.join(workspaceDir, "public", "manager");
   const graphicsDir = options.graphicsDir || path.join(workspaceDir, "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
@@ -1310,6 +1351,15 @@ export function createManagerApp(options = {}) {
   const managerWriteRateLimitMax = Number.isInteger(options.managerWriteRateLimitMax)
     ? options.managerWriteRateLimitMax
     : 120;
+  const managedConfigFiles = [
+    { id: "gateway_env", relativePath: ".env", absolutePath: envPath },
+    { id: "docker_env", relativePath: "docker/blastdoor.env", absolutePath: dockerEnvPath },
+    {
+      id: "installation_profile",
+      relativePath: path.relative(workspaceDir, installationConfigPath).replaceAll(path.sep, "/"),
+      absolutePath: installationConfigPath,
+    },
+  ];
 
   async function withBlastdoorApi(handler) {
     const configFromEnv = await readEnvConfig(envPath);
@@ -1419,6 +1469,266 @@ export function createManagerApp(options = {}) {
         },
       };
     });
+  }
+
+  function getConfigFileSpecs() {
+    return managedConfigFiles.map((entry) => {
+      const relativePath = normalizeString(entry.relativePath, "").replaceAll("\\", "/");
+      if (!relativePath || relativePath.startsWith("..")) {
+        throw new Error(`Invalid managed config file path '${entry.relativePath}'.`);
+      }
+      return {
+        ...entry,
+        relativePath,
+      };
+    });
+  }
+
+  function resolveBackupPath(backupId) {
+    const validatedId = validateConfigBackupId(backupId);
+    const resolvedRoot = path.resolve(configBackupDir);
+    const resolvedPath = path.resolve(resolvedRoot, validatedId);
+    if (!(resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`))) {
+      throw new Error("Invalid backup path.");
+    }
+    return resolvedPath;
+  }
+
+  async function readBackupManifest(backupId) {
+    const backupPath = resolveBackupPath(backupId);
+    const manifestPath = path.join(backupPath, "manifest.json");
+    const raw = await fs.readFile(manifestPath, "utf8");
+    const manifest = JSON.parse(raw);
+    return {
+      backupPath,
+      manifest,
+    };
+  }
+
+  async function listConfigBackups() {
+    try {
+      const entries = await fs.readdir(configBackupDir, { withFileTypes: true });
+      const backups = [];
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        if (!CONFIG_BACKUP_ID_PATTERN.test(entry.name)) {
+          continue;
+        }
+
+        const backupPath = path.join(configBackupDir, entry.name);
+        const manifestPath = path.join(backupPath, "manifest.json");
+        let manifest = null;
+        try {
+          manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+        } catch {
+          const stat = await fs.stat(backupPath);
+          manifest = {
+            backupId: entry.name,
+            name: entry.name,
+            createdAt: stat.mtime.toISOString(),
+            files: [],
+          };
+        }
+
+        backups.push({
+          backupId: String(manifest.backupId || entry.name),
+          name: String(manifest.name || entry.name),
+          createdAt: String(manifest.createdAt || ""),
+          fileCount: Array.isArray(manifest.files) ? manifest.files.length : 0,
+          files: Array.isArray(manifest.files) ? manifest.files : [],
+        });
+      }
+
+      backups.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      return backups;
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  async function createConfigBackup(backupName = "") {
+    const normalizedName = normalizeConfigBackupName(backupName, "config");
+    const backupId = createConfigBackupId(normalizedName);
+    const backupPath = resolveBackupPath(backupId);
+    const files = [];
+    const fileSpecs = getConfigFileSpecs();
+
+    await fs.mkdir(backupPath, { recursive: true });
+    for (const spec of fileSpecs) {
+      const destination = path.join(backupPath, spec.relativePath);
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      try {
+        const stat = await fs.stat(spec.absolutePath);
+        await fs.copyFile(spec.absolutePath, destination);
+        files.push({
+          id: spec.id,
+          relativePath: spec.relativePath,
+          exists: true,
+          sizeBytes: stat.size,
+        });
+      } catch (error) {
+        if (error && error.code === "ENOENT") {
+          files.push({
+            id: spec.id,
+            relativePath: spec.relativePath,
+            exists: false,
+            sizeBytes: 0,
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    const manifest = {
+      backupId,
+      name: normalizedName,
+      createdAt: new Date().toISOString(),
+      files,
+    };
+    await fs.writeFile(path.join(backupPath, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    return manifest;
+  }
+
+  async function viewConfigBackup(backupId) {
+    const { backupPath, manifest } = await readBackupManifest(backupId);
+    const files = [];
+    const manifestFiles = Array.isArray(manifest.files) ? manifest.files : [];
+    for (const file of manifestFiles) {
+      const relativePath = normalizeString(file.relativePath, "").replaceAll("\\", "/");
+      if (!relativePath || relativePath.startsWith("..")) {
+        continue;
+      }
+      const source = path.join(backupPath, relativePath);
+      try {
+        const stat = await fs.stat(source);
+        if (stat.size > CONFIG_BACKUP_VIEW_MAX_BYTES) {
+          files.push({
+            relativePath,
+            exists: true,
+            sizeBytes: stat.size,
+            content: "[file too large to render in browser view]",
+          });
+          continue;
+        }
+        files.push({
+          relativePath,
+          exists: true,
+          sizeBytes: stat.size,
+          content: await fs.readFile(source, "utf8"),
+        });
+      } catch (error) {
+        if (error && error.code === "ENOENT") {
+          files.push({
+            relativePath,
+            exists: false,
+            sizeBytes: 0,
+            content: "",
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return {
+      backup: {
+        backupId: String(manifest.backupId || backupId),
+        name: String(manifest.name || backupId),
+        createdAt: String(manifest.createdAt || ""),
+        files: manifestFiles,
+      },
+      files,
+    };
+  }
+
+  async function restoreConfigBackup(backupId) {
+    const { backupPath, manifest } = await readBackupManifest(backupId);
+    const fileSpecs = getConfigFileSpecs();
+    const restored = [];
+    const skipped = [];
+    for (const spec of fileSpecs) {
+      const source = path.join(backupPath, spec.relativePath);
+      try {
+        await fs.access(source);
+      } catch (error) {
+        if (error && error.code === "ENOENT") {
+          skipped.push(spec.relativePath);
+          continue;
+        }
+        throw error;
+      }
+
+      await fs.mkdir(path.dirname(spec.absolutePath), { recursive: true });
+      await fs.copyFile(source, spec.absolutePath);
+      restored.push(spec.relativePath);
+    }
+
+    const restoredConfig = await readEnvConfig(envPath);
+    const blastDoorsClosed = parseBooleanLike(restoredConfig.BLAST_DOORS_CLOSED, false);
+    await writeBlastDoorsState(runtimeStatePath, blastDoorsClosed);
+
+    let serviceRestarted = false;
+    if (processState.getStatus().running) {
+      await processState.stop();
+      await processState.start();
+      serviceRestarted = true;
+    }
+
+    return {
+      backupId: String(manifest.backupId || backupId),
+      restored,
+      skipped,
+      serviceRestarted,
+    };
+  }
+
+  async function deleteConfigBackup(backupId) {
+    const backupPath = resolveBackupPath(backupId);
+    await fs.rm(backupPath, { recursive: true, force: true });
+    return { backupId };
+  }
+
+  async function cleanInstallConfiguration() {
+    const baseInstallation = normalizeInstallationConfig(
+      defaultInstallationConfig({
+        platform: detectPlatformType(),
+        installType: "local",
+      }),
+      null,
+    );
+
+    await fs.rm(envPath, { force: true });
+    await fs.rm(dockerEnvPath, { force: true });
+    await writeInstallationConfig(installationConfigPath, baseInstallation);
+    await syncRuntimeEnvFromInstallation({
+      installationConfig: baseInstallation,
+      envPath,
+      dockerEnvPath,
+    });
+
+    await writeBlastDoorsState(runtimeStatePath, false);
+    let serviceRestarted = false;
+    if (processState.getStatus().running) {
+      await processState.stop();
+      await processState.start();
+      serviceRestarted = true;
+    }
+
+    return {
+      installationConfigPath,
+      envPath,
+      dockerEnvPath,
+      serviceRestarted,
+      config: scrubConfigForClient(await readEnvConfig(envPath)),
+      installationConfig: baseInstallation,
+    };
   }
 
   async function detectTlsEnvironment(configFromEnv) {
@@ -1600,6 +1910,100 @@ export function createManagerApp(options = {}) {
       });
     } catch (error) {
       res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/config-backups", async (_req, res) => {
+    try {
+      const backups = await listConfigBackups();
+      res.json({
+        ok: true,
+        backupDir: configBackupDir,
+        backups,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/config-backups/view", async (req, res) => {
+    try {
+      const backupId = validateConfigBackupId(req.query.backupId);
+      const payload = await viewConfigBackup(backupId);
+      res.json({
+        ok: true,
+        ...payload,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/config-backups/create", async (req, res) => {
+    try {
+      const manifest = await createConfigBackup(req.body?.name || "");
+      const backups = await listConfigBackups();
+      res.json({
+        ok: true,
+        backup: manifest,
+        backups,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/config-backups/restore", async (req, res) => {
+    try {
+      const backupId = validateConfigBackupId(req.body?.backupId);
+      const result = await restoreConfigBackup(backupId);
+      const backups = await listConfigBackups();
+      res.json({
+        ok: true,
+        result,
+        backups,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/config-backups/delete", async (req, res) => {
+    try {
+      const backupId = validateConfigBackupId(req.body?.backupId);
+      const result = await deleteConfigBackup(backupId);
+      const backups = await listConfigBackups();
+      res.json({
+        ok: true,
+        result,
+        backups,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/config-backups/clean-install", async (_req, res) => {
+    try {
+      const result = await cleanInstallConfiguration();
+      res.json({
+        ok: true,
+        result,
+      });
+    } catch (error) {
+      res.status(500).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }

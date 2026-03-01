@@ -43,6 +43,7 @@ function openBrowser(url) {
     candidates.push({ command: "cmd.exe", args: ["/c", "start", "", url] });
   } else {
     if (process.env.WSL_DISTRO_NAME) {
+      candidates.push({ command: "wslview", args: [url] });
       candidates.push({ command: "powershell.exe", args: ["-NoProfile", "-Command", `Start-Process '${url}'`] });
       candidates.push({ command: "cmd.exe", args: ["/c", "start", "", url] });
     }
@@ -642,7 +643,8 @@ export function startInstallerServer({
   dockerEnvPath = defaultDockerEnvPath,
   deferLaunch = parseBoolean(process.env.INSTALLER_DEFER_LAUNCH, false),
   exitSignalPath = process.env.INSTALLER_EXIT_SIGNAL_PATH || "",
-  autoOpen = true,
+  autoOpen = parseBoolean(process.env.INSTALLER_AUTO_OPEN, true),
+  openBrowserFn = openBrowser,
 } = {}) {
   const resolvedExitSignalPath = exitSignalPath ? path.resolve(workspaceDir, exitSignalPath) : "";
   let server = null;
@@ -674,14 +676,16 @@ export function startInstallerServer({
         .finally(closeServer);
     },
   });
-  const installerUrl = `http://${installerHost}:${installerPort}`;
   server = app.listen(installerPort, installerHost, () => {
+    const address = server.address();
+    const boundPort = address && typeof address === "object" ? address.port : installerPort;
+    const installerUrl = `http://${installerHost}:${boundPort}`;
     console.log(`Blastdoor installer available at ${installerUrl}`);
     if (!autoOpen) {
       return;
     }
 
-    const opened = openBrowser(installerUrl);
+    const opened = openBrowserFn(installerUrl);
     if (!opened) {
       console.log(`Open this URL in your browser: ${installerUrl}`);
     }

@@ -15,6 +15,7 @@ DEBUG_FORCED_USERNAME ?= gm
 DEBUG_FORCED_PASSWORD ?= R@ndomPa55w0rd!
 ALLOW_NULL_ORIGIN ?= false
 INSTALL_CONFIG_PATH ?= data/installation_config.json
+INSTALLER_AUTO_OPEN ?= true
 
 .PHONY: help install configure deps-install ensure-install-config ensure-deps ensure-dev-deps lint test coverage integration-test precommit-install setup-env launch launch-local launch-container launch-env manager-launch api-launch assistant-launch monitor monitor-local monitor-container debug debug-local debug-container troubleshoot troubleshoot-local troubleshoot-container mock-vtt test-launch debug-launch ensure-docker-env docker-build docker-up docker-down docker-logs basic-install basic-configure basic-launch basic-launch-env basic-monitor basic-troubleshoot resilient-install resilient-configure resilient-up resilient-down resilient-monitor resilient-troubleshoot
 
@@ -65,10 +66,10 @@ deps-install:
 	npm install
 
 install: ensure-deps
-	node scripts/install-gui.js
+	INSTALLER_AUTO_OPEN=$(INSTALLER_AUTO_OPEN) node scripts/install-gui.js
 
 configure: ensure-deps
-	node scripts/install-gui.js
+	INSTALLER_AUTO_OPEN=$(INSTALLER_AUTO_OPEN) node scripts/install-gui.js
 
 ensure-install-config:
 	@if [ ! -f $(INSTALL_CONFIG_PATH) ]; then \

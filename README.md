@@ -152,6 +152,13 @@ Node.js 22+ is required.
 make install
 ```
 
+`make install` now launches the installer GUI and auto-opens your browser to the installer URL.
+To disable browser auto-open for headless shells:
+
+```bash
+make install INSTALLER_AUTO_OPEN=false
+```
+
 The installer GUI asks for:
 
 - install model (`local` or `container`)
@@ -551,6 +558,11 @@ make manager-launch
 ```
 
 Launches the GUI management console used to configure `.env`, start/stop/restart Blastdoor, and monitor runtime/debug logs.
+The admin console also includes config backup operations:
+
+- Backup Configs (named snapshots)
+- View / Restore / Delete backups
+- Clean Install Config (reset install profile + env files to defaults)
 
 ```bash
 make lint

@@ -80,6 +80,10 @@ body {
   grid-column: span 12;
 }
 
+.config-maint-panel {
+  grid-column: span 12;
+}
+
 .plugin-panels {
   grid-column: span 12;
   display: grid;
@@ -107,6 +111,11 @@ body {
 .troubleshooting-panel .log-box {
   min-height: 120px;
   max-height: 220px;
+}
+
+.config-maint-panel .log-box {
+  min-height: 140px;
+  max-height: 260px;
 }
 
 .panel-note {
@@ -730,6 +739,7 @@ textarea:focus {
   .config-panel,
   .diagnostics-panel,
   .troubleshooting-panel,
+  .config-maint-panel,
   .plugin-panel,
   .runtime-panel,
   .debug-panel {

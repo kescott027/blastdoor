@@ -101,6 +101,31 @@
         </form>
       </section>
 
+      <section class="panel config-maint-panel">
+        <h2>Config Backups</h2>
+        <p class="panel-note">
+          Back up and restore install/runtime config files. Clean Install resets installation profile and env files to defaults.
+        </p>
+        <div class="grid">
+          <label>Backup Name
+            <input id="configBackupName" placeholder="before-prod-change" />
+          </label>
+          <label>Saved Backups
+            <select id="configBackupSelect"></select>
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="configBackupCreateBtn" type="button">Backup Configs</button>
+          <button id="configBackupRefreshBtn" type="button">Refresh Backups</button>
+          <button id="configBackupViewBtn" type="button">View Backup</button>
+          <button id="configBackupRestoreBtn" type="button">Restore Backup</button>
+          <button id="configBackupDeleteBtn" type="button">Delete Backup</button>
+          <button id="configBackupCleanBtn" type="button">Clean Install Config</button>
+        </div>
+        <p class="status-message" id="configBackupStatusMessage"></p>
+        <pre id="configBackupDetails" class="log-box"></pre>
+      </section>
+
       <section class="panel diagnostics-panel">
         <h2>Diagnostics</h2>
         <p class="panel-note">

@@ -7,7 +7,7 @@ import path from "node:path";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import dotenv from "dotenv";
-import { createInstallerApp } from "../scripts/install-gui.js";
+import { createInstallerApp, startInstallerServer } from "../scripts/install-gui.js";
 
 function request(port, { method = "GET", pathname = "/", body = null }) {
   return new Promise((resolve, reject) => {
@@ -292,4 +292,25 @@ test("installer API launch action supports defer mode and validates saved profil
       await closeServer(server);
     }
   });
+});
+
+test("startInstallerServer auto-open uses browser launcher callback", async () => {
+  let openedUrl = "";
+  const server = startInstallerServer({
+    installerHost: "127.0.0.1",
+    installerPort: 0,
+    autoOpen: true,
+    openBrowserFn(url) {
+      openedUrl = String(url || "");
+      return true;
+    },
+  });
+
+  try {
+    await once(server, "listening");
+    await delay(50);
+    assert.match(openedUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+  } finally {
+    await closeServer(server);
+  }
 });

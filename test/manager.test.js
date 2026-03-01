@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter, once } from "node:events";
+import dotenv from "dotenv";
 import { createManagerApp, createManagerServer, formatManagerListenError } from "../src/manager.js";
 
 function request(port, { method = "GET", pathname = "/", body = null }) {
@@ -152,6 +153,162 @@ test("manager saves config and hashes password", async () => {
       const envContent = await fs.readFile(envPath, "utf8");
       assert.match(envContent, /AUTH_PASSWORD_HASH="?scrypt\$/);
       assert.doesNotMatch(envContent, /Correct-Horse-Battery-123/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager config backup endpoints create/view/restore/delete backups", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const dockerEnvPath = path.join(workspaceDir, "docker", "blastdoor.env");
+    const installationConfigPath = path.join(workspaceDir, "data", "installation_config.json");
+
+    await fs.mkdir(path.dirname(dockerEnvPath), { recursive: true });
+    await fs.mkdir(path.dirname(installationConfigPath), { recursive: true });
+    await fs.writeFile(
+      envPath,
+      ["HOST=127.0.0.1", "PORT=8080", "FOUNDRY_TARGET=http://127.0.0.1:30000", "SESSION_SECRET=test-secret", ""].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(dockerEnvPath, ["HOST=0.0.0.0", "PORT=8080", ""].join("\n"), "utf8");
+    await fs.writeFile(
+      installationConfigPath,
+      `${JSON.stringify({ installType: "local", gatewayPort: 8080, managerPort: 8090 }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      dockerEnvPath,
+      installationConfigPath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/config-backups/create",
+        body: { name: "before-change" },
+      });
+      assert.equal(created.status, 200);
+      assert.equal(created.body.ok, true);
+      assert.ok(created.body.backup.backupId);
+
+      const backupId = String(created.body.backup.backupId || "");
+      const listed = await request(port, { pathname: "/api/config-backups" });
+      assert.equal(listed.status, 200);
+      assert.equal(listed.body.ok, true);
+      assert.equal(Array.isArray(listed.body.backups), true);
+      assert.equal(listed.body.backups.length >= 1, true);
+
+      await request(port, {
+        method: "POST",
+        pathname: "/api/config",
+        body: {
+          HOST: "0.0.0.0",
+        },
+      });
+
+      const restored = await request(port, {
+        method: "POST",
+        pathname: "/api/config-backups/restore",
+        body: { backupId },
+      });
+      assert.equal(restored.status, 200);
+      assert.equal(restored.body.ok, true);
+      assert.equal(Array.isArray(restored.body.result.restored), true);
+      assert.equal(restored.body.result.restored.includes(".env"), true);
+
+      const config = await request(port, { pathname: "/api/config" });
+      assert.equal(config.status, 200);
+      assert.equal(config.body.config.HOST, "127.0.0.1");
+
+      const viewed = await request(port, {
+        pathname: `/api/config-backups/view?backupId=${encodeURIComponent(backupId)}`,
+      });
+      assert.equal(viewed.status, 200);
+      assert.equal(viewed.body.ok, true);
+      assert.equal(Array.isArray(viewed.body.files), true);
+      assert.equal(viewed.body.files.some((entry) => entry.relativePath === ".env"), true);
+
+      const deleted = await request(port, {
+        method: "POST",
+        pathname: "/api/config-backups/delete",
+        body: { backupId },
+      });
+      assert.equal(deleted.status, 200);
+      assert.equal(deleted.body.ok, true);
+      assert.equal(deleted.body.result.backupId, backupId);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager clean install config resets installation/env files to defaults", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const dockerEnvPath = path.join(workspaceDir, "docker", "blastdoor.env");
+    const installationConfigPath = path.join(workspaceDir, "data", "installation_config.json");
+    await fs.mkdir(path.dirname(dockerEnvPath), { recursive: true });
+    await fs.mkdir(path.dirname(installationConfigPath), { recursive: true });
+
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=10.10.10.10",
+        "PORT=9999",
+        "FOUNDRY_TARGET=http://10.1.1.1:3333",
+        "BLAST_DOORS_CLOSED=true",
+        "EXTRA_CUSTOM_VALUE=keep-me-if-bugged",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(dockerEnvPath, ["HOST=10.10.10.10", "PORT=9999", "EXTRA_DOCKER_KEY=bug", ""].join("\n"), "utf8");
+    await fs.writeFile(
+      installationConfigPath,
+      `${JSON.stringify({ installType: "container", gatewayPort: 9999 }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      dockerEnvPath,
+      installationConfigPath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const cleaned = await request(port, {
+        method: "POST",
+        pathname: "/api/config-backups/clean-install",
+        body: {},
+      });
+      assert.equal(cleaned.status, 200);
+      assert.equal(cleaned.body.ok, true);
+
+      const nextEnv = dotenv.parse(await fs.readFile(envPath, "utf8"));
+      assert.equal(nextEnv.HOST, "0.0.0.0");
+      assert.equal(nextEnv.PORT, "8080");
+      assert.equal(nextEnv.INSTALL_PROFILE, "local");
+      assert.equal(Object.prototype.hasOwnProperty.call(nextEnv, "EXTRA_CUSTOM_VALUE"), false);
+
+      const nextDockerEnv = dotenv.parse(await fs.readFile(dockerEnvPath, "utf8"));
+      assert.equal(nextDockerEnv.PORT, "8080");
+      assert.equal(Object.prototype.hasOwnProperty.call(nextDockerEnv, "EXTRA_DOCKER_KEY"), false);
+
+      const installationRaw = JSON.parse(await fs.readFile(installationConfigPath, "utf8"));
+      assert.equal(installationRaw.installType, "local");
+      assert.equal(installationRaw.gatewayPort, 8080);
     } finally {
       await closeServer(server);
     }
