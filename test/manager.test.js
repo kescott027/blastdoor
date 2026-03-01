@@ -566,7 +566,7 @@ test("manager session endpoints list active sessions and invalidate selected use
         "PORT=8080",
         "FOUNDRY_TARGET=http://127.0.0.1:30000",
         "PASSWORD_STORE_MODE=env",
-        "AUTH_USERNAME=gm",
+        "AUTH_USERNAME=gamemaster",
         "AUTH_PASSWORD_HASH=scrypt$demo$demo",
         "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "REQUIRE_TOTP=false",
@@ -612,22 +612,23 @@ test("manager session endpoints list active sessions and invalidate selected use
       assert.equal(listed.body.summary.activeCount, 1);
       assert.equal(Array.isArray(listed.body.sessions), true);
       assert.equal(listed.body.sessions[0].username, "gamemaster");
+      assert.match(String(listed.body.sessions[0].sessionKey || ""), /^[a-f0-9]{24}$/);
 
-      const users = await request(port, { pathname: "/api/users?view=all" });
-      assert.equal(users.status, 200);
-      assert.equal(Array.isArray(users.body.users), true);
-      assert.equal(users.body.users.length >= 1, true);
-      const targetUsername = String(users.body.users[0].username || "");
-      assert.ok(targetUsername);
+      const targetUsername = String(listed.body.sessions[0].username || "");
+      assert.equal(targetUsername, "gamemaster");
 
       const invalidated = await request(port, {
         method: "POST",
-        pathname: "/api/sessions/invalidate-user",
-        body: { username: targetUsername },
+        pathname: "/api/sessions/revoke",
+        body: {
+          username: targetUsername,
+          sessionKey: listed.body.sessions[0].sessionKey,
+        },
       });
       assert.equal(invalidated.status, 200, JSON.stringify(invalidated.body));
       assert.equal(invalidated.body.ok, true);
       assert.equal(invalidated.body.username, targetUsername);
+      assert.equal(invalidated.body.revokedSessionKey, listed.body.sessions[0].sessionKey);
       assert.equal(invalidated.body.sessionVersion, 2);
     } finally {
       await closeServer(server);
@@ -716,6 +717,152 @@ test("manager optional password protection gates manager APIs when enabled", asy
       });
       assert.equal(allowed.status, 200);
       assert.equal(allowed.body.config.HOST, "127.0.0.1");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager auth login page and settings routes behave across enable/disable flow", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const managerConsoleSettingsPath = path.join(workspaceDir, "data", "manager-console-settings.json");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$demo$demo",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      managerConsoleSettingsPath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const settingsDefault = await request(port, { pathname: "/api/manager-settings" });
+      assert.equal(settingsDefault.status, 200);
+      assert.equal(settingsDefault.body.ok, true);
+      assert.equal(settingsDefault.body.settings.access.requirePassword, false);
+      assert.equal(settingsDefault.body.settings.access.passwordConfigured, false);
+
+      const layoutSaved = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-settings/layout",
+        body: {
+          darkModePercent: 72,
+          lightModePercent: 28,
+        },
+      });
+      assert.equal(layoutSaved.status, 200);
+      assert.equal(layoutSaved.body.ok, true);
+      assert.equal(layoutSaved.body.settings.layout.darkModePercent, 72);
+      assert.equal(layoutSaved.body.settings.layout.lightModePercent, 28);
+
+      const enabled = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-settings/access",
+        body: {
+          requirePassword: "true",
+          password: "Manager-Password-123",
+          sessionTtlHours: "12",
+        },
+      });
+      assert.equal(enabled.status, 200);
+      assert.equal(enabled.body.ok, true);
+      assert.equal(enabled.body.settings.access.requirePassword, true);
+      assert.equal(enabled.body.settings.access.passwordConfigured, true);
+
+      const managerBlockedRedirect = await request(port, { pathname: "/manager/" });
+      assert.equal(managerBlockedRedirect.status, 302);
+      assert.match(String(managerBlockedRedirect.headers.location || ""), /^\/manager\/login\?next=/);
+
+      const loginPage = await request(port, { pathname: "/manager/login?next=%2Fmanager%2F" });
+      assert.equal(loginPage.status, 200);
+      assert.match(String(loginPage.body.raw || ""), /Blastdoor Manager Login/);
+
+      const badLoginForm = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-auth/login-form",
+        body: "password=bad-pass&next=%2Fmanager%2F",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+      });
+      assert.equal(badLoginForm.status, 401);
+      assert.match(String(badLoginForm.body.raw || ""), /Invalid password/);
+
+      const goodLoginForm = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-auth/login-form",
+        body: "password=Manager-Password-123&next=%2Fmanager%2Fapi%2Fconfig",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+      });
+      assert.equal(goodLoginForm.status, 302);
+      assert.equal(goodLoginForm.headers.location, "/manager/api/config");
+      const setCookie = Array.isArray(goodLoginForm.headers["set-cookie"])
+        ? goodLoginForm.headers["set-cookie"][0]
+        : goodLoginForm.headers["set-cookie"];
+      assert.match(String(setCookie || ""), /blastdoor\.manager\.sid=/);
+      const cookieHeader = String(setCookie || "").split(";")[0];
+
+      const authState = await request(port, {
+        pathname: "/api/manager-auth/state",
+        headers: {
+          cookie: cookieHeader,
+        },
+      });
+      assert.equal(authState.status, 200);
+      assert.equal(authState.body.ok, true);
+      assert.equal(authState.body.authenticated, true);
+
+      const disabled = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-settings/access",
+        headers: {
+          cookie: cookieHeader,
+        },
+        body: {
+          requirePassword: "false",
+          clearPassword: "true",
+          sessionTtlHours: "12",
+        },
+      });
+      assert.equal(disabled.status, 200);
+      assert.equal(disabled.body.ok, true);
+      assert.equal(disabled.body.settings.access.requirePassword, false);
+      assert.equal(disabled.body.settings.access.passwordConfigured, false);
+
+      const logout = await request(port, {
+        method: "POST",
+        pathname: "/api/manager-auth/logout",
+        headers: {
+          cookie: cookieHeader,
+        },
+        body: {},
+      });
+      assert.equal(logout.status, 200);
+      assert.equal(logout.body.ok, true);
+      assert.match(String(logout.headers["set-cookie"] || ""), /Max-Age=0/);
+
+      const configWithoutCookie = await request(port, { pathname: "/api/config" });
+      assert.equal(configWithoutCookie.status, 200);
+      assert.equal(configWithoutCookie.body.config.HOST, "127.0.0.1");
     } finally {
       await closeServer(server);
     }

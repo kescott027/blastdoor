@@ -7,10 +7,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
-import { createPasswordHash, verifyPassword } from "./security.js";
+import { createPasswordHash, safeEqual, verifyPassword } from "./security.js";
 import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
@@ -370,6 +370,11 @@ function sanitizeEmail(value) {
 
 function sanitizeLongText(value, maxLength = 4096) {
   return normalizeString(value, "").slice(0, maxLength);
+}
+
+function createSessionKey({ username, lastLoginAt, sessionVersion }) {
+  const payload = `${normalizeUsername(username)}|${normalizeString(lastLoginAt, "")}|${Number.parseInt(String(sessionVersion || 1), 10) || 1}`;
+  return createHash("sha256").update(payload).digest("hex").slice(0, 24);
 }
 
 function resolveGatewayBaseUrl(config) {
@@ -3518,6 +3523,11 @@ export function createManagerApp(options = {}) {
         const activeSessions = (profiles || [])
           .filter((entry) => entry.authenticatedNow)
           .map((entry) => ({
+            sessionKey: createSessionKey({
+              username: entry.username,
+              lastLoginAt: entry.lastLoginAt,
+              sessionVersion: entry.sessionVersion || 1,
+            }),
             username: entry.username,
             friendlyName: entry.friendlyName || "",
             status: entry.status || "active",
@@ -3541,6 +3551,55 @@ export function createManagerApp(options = {}) {
           sessionMaxAgeHours: payload.sessionMaxAgeHours,
         },
         sessions: payload.activeSessions,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/sessions/revoke", async (req, res) => {
+    try {
+      const username = validateManagedUsernameForActions(req.body?.username);
+      const expectedSessionKey = normalizeString(req.body?.sessionKey, "");
+
+      const result = await withBlastdoorApi(async ({ configFromEnv, blastdoorApi }) => {
+        const users = await blastdoorApi.listCredentialUsers();
+        const existingUser = users.find((entry) => entry.username === username);
+        if (!existingUser) {
+          throw new Error("User not found.");
+        }
+
+        const sessionMaxAgeHours = Number.parseInt(configFromEnv.SESSION_MAX_AGE_HOURS || "12", 10);
+        const profiles = await blastdoorApi.listUserProfiles({
+          sessionMaxAgeHours,
+        });
+        const target = (profiles || []).find((entry) => entry.authenticatedNow && entry.username === username);
+        if (!target) {
+          throw new Error("Requested session is no longer active.");
+        }
+
+        const sessionKey = createSessionKey({
+          username: target.username,
+          lastLoginAt: target.lastLoginAt,
+          sessionVersion: target.sessionVersion || 1,
+        });
+        if (expectedSessionKey && !safeEqual(sessionKey, expectedSessionKey)) {
+          throw new Error("Requested session no longer matches current active session.");
+        }
+
+        const profile = await blastdoorApi.invalidateUserSessions(username);
+        return {
+          username,
+          revokedSessionKey: sessionKey,
+          sessionVersion: profile?.sessionVersion || 1,
+        };
+      });
+
+      res.json({
+        ok: true,
+        ...result,
       });
     } catch (error) {
       res.status(400).json({

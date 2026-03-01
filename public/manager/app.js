@@ -234,6 +234,7 @@ let latestFailures = [];
 let selectedFailureId = "";
 let latestSessions = [];
 let selectedSessionUsername = "";
+let selectedSessionKey = "";
 let latestManagerSettings = null;
 const managerPluginState = {
   loaded: false,
@@ -572,10 +573,18 @@ function renderSessionSummary(payload = {}) {
   sessionSummary.textContent = lines.join("\n");
 }
 
-function selectSession(username) {
-  const candidate = String(username || "");
-  const exists = latestSessions.some((entry) => String(entry.username || "") === candidate);
-  selectedSessionUsername = exists ? candidate : "";
+function findSessionByKeyOrUsername(sessionKey, username) {
+  const byKey = latestSessions.find((entry) => String(entry.sessionKey || "") === String(sessionKey || ""));
+  if (byKey) {
+    return byKey;
+  }
+  return latestSessions.find((entry) => String(entry.username || "") === String(username || "")) || null;
+}
+
+function selectSession({ sessionKey = "", username = "" } = {}) {
+  const selected = findSessionByKeyOrUsername(sessionKey, username);
+  selectedSessionKey = selected ? String(selected.sessionKey || "") : "";
+  selectedSessionUsername = selected ? String(selected.username || "") : "";
   if (sessionInvalidateBtn) {
     sessionInvalidateBtn.disabled = !selectedSessionUsername;
   }
@@ -583,8 +592,28 @@ function selectSession(username) {
     return;
   }
   for (const row of sessionTableBody.querySelectorAll("tr")) {
-    const rowUsername = String(row.getAttribute("data-username") || "");
-    row.classList.toggle("selected", rowUsername === selectedSessionUsername);
+    const rowSessionKey = String(row.getAttribute("data-session-key") || "");
+    row.classList.toggle("selected", rowSessionKey && rowSessionKey === selectedSessionKey);
+  }
+}
+
+async function revokeSpecificSession(entry, { showMessage = true } = {}) {
+  const username = String(entry?.username || "");
+  const sessionKey = String(entry?.sessionKey || "");
+  if (!username) {
+    throw new Error("Invalid session row: username is missing.");
+  }
+  if (!sessionKey) {
+    throw new Error("Invalid session row: session key is missing.");
+  }
+
+  await api("POST", "/sessions/revoke", {
+    username,
+    sessionKey,
+  });
+
+  if (showMessage) {
+    setSessionMessage(`Revoked session ${sessionKey} for ${username}.`);
   }
 }
 
@@ -596,19 +625,23 @@ function renderSessionTable(entries) {
   if (!Array.isArray(entries) || entries.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 4;
+    cell.colSpan = 5;
     cell.textContent = "No active authenticated sessions found.";
     row.append(cell);
     sessionTableBody.append(row);
-    selectSession("");
+    selectSession({});
     return;
   }
 
   for (const entry of entries) {
     const row = document.createElement("tr");
     row.setAttribute("data-username", String(entry.username || ""));
+    row.setAttribute("data-session-key", String(entry.sessionKey || ""));
     row.addEventListener("click", () => {
-      selectSession(entry.username);
+      selectSession({
+        sessionKey: entry.sessionKey,
+        username: entry.username,
+      });
     });
 
     const userCell = document.createElement("td");
@@ -628,11 +661,36 @@ function renderSessionTable(entries) {
     versionCell.textContent = String(entry.sessionVersion || 1);
     row.append(versionCell);
 
+    const actionsCell = document.createElement("td");
+    actionsCell.className = "actions-cell";
+    const actions = document.createElement("div");
+    actions.className = "session-row-actions";
+    const revokeBtn = document.createElement("button");
+    revokeBtn.type = "button";
+    revokeBtn.textContent = "Revoke";
+    revokeBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        await revokeSpecificSession(entry);
+        await refreshSessions(false);
+        await refreshAll();
+      } catch (error) {
+        setSessionMessage(error.message || String(error), true);
+      }
+    });
+    actions.append(revokeBtn);
+    actionsCell.append(actions);
+    row.append(actionsCell);
+
     sessionTableBody.append(row);
   }
 
-  const preferred = selectedSessionUsername || String(entries[0]?.username || "");
-  selectSession(preferred);
+  const preferred = findSessionByKeyOrUsername(selectedSessionKey, selectedSessionUsername) || entries[0] || null;
+  selectSession({
+    sessionKey: preferred?.sessionKey || "",
+    username: preferred?.username || "",
+  });
 }
 
 async function refreshSessions(showMessage = true) {
@@ -3064,11 +3122,13 @@ bindClick("sessionInvalidateBtn", async () => {
     if (!selectedSessionUsername) {
       throw new Error("Select a session before invalidating.");
     }
-    await api("POST", "/sessions/invalidate-user", {
-      username: selectedSessionUsername,
-    });
-    setSessionMessage(`Session token invalidated for ${selectedSessionUsername}.`);
+    const selected = findSessionByKeyOrUsername(selectedSessionKey, selectedSessionUsername);
+    if (!selected) {
+      throw new Error("Selected session is no longer active.");
+    }
+    await revokeSpecificSession(selected, { showMessage: true });
     await refreshSessions(false);
+    await refreshAll();
   } catch (error) {
     setSessionMessage(error.message || String(error), true);
   }
@@ -3504,7 +3564,7 @@ closeTlsModal();
 closeFailuresModal();
 closeSessionModal();
 closeLayoutModal();
-selectSession("");
+selectSession({});
 
 loadManagerPlugins()
   .catch((error) => {

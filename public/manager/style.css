@@ -1027,6 +1027,21 @@ textarea:focus {
   background: rgba(182, 255, 172, 0.14);
 }
 
+.session-table td.actions-cell {
+  min-width: 110px;
+}
+
+.session-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.session-row-actions button {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.73rem;
+}
+
 .layout-dock.hidden {
   display: none;
 }
