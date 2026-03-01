@@ -11,6 +11,12 @@
       <div class="hero-glow"></div>
       <h1>Blastdoor Control Console</h1>
       <p>Configure, launch, and monitor your Foundry gateway.</p>
+      <div class="hero-actions">
+        <button id="failuresAlertBtn" type="button" class="failure-alert-btn hidden" hidden title="Open failures">
+          <span aria-hidden="true">⚠</span>
+          <span id="failuresAlertCount">0</span>
+        </button>
+      </div>
     </header>
 
     <section class="top-status-bar" id="topStatusBar">
@@ -61,6 +67,7 @@
           <button id="navLoginBtn" type="button">Login Screen Management</button>
           <button id="navUserBtn" type="button">User Management</button>
           <button id="navBackupBtn" type="button">Backup Management</button>
+          <button id="navFailuresBtn" type="button">Failures</button>
           <button id="navDiagBtn" type="button">Diagnostics and Troubleshooting</button>
           <button id="navModulesBtn" type="button">Modules</button>
         </div>
@@ -264,6 +271,49 @@
       </section>
       </main>
     </div>
+
+    <aside
+      id="failuresModal"
+      class="failures-dock hidden"
+      hidden
+      role="region"
+      aria-labelledby="failuresTitle"
+    >
+      <section class="failures-dock-panel">
+        <header class="failures-dock-header">
+          <h2 id="failuresTitle">Failures</h2>
+          <button id="failuresCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          Launch/runtime failures captured by Blastdoor wrappers and manager controls. Includes suggested fixes when recognized.
+        </p>
+        <p class="status-message" id="failuresStatusMessage"></p>
+
+        <div class="button-row">
+          <button id="failuresRefreshBtn" type="button">Refresh Failures</button>
+          <button id="failuresCopyBtn" type="button">Copy Selected</button>
+          <button id="failuresClearBtn" type="button">Clear Failures</button>
+        </div>
+
+        <div class="failures-list-wrap">
+          <table class="failures-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Source</th>
+                <th>Nature</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody id="failuresTableBody"></tbody>
+          </table>
+        </div>
+
+        <h3>Details</h3>
+        <pre id="failuresDetails" class="log-box"></pre>
+      </section>
+    </aside>
 
     <aside
       id="appearanceModal"

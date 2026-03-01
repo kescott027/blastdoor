@@ -6,6 +6,7 @@ import readline from "node:readline/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadInstallationProfile } from "./install-profile-dispatch.js";
+import { appendFailureRecord } from "../src/failure-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,7 @@ const DEFAULT_CONFIG_PATH = path.join(workspaceDir, "data", "installation_config
 const DOCKER_ENV_PATH = path.join(workspaceDir, "docker", "blastdoor.env");
 const DOCKER_ENV_TEMPLATE_PATH = path.join(workspaceDir, "docker", "blastdoor.env.example");
 const INSTALLER_EXIT_SIGNAL_PATH = path.join(workspaceDir, "data", ".installer-exit-action");
+const FAILURE_STORE_PATH = path.join(workspaceDir, "data", "launch-failures.json");
 
 function line(message = "") {
   process.stdout.write(`${message}\n`);
@@ -333,8 +335,20 @@ export async function runLaunchWithInstallCheck({
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === __filename;
 if (isMain) {
   const configPath = process.argv[2] ? path.resolve(process.argv[2]) : DEFAULT_CONFIG_PATH;
-  runLaunchWithInstallCheck({ configPath }).catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  runLaunchWithInstallCheck({ configPath }).catch(async (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      await appendFailureRecord(FAILURE_STORE_PATH, {
+        source: "launch-wrapper",
+        action: "make-launch",
+        message,
+        details: "Launch wrapper failed before interactive console completed startup.",
+        isWsl: Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP),
+      });
+    } catch {
+      // ignore failure recorder errors
+    }
+    process.stderr.write(`${message}\n`);
     process.exit(1);
   });
 }

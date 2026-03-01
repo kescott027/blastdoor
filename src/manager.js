@@ -14,6 +14,7 @@ import { createPasswordHash } from "./security.js";
 import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
+import { appendFailureRecord, clearFailureStore, readFailureStore, summarizeFailureStore } from "./failure-store.js";
 import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
 import {
   defaultInstallationConfig,
@@ -1745,6 +1746,7 @@ export function createManagerApp(options = {}) {
   const graphicsDir = options.graphicsDir || path.join(workspaceDir, "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
   const userProfileStorePath = options.userProfileStorePath || path.join(workspaceDir, "data", "user-profiles.json");
+  const failureStorePath = options.failureStorePath || path.join(workspaceDir, "data", "launch-failures.json");
   const processFactory = options.processFactory || spawn;
   const commandRunner = options.commandRunner || runDiagnosticCommand;
   const postgresPoolFactory = options.postgresPoolFactory;
@@ -1792,6 +1794,17 @@ export function createManagerApp(options = {}) {
       if (typeof blastdoorApi?.close === "function") {
         await blastdoorApi.close();
       }
+    }
+  }
+
+  async function recordFailureEntry(entry = {}) {
+    try {
+      await appendFailureRecord(failureStorePath, {
+        source: "manager",
+        ...entry,
+      });
+    } catch {
+      // Failure recording should never crash manager operations.
     }
   }
 
@@ -2265,7 +2278,11 @@ export function createManagerApp(options = {}) {
     const portalHealth = await checkBlastdoorHealth(config);
     const adminUptimeSeconds = Math.max(0, Math.floor((Date.now() - managerStartedAtMs) / 1000));
     const objectStore = await buildObjectStoreStatus(config, installationConfig);
-    const enabledPlugins = pluginManager.getEnabledPlugins();
+    const [failureStore, enabledPlugins] = await Promise.all([
+      readFailureStore(failureStorePath),
+      Promise.resolve(pluginManager.getEnabledPlugins()),
+    ]);
+    const failureSummary = summarizeFailureStore(failureStore);
 
     const response = {
       ok: true,
@@ -2297,6 +2314,7 @@ export function createManagerApp(options = {}) {
         uptimeSeconds: 0,
         health: { ok: false, statusCode: null, error: "not-configured" },
       },
+      failures: failureSummary,
       objectStore,
       plugins: [],
     };
@@ -2886,8 +2904,14 @@ export function createManagerApp(options = {}) {
       const status = await processState.start();
       res.json({ ok: true, status });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await recordFailureEntry({
+        action: "gateway-start",
+        message,
+        details: "Manager failed to start Blastdoor service.",
+      });
       res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
     }
   });
@@ -2910,8 +2934,14 @@ export function createManagerApp(options = {}) {
       const status = await processState.start();
       res.json({ ok: true, status });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await recordFailureEntry({
+        action: "gateway-restart",
+        message,
+        details: "Manager failed to restart Blastdoor service.",
+      });
       res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
     }
   });
@@ -3193,6 +3223,38 @@ export function createManagerApp(options = {}) {
     } catch (error) {
       res.status(500).json({
         ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/failures", async (_req, res) => {
+    try {
+      const store = await readFailureStore(failureStorePath);
+      const entries = [...(store.entries || [])].sort((a, b) =>
+        String(b.createdAt || "").localeCompare(String(a.createdAt || "")),
+      );
+      res.json({
+        ok: true,
+        summary: summarizeFailureStore({ entries }),
+        entries,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/failures/clear", async (_req, res) => {
+    try {
+      await clearFailureStore(failureStorePath);
+      res.json({
+        ok: true,
+        summary: summarizeFailureStore({ entries: [] }),
+      });
+    } catch (error) {
+      res.status(500).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }

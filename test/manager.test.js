@@ -460,6 +460,89 @@ test("manager control-plane endpoint maps container service states", async () =>
   });
 });
 
+test("manager failures endpoints list and clear recorded failures", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const failureStorePath = path.join(workspaceDir, "data", "launch-failures.json");
+    await fs.mkdir(path.dirname(failureStorePath), { recursive: true });
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$demo$demo",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await fs.writeFile(
+      failureStorePath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          entries: [
+            {
+              id: "failure-1",
+              createdAt: new Date().toISOString(),
+              source: "launch-console",
+              action: "startup",
+              nature: "bind-address-unavailable",
+              severity: "error",
+              message: "Configured HOST=192.168.1.2 is not available on this runtime host.",
+              fixes: ["Set HOST=0.0.0.0."],
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      failureStorePath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const listed = await request(port, { pathname: "/api/failures" });
+      assert.equal(listed.status, 200);
+      assert.equal(listed.body.ok, true);
+      assert.equal(listed.body.summary.count, 1);
+      assert.equal(Array.isArray(listed.body.entries), true);
+      assert.equal(listed.body.entries.length, 1);
+
+      const controlPlane = await request(port, { pathname: "/api/control-plane-status" });
+      assert.equal(controlPlane.status, 200);
+      assert.equal(controlPlane.body.ok, true);
+      assert.equal(controlPlane.body.failures.count, 1);
+
+      const cleared = await request(port, { method: "POST", pathname: "/api/failures/clear", body: {} });
+      assert.equal(cleared.status, 200);
+      assert.equal(cleared.body.ok, true);
+      assert.equal(cleared.body.summary.count, 0);
+
+      const listedAfterClear = await request(port, { pathname: "/api/failures" });
+      assert.equal(listedAfterClear.status, 200);
+      assert.equal(listedAfterClear.body.summary.count, 0);
+      assert.equal(listedAfterClear.body.entries.length, 0);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager start rejects bind host that is not available on runtime host", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");

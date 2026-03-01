@@ -36,6 +36,12 @@ const configBackupSelect = document.getElementById("configBackupSelect");
 const configBackupDetails = document.getElementById("configBackupDetails");
 const pluginPanelsContainer = document.getElementById("pluginPanels");
 const modulesList = document.getElementById("modulesList");
+const failuresAlertBtn = document.getElementById("failuresAlertBtn");
+const failuresAlertCount = document.getElementById("failuresAlertCount");
+const failuresModal = document.getElementById("failuresModal");
+const failuresStatusMessage = document.getElementById("failuresStatusMessage");
+const failuresTableBody = document.getElementById("failuresTableBody");
+const failuresDetails = document.getElementById("failuresDetails");
 const appearanceModal = document.getElementById("appearanceModal");
 const appearanceStatusMessage = document.getElementById("appearanceStatusMessage");
 const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
@@ -210,6 +216,8 @@ let selectedUserUsername = "";
 let userEditorMode = "new";
 let latestTlsPlan = "";
 let latestConfigBackups = [];
+let latestFailures = [];
+let selectedFailureId = "";
 const managerPluginState = {
   loaded: false,
   modules: [],
@@ -280,6 +288,14 @@ function setTlsMessage(text, isError = false) {
   tlsStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
+function setFailuresMessage(text, isError = false) {
+  if (!failuresStatusMessage) {
+    return;
+  }
+  failuresStatusMessage.textContent = text;
+  failuresStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
 function toBooleanString(value) {
   return value ? "true" : "false";
 }
@@ -336,6 +352,18 @@ function toSecondsLabel(seconds) {
   return `${h}h ${rm}m`;
 }
 
+function toTimestampLabel(isoValue) {
+  const raw = String(isoValue || "").trim();
+  if (!raw) {
+    return "-";
+  }
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) {
+    return raw;
+  }
+  return date.toLocaleString();
+}
+
 function yesNoLabel(value) {
   return value ? "Yes" : "No";
 }
@@ -351,6 +379,143 @@ function healthLabel(health = {}) {
     return `Unreachable (${health.error})`;
   }
   return "Unknown";
+}
+
+function updateFailuresAlertIndicator(summary = {}) {
+  if (!failuresAlertBtn || !failuresAlertCount) {
+    return;
+  }
+  const count = Number.parseInt(String(summary.count || "0"), 10);
+  const safeCount = Number.isInteger(count) && count > 0 ? count : 0;
+  failuresAlertCount.textContent = String(safeCount);
+  if (safeCount > 0) {
+    failuresAlertBtn.hidden = false;
+    failuresAlertBtn.classList.remove("hidden");
+    failuresAlertBtn.title = `Open failures (${safeCount})`;
+    return;
+  }
+  failuresAlertBtn.hidden = true;
+  failuresAlertBtn.classList.add("hidden");
+  failuresAlertBtn.title = "Open failures";
+}
+
+function renderFailureDetails(failure) {
+  if (!failuresDetails) {
+    return;
+  }
+  if (!failure) {
+    failuresDetails.textContent = "";
+    return;
+  }
+  const lines = [
+    `ID: ${failure.id || ""}`,
+    `Created: ${toTimestampLabel(failure.createdAt)}`,
+    `Source: ${failure.source || "unknown"}`,
+    `Action: ${failure.action || "-"}`,
+    `Nature: ${failure.nature || "unknown"}`,
+    `Severity: ${failure.severity || "info"}`,
+    "",
+    "Message:",
+    String(failure.message || ""),
+  ];
+  if (failure.details) {
+    lines.push("", "Details:", String(failure.details));
+  }
+  if (Array.isArray(failure.fixes) && failure.fixes.length > 0) {
+    lines.push("", "Suggested Fixes:");
+    for (const fix of failure.fixes) {
+      lines.push(`- ${fix}`);
+    }
+  }
+  failuresDetails.textContent = lines.join("\n");
+}
+
+function selectFailure(failureId) {
+  selectedFailureId = String(failureId || "");
+  const selected = latestFailures.find((entry) => String(entry.id || "") === selectedFailureId) || null;
+  renderFailureDetails(selected);
+  if (!failuresTableBody) {
+    return;
+  }
+  const rows = failuresTableBody.querySelectorAll("tr");
+  for (const row of rows) {
+    const rowId = String(row.getAttribute("data-failure-id") || "");
+    row.classList.toggle("selected", rowId === selectedFailureId);
+  }
+}
+
+function renderFailuresTable(entries) {
+  if (!failuresTableBody) {
+    return;
+  }
+  failuresTableBody.textContent = "";
+  if (!entries.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 4;
+    cell.textContent = "No failures recorded.";
+    row.append(cell);
+    failuresTableBody.append(row);
+    selectedFailureId = "";
+    renderFailureDetails(null);
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement("tr");
+    row.setAttribute("data-failure-id", String(entry.id || ""));
+    row.addEventListener("click", () => {
+      selectFailure(entry.id);
+    });
+
+    const whenCell = document.createElement("td");
+    whenCell.textContent = toTimestampLabel(entry.createdAt);
+    row.append(whenCell);
+
+    const sourceCell = document.createElement("td");
+    sourceCell.textContent = String(entry.source || "runtime");
+    row.append(sourceCell);
+
+    const natureCell = document.createElement("td");
+    natureCell.textContent = String(entry.nature || "unknown");
+    row.append(natureCell);
+
+    const messageCell = document.createElement("td");
+    messageCell.textContent = String(entry.message || "").slice(0, 180);
+    row.append(messageCell);
+
+    failuresTableBody.append(row);
+  }
+
+  const preferredId = selectedFailureId || String(entries[0]?.id || "");
+  selectFailure(preferredId);
+}
+
+function openFailuresModal() {
+  if (!failuresModal) {
+    return;
+  }
+  failuresModal.hidden = false;
+  failuresModal.classList.remove("hidden");
+}
+
+function closeFailuresModal() {
+  if (!failuresModal) {
+    return;
+  }
+  failuresModal.hidden = true;
+  failuresModal.classList.add("hidden");
+}
+
+async function refreshFailures(showMessage = false) {
+  const payload = await api("GET", "/failures");
+  const entries = Array.isArray(payload.entries) ? payload.entries : [];
+  latestFailures = entries;
+  renderFailuresTable(entries);
+  updateFailuresAlertIndicator(payload.summary || {});
+  if (showMessage) {
+    setFailuresMessage(`Loaded ${entries.length} failure record(s).`);
+  }
 }
 
 function updateStatusCards(monitor) {
@@ -380,6 +545,7 @@ function updateControlPlaneCards(payload = {}) {
   const postgres = payload.postgres || {};
   const objectStore = payload.objectStore || {};
   const plugins = Array.isArray(payload.plugins) ? payload.plugins : [];
+  const failures = payload.failures || {};
 
   if (adminRunningValue) {
     adminRunningValue.textContent = yesNoLabel(Boolean(admin.running));
@@ -443,6 +609,8 @@ function updateControlPlaneCards(payload = {}) {
       }
     }
   }
+
+  updateFailuresAlertIndicator(failures);
 }
 
 function fillForm(config) {
@@ -1953,6 +2121,7 @@ async function refreshAll() {
     fillForm(configResult.config);
     updateStatusCards(monitorResult);
     updateControlPlaneCards(controlPlaneResult);
+    await refreshFailures(false);
     await runPluginRefreshHandlers();
   } catch (error) {
     setMessage(error.message || String(error), true);
@@ -2510,6 +2679,15 @@ bindClick("navBackupBtn", () => {
   scrollToSection("backupManagementSection");
 });
 
+bindClick("navFailuresBtn", async () => {
+  openFailuresModal();
+  try {
+    await refreshFailures(true);
+  } catch (error) {
+    setFailuresMessage(error.message || String(error), true);
+  }
+});
+
 bindClick("navDiagBtn", () => {
   scrollToSection("diagnosticsSection");
 });
@@ -2531,6 +2709,59 @@ bindClick("openAppearanceFromPanelBtn", () => {
 bindClick("openUserMgmtFromPanelBtn", () => {
   const trigger = document.getElementById("userMgmtBtn");
   trigger?.click();
+});
+
+if (failuresAlertBtn) {
+  failuresAlertBtn.addEventListener("click", async () => {
+    openFailuresModal();
+    try {
+      await refreshFailures(true);
+    } catch (error) {
+      setFailuresMessage(error.message || String(error), true);
+    }
+  });
+}
+
+bindClick("failuresCloseBtn", () => {
+  closeFailuresModal();
+});
+
+bindClick("failuresRefreshBtn", async () => {
+  try {
+    await refreshFailures(true);
+  } catch (error) {
+    setFailuresMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("failuresCopyBtn", async () => {
+  try {
+    const selected = latestFailures.find((entry) => String(entry.id || "") === String(selectedFailureId || ""));
+    const payload = selected || latestFailures[0] || null;
+    if (!payload) {
+      throw new Error("No failure record is selected.");
+    }
+    await copyToClipboard(JSON.stringify(payload, null, 2));
+    setFailuresMessage("Selected failure copied.");
+  } catch (error) {
+    setFailuresMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("failuresClearBtn", async () => {
+  try {
+    if (!window.confirm("Clear all stored failure records?")) {
+      return;
+    }
+    await api("POST", "/failures/clear", {});
+    latestFailures = [];
+    selectedFailureId = "";
+    renderFailuresTable([]);
+    updateFailuresAlertIndicator({ count: 0 });
+    setFailuresMessage("Failure records cleared.");
+  } catch (error) {
+    setFailuresMessage(error.message || String(error), true);
+  }
 });
 
 bindClick("configBackupRefreshBtn", async () => {
@@ -2867,6 +3098,7 @@ if (tlsForm) {
 closeAppearanceModal();
 closeUserModal();
 closeTlsModal();
+closeFailuresModal();
 
 loadManagerPlugins()
   .catch((error) => {

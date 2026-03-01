@@ -40,6 +40,29 @@ body {
   color: var(--muted);
 }
 
+.hero-actions {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+}
+
+.failure-alert-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 138, 138, 0.7);
+  background: rgba(255, 138, 138, 0.18);
+  color: #ffe6e6;
+  font-weight: 600;
+}
+
+.failure-alert-btn:hover {
+  border-color: rgba(255, 138, 138, 1);
+  background: rgba(255, 138, 138, 0.26);
+}
+
 .hero-glow {
   position: absolute;
   inset: 0;
@@ -832,6 +855,89 @@ textarea:focus {
   margin: 0;
 }
 
+.failures-dock.hidden {
+  display: none;
+}
+
+.failures-dock[hidden] {
+  display: none;
+}
+
+.failures-dock {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 36;
+  width: min(760px, 100vw);
+  height: 100vh;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(7, 10, 18, 0.95);
+  backdrop-filter: blur(8px);
+  box-shadow: -18px 0 50px rgba(0, 0, 0, 0.45);
+}
+
+.failures-dock-panel {
+  height: 100%;
+  overflow: auto;
+  padding: 1rem 1rem 1.8rem;
+}
+
+.failures-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  position: sticky;
+  top: 0;
+  background: linear-gradient(180deg, rgba(7, 10, 18, 0.98), rgba(7, 10, 18, 0.9));
+  padding-bottom: 0.45rem;
+  z-index: 1;
+}
+
+.failures-dock-header h2 {
+  margin: 0;
+}
+
+.failures-list-wrap {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 300px;
+  background: rgba(8, 11, 17, 0.78);
+}
+
+.failures-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+
+.failures-table th,
+.failures-table td {
+  text-align: left;
+  padding: 0.45rem 0.42rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  vertical-align: top;
+}
+
+.failures-table thead th {
+  position: sticky;
+  top: 0;
+  background: rgba(20, 28, 45, 0.95);
+  color: var(--muted);
+  z-index: 1;
+}
+
+.failures-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.failures-table tbody tr.selected {
+  background: rgba(155, 224, 255, 0.15);
+}
+
 @media (max-width: 980px) {
   .top-status-bar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -877,6 +983,10 @@ textarea:focus {
   }
 
   .tls-dock {
+    width: 100vw;
+  }
+
+  .failures-dock {
     width: 100vw;
   }
 }
