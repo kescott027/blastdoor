@@ -653,7 +653,16 @@ async function runAction(actionName, fn) {
   try {
     await fn();
   } catch (actionError) {
-    error(`${actionName} failed: ${actionError.message}`);
+    const message = actionError?.message || String(actionError);
+    const isWsl = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+    if (/EADDRNOTAVAIL|not available on this runtime host/i.test(message)) {
+      const hint = isWsl
+        ? "Fix: set HOST=0.0.0.0 in .env, then use Windows portproxy/firewall for LAN access."
+        : "Fix: set HOST=0.0.0.0 (LAN) or HOST=127.0.0.1 (local only), then restart.";
+      error(`${actionName} failed: ${message} ${hint}`);
+    } else {
+      error(`${actionName} failed: ${message}`);
+    }
   } finally {
     state.actionInFlight = false;
     renderControlsIfChanged();

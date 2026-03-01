@@ -460,6 +460,54 @@ test("manager control-plane endpoint maps container service states", async () =>
   });
 });
 
+test("manager start rejects bind host that is not available on runtime host", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=203.0.113.10",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$demo$demo",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let processFactoryCalls = 0;
+    const processFactory = () => {
+      processFactoryCalls += 1;
+      throw new Error("processFactory should not be called when HOST preflight fails.");
+    };
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      processFactory,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const result = await request(port, { method: "POST", pathname: "/api/start" });
+      assert.equal(result.status, 400);
+      assert.match(
+        String(result.body.error || ""),
+        /EADDRNOTAVAIL|not available on this runtime host/i,
+      );
+      assert.equal(processFactoryCalls, 0);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager can start stop and monitor gateway process", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");

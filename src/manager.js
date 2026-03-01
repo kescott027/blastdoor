@@ -779,6 +779,17 @@ function createProcessState({ workspaceDir, processFactory }) {
     };
   }
 
+  function renderEarlyExitHint() {
+    const recent = state.runtimeLogLines.slice(-80).join("\n");
+    if (recent.includes("EADDRNOTAVAIL")) {
+      return "Bind address is unavailable. Verify HOST in .env and prefer HOST=0.0.0.0 unless you must bind a specific local interface.";
+    }
+    if (recent.includes("EADDRINUSE")) {
+      return "Port is already in use. Stop the conflicting service or change PORT in .env.";
+    }
+    return "";
+  }
+
   async function start() {
     if (state.child) {
       return getStatus();
@@ -807,6 +818,40 @@ function createProcessState({ workspaceDir, processFactory }) {
       state.child = null;
       state.startedAt = null;
     });
+
+    const earlyExitWindowMs = 900;
+    const earlyExit = await new Promise((resolve) => {
+      let settled = false;
+      const settle = (payload) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(payload);
+      };
+
+      const timer = setTimeout(() => {
+        child.off("exit", onExit);
+        settle(null);
+      }, earlyExitWindowMs);
+
+      const onExit = (code, signal) => {
+        clearTimeout(timer);
+        settle({
+          code: typeof code === "number" ? code : null,
+          signal: signal || null,
+        });
+      };
+
+      child.once("exit", onExit);
+    });
+
+    if (earlyExit) {
+      const hint = renderEarlyExitHint();
+      throw new Error(
+        `Blastdoor failed to start (exit code: ${earlyExit.code ?? "n/a"}, signal: ${earlyExit.signal || "n/a"}).${hint ? ` ${hint}` : ""}`,
+      );
+    }
 
     return getStatus();
   }
@@ -984,6 +1029,64 @@ function parseComposePsOutput(raw) {
     }
   }
   return entries;
+}
+
+function collectLocalIpAddresses() {
+  const addresses = new Set(["127.0.0.1", "::1"]);
+  const interfaces = os.networkInterfaces();
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries || []) {
+      const address = normalizeString(entry?.address, "");
+      if (!address) {
+        continue;
+      }
+      addresses.add(address);
+    }
+  }
+  return addresses;
+}
+
+function evaluateGatewayBindHost({ host, environment }) {
+  const normalizedHost = normalizeString(host, CONFIG_DEFAULTS.HOST);
+  if (!normalizedHost || ["0.0.0.0", "::", "127.0.0.1", "::1", "localhost"].includes(normalizedHost.toLowerCase())) {
+    return {
+      ok: true,
+      host: normalizedHost || CONFIG_DEFAULTS.HOST,
+      reason: null,
+      recommendation: null,
+    };
+  }
+
+  const ipVersion = net.isIP(normalizedHost);
+  if (ipVersion > 0) {
+    const localIps = collectLocalIpAddresses();
+    if (localIps.has(normalizedHost)) {
+      return {
+        ok: true,
+        host: normalizedHost,
+        reason: null,
+        recommendation: null,
+      };
+    }
+
+    const recommendation = environment?.isWsl
+      ? "In WSL, set HOST=0.0.0.0 and use Windows portproxy/firewall rules for LAN access."
+      : "Set HOST=0.0.0.0 for LAN access, or HOST=127.0.0.1 for local-only access.";
+
+    return {
+      ok: false,
+      host: normalizedHost,
+      reason: "ip-not-bound-on-host",
+      recommendation,
+    };
+  }
+
+  return {
+    ok: true,
+    host: normalizedHost,
+    reason: null,
+    recommendation: null,
+  };
 }
 
 function toServiceHealthFromDocker({ running = false, healthStatus = "", state = "" } = {}) {
@@ -1250,15 +1353,24 @@ function createTroubleshootChecks({ config, health, foundryHealth, environment }
       : null,
   });
 
+  const bindValidation = evaluateGatewayBindHost({
+    host: config.HOST,
+    environment,
+  });
   checks.push({
     id: "network.bind-address",
     title: "Gateway bind address",
-    status: config.HOST === "0.0.0.0" ? "ok" : "warn",
-    detail:
-      config.HOST === "0.0.0.0"
+    status: bindValidation.ok ? (config.HOST === "0.0.0.0" ? "ok" : "warn") : "error",
+    detail: bindValidation.ok
+      ? config.HOST === "0.0.0.0"
         ? "Gateway is listening on all interfaces."
-        : `Gateway is bound to ${config.HOST}. LAN access may fail unless HOST=0.0.0.0.`,
-    recommendation: config.HOST === "0.0.0.0" ? null : "Set HOST=0.0.0.0 and restart Blastdoor.",
+        : `Gateway is bound to ${config.HOST}. LAN access may fail unless HOST=0.0.0.0.`
+      : `Configured HOST=${bindValidation.host} is not available on this runtime host and startup will fail with EADDRNOTAVAIL.`,
+    recommendation: bindValidation.ok
+      ? config.HOST === "0.0.0.0"
+        ? null
+        : "Set HOST=0.0.0.0 and restart Blastdoor."
+      : bindValidation.recommendation || "Set HOST=0.0.0.0 and restart Blastdoor.",
   });
 
   checks.push({
@@ -2099,6 +2211,24 @@ export function createManagerApp(options = {}) {
     };
   }
 
+  async function validateGatewayStartConfiguration() {
+    const [config, environment] = await Promise.all([
+      readEnvConfig(envPath),
+      Promise.resolve(detectEnvironmentInfo({ workspaceDir, envPath })),
+    ]);
+
+    const bindValidation = evaluateGatewayBindHost({
+      host: config.HOST,
+      environment,
+    });
+    if (!bindValidation.ok) {
+      const recommendationText = bindValidation.recommendation ? ` ${bindValidation.recommendation}` : "";
+      throw new Error(
+        `Configured HOST=${bindValidation.host} is not available on this runtime host and will fail with EADDRNOTAVAIL.${recommendationText}`,
+      );
+    }
+  }
+
   async function buildObjectStoreStatus(config, installationConfig) {
     const fromEnv = normalizeString(config.OBJECT_STORAGE_MODE, "").toLowerCase();
     const fromInstall = normalizeString(installationConfig?.objectStorage, "").toLowerCase();
@@ -2752,10 +2882,11 @@ export function createManagerApp(options = {}) {
 
   registerApiPost("/start", async (_req, res) => {
     try {
+      await validateGatewayStartConfiguration();
       const status = await processState.start();
       res.json({ ok: true, status });
     } catch (error) {
-      res.status(500).json({
+      res.status(400).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -2774,11 +2905,12 @@ export function createManagerApp(options = {}) {
 
   registerApiPost("/restart", async (_req, res) => {
     try {
+      await validateGatewayStartConfiguration();
       await processState.stop();
       const status = await processState.start();
       res.json({ ok: true, status });
     } catch (error) {
-      res.status(500).json({
+      res.status(400).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }

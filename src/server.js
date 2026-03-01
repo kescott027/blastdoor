@@ -1920,6 +1920,41 @@ export function createServer(config, options = {}) {
     server = http.createServer(app);
   }
 
+  server.on("error", (error) => {
+    const code = error?.code || null;
+    const address = error?.address || config.host || null;
+    const port = error?.port || config.port || null;
+    const isWsl = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+    let hint = null;
+    if (code === "EADDRNOTAVAIL") {
+      hint = isWsl
+        ? "HOST is not available in this WSL runtime. Use HOST=0.0.0.0 and expose LAN access via Windows portproxy."
+        : "HOST is not available on this machine. Use HOST=0.0.0.0 or a local interface address.";
+    } else if (code === "EADDRINUSE") {
+      hint = "Port is already in use. Stop the conflicting process or change PORT.";
+    }
+
+    logger.error("server.listen_error", {
+      code,
+      message: error instanceof Error ? error.message : String(error),
+      host: config.host,
+      port: config.port,
+      address,
+      listenPort: port,
+      hint,
+    });
+
+    if (typeof options.onListenError === "function") {
+      options.onListenError(error, { config, hint });
+    }
+
+    if (options.exitOnListenError !== false) {
+      process.nextTick(() => {
+        process.exit(1);
+      });
+    }
+  });
+
   server.listen(config.port, config.host, () => {
     if (options.silent) {
       return;
