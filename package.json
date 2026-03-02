@@ -17,8 +17,10 @@
     "check": "npm run lint && npm run test:coverage",
     "test": "node --test",
     "test:coverage": "c8 --reporter=text-summary --reporter=lcov --check-coverage --lines 70 --functions 70 --branches 55 --statements 70 node --test",
+    "test:call-home": "node --test test/manager-console-settings.test.js test/manager.test.js",
     "test:integration": "playwright test -c playwright.config.js",
     "test:integration:ci": "playwright test -c playwright.config.js",
+    "test:integration:call-home": "playwright test -c playwright.config.js e2e/manager-call-home.spec.js",
     "prepare": "husky"
   },
   "engines": {
