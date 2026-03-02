@@ -38,6 +38,11 @@
   margin-top: 0.45rem;
 }
 
+.intelligence-plugin-panel .intel-workflow-launch-cell {
+  display: flex;
+  align-items: end;
+}
+
 .intelligence-plugin-panel .intel-output-wrap {
   margin-top: 0.8rem;
 }

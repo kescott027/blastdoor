@@ -206,6 +206,7 @@ function createState(root) {
     closeWorkflowButton: root.querySelector("[data-intel-close-workflow]"),
     refreshButton: root.querySelector("[data-intel-action-refresh]"),
     workflowSelect: root.querySelector("[data-intel-workflow-select]"),
+    workflowLaunch: root.querySelector("[data-intel-workflow-launch]"),
     workflowNew: root.querySelector("[data-intel-workflow-new]"),
     workflowSave: root.querySelector("[data-intel-workflow-save]"),
     workflowDelete: root.querySelector("[data-intel-workflow-delete]"),
@@ -222,6 +223,7 @@ function createState(root) {
     workflowAutoLock: root.querySelector("[data-intel-workflow-auto-lock]"),
     workflowThreatThreshold: root.querySelector("[data-intel-workflow-threat-threshold]"),
     workflowConfigJson: root.querySelector("[data-intel-workflow-config-json]"),
+    chatSection: root.querySelector("[data-intel-chat-wrap]"),
     chatLog: root.querySelector("[data-intel-chat-log]"),
     chatInput: root.querySelector("[data-intel-chat-input]"),
     chatSend: root.querySelector("[data-intel-chat-send]"),
@@ -252,6 +254,7 @@ function validateState(state) {
     "closeWorkflowButton",
     "refreshButton",
     "workflowSelect",
+    "workflowLaunch",
     "workflowNew",
     "workflowSave",
     "workflowDelete",
@@ -268,6 +271,7 @@ function validateState(state) {
     "workflowAutoLock",
     "workflowThreatThreshold",
     "workflowConfigJson",
+    "chatSection",
     "chatLog",
     "chatInput",
     "chatSend",
@@ -343,6 +347,11 @@ function createPanelMarkup() {
           <button type="button" class="secondary" data-intel-action-refresh>Refresh Status</button>
         </div>
       </form>
+
+      <section class="intel-output-wrap">
+        <h3>Output</h3>
+        <pre class="log-box" data-intel-output></pre>
+      </section>
     </section>
 
     <section class="intel-workflow-wrap hidden" data-intel-workflow-section hidden>
@@ -355,6 +364,12 @@ function createPanelMarkup() {
         <label>Workflow
           <select data-intel-workflow-select></select>
         </label>
+        <div class="intel-workflow-launch-cell">
+          <button type="button" data-intel-workflow-launch>Launch Workflow</button>
+        </div>
+      </div>
+
+      <div class="grid">
         <label>Workflow ID
           <input type="text" data-intel-workflow-id readonly />
         </label>
@@ -420,7 +435,7 @@ function createPanelMarkup() {
         <textarea data-intel-workflow-config-json>{}</textarea>
       </label>
 
-      <section class="intel-chat-wrap">
+      <section class="intel-chat-wrap hidden" data-intel-chat-wrap hidden>
         <h3>Workflow Chat</h3>
         <div class="intel-chat-log log-box" data-intel-chat-log></div>
         <div class="button-row">
@@ -428,11 +443,6 @@ function createPanelMarkup() {
           <button type="button" data-intel-chat-send>Send</button>
         </div>
       </section>
-    </section>
-
-    <section class="intel-output-wrap">
-      <h3>Output</h3>
-      <pre class="log-box" data-intel-output></pre>
     </section>
   `;
 }
@@ -468,6 +478,7 @@ export async function registerManagerPlugin(context) {
     workflows: [],
     workflowMap: new Map(),
     selectedWorkflowId: "",
+    launchedWorkflowId: "",
     refreshTick: 0,
     statusLoadedOnce: false,
   };
@@ -500,6 +511,29 @@ export async function registerManagerPlugin(context) {
     showSection(state.workflowsSection, nextVisible);
   }
 
+  function hideChatSection() {
+    showSection(state.chatSection, false);
+    runtime.launchedWorkflowId = "";
+  }
+
+  function launchSelectedWorkflow(seedMessage = "") {
+    const selectedId = asString(state.workflowSelect.value, "");
+    const selected = getWorkflowById(selectedId);
+    if (!selected) {
+      throw new Error("Select a workflow to launch.");
+    }
+    showSection(state.chatSection, true);
+    runtime.launchedWorkflowId = selected.id;
+    clearChat(state);
+    const intro =
+      seedMessage ||
+      selected.seedPrompt ||
+      `Workflow '${selected.name}' launched. Provide message/context and I will execute this workflow.`;
+    pushChatMessage(state, "assistant", intro);
+    state.chatInput.focus();
+    panel.setStatus(`Workflow '${selected.name}' launched.`);
+  }
+
   function syncWorkflowSelection(selectedId = "") {
     runtime.workflowMap = new Map(runtime.workflows.map((workflow) => [workflow.id, workflow]));
     renderWorkflowSelect(state, runtime.workflows, selectedId || runtime.selectedWorkflowId);
@@ -507,14 +541,8 @@ export async function registerManagerPlugin(context) {
     const selected = getWorkflowById(runtime.selectedWorkflowId);
     if (selected) {
       populateWorkflowForm(state, selected);
-      clearChat(state);
-      pushChatMessage(
-        state,
-        "assistant",
-        selected.seedPrompt ||
-          `Workflow '${selected.name}' is ready. Provide message/context and I will execute this workflow.`,
-      );
     }
+    hideChatSection();
   }
 
   async function loadStatus(showMessage = false) {
@@ -575,6 +603,7 @@ export async function registerManagerPlugin(context) {
     if (!description) {
       throw new Error("Describe what the workflow should do before generating.");
     }
+    const currentDraft = draftFromForm(state);
     const payload = await context.apiPost("/assistant/workflows/generate-config", {
       description,
     });
@@ -583,25 +612,29 @@ export async function registerManagerPlugin(context) {
     if (!suggested) {
       throw new Error("Assistant did not return a suggested workflow config.");
     }
-    populateWorkflowForm(state, {
-      ...suggested,
-      id: "",
-      builtIn: false,
-    });
-    clearChat(state);
-    pushChatMessage(
-      state,
-      "assistant",
-      payload.result?.reply ||
-        "Workflow suggestion generated. Review prompts and settings, then click Save / Modify.",
-    );
-    panel.setStatus("Generated workflow configuration suggestion.");
+    const normalized = normalizeWorkflowDraft(suggested);
+
+    // Preserve identity fields selected by the operator.
+    state.workflowDescription.value = normalized.description || currentDraft.description || "";
+    state.workflowSystemPrompt.value = normalized.systemPrompt || currentDraft.systemPrompt || "";
+    state.workflowSeedPrompt.value = normalized.seedPrompt || currentDraft.seedPrompt || "";
+    state.workflowInputPlaceholder.value = normalized.inputPlaceholder || currentDraft.inputPlaceholder || "";
+    state.workflowRagEnabled.checked = Boolean(normalized.ragEnabled);
+    state.workflowAllowWebSearch.checked = Boolean(normalized.allowWebSearch);
+    state.workflowAutoLock.checked = Boolean(normalized.autoLockOnThreat);
+    state.workflowThreatThreshold.value = String(normalized.threatScoreThreshold || currentDraft.threatScoreThreshold || 80);
+    state.workflowConfigJson.value = JSON.stringify(normalized.config || currentDraft.config || {}, null, 2);
+
+    panel.setStatus("Generated workflow configuration suggestion (name and type unchanged).");
   }
 
   async function sendChatMessage() {
     const message = asString(state.chatInput.value, "").trim();
     if (!message) {
       return;
+    }
+    if (state.chatSection.hidden) {
+      throw new Error("Launch workflow before sending chat messages.");
     }
     const workflow = activeWorkflowFromForm();
     if (!workflow.name) {
@@ -644,12 +677,14 @@ export async function registerManagerPlugin(context) {
   });
   state.workflowsButton.addEventListener("click", () => {
     showWorkflowSection();
+    hideChatSection();
   });
   state.closeConfigButton.addEventListener("click", () => {
     showConfigSection(false);
   });
   state.closeWorkflowButton.addEventListener("click", () => {
     showWorkflowSection(false);
+    hideChatSection();
   });
 
   state.refreshButton.addEventListener("click", async () => {
@@ -668,13 +703,16 @@ export async function registerManagerPlugin(context) {
       return;
     }
     populateWorkflowForm(state, selected);
-    clearChat(state);
-    pushChatMessage(
-      state,
-      "assistant",
-      selected.seedPrompt ||
-        `Workflow '${selected.name}' is ready. Provide message/context and I will execute this workflow.`,
-    );
+    hideChatSection();
+    panel.setStatus(`Selected workflow '${selected.name}'. Click Launch Workflow to start chat.`);
+  });
+
+  state.workflowLaunch.addEventListener("click", () => {
+    try {
+      launchSelectedWorkflow();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
   });
 
   state.workflowNew.addEventListener("click", () => {
@@ -694,8 +732,7 @@ export async function registerManagerPlugin(context) {
       config: {},
       builtIn: false,
     });
-    clearChat(state);
-    pushChatMessage(state, "assistant", "New workflow draft started. Configure, then save.");
+    hideChatSection();
     panel.setStatus("Creating new workflow.");
   });
 
