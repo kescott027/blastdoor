@@ -185,6 +185,8 @@ const CONFIG_BACKUP_VIEW_MAX_BYTES = 512 * 1024;
 const REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES = 30;
 const REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES = 24 * 60;
 const REMOTE_SUPPORT_DEFAULT_TOKEN_LABEL = "Remote Support Token";
+const CALL_HOME_EVENTS_MAX = 200;
+const CALL_HOME_REPORT_PAYLOAD_MAX_CHARS = 32_000;
 const REMOTE_SUPPORT_SAFE_ACTION_ALLOWLIST = new Set([
   "snapshot.network",
   "check.gateway-local",
@@ -261,6 +263,50 @@ function summarizeRemoteSupportToken(token) {
     lastUsedAt: normalizeString(token?.lastUsedAt, ""),
     revokedAt: normalizeString(token?.revokedAt, ""),
     active: isRemoteSupportTokenActive(token),
+  };
+}
+
+function trimCallHomeEvents(events, maxEvents = CALL_HOME_EVENTS_MAX) {
+  if (!Array.isArray(events)) {
+    return [];
+  }
+  return events.slice(-Math.max(1, Number.parseInt(String(maxEvents || CALL_HOME_EVENTS_MAX), 10) || CALL_HOME_EVENTS_MAX));
+}
+
+function sanitizeCallHomePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return {};
+  }
+  let json;
+  try {
+    json = JSON.stringify(payload);
+  } catch {
+    return {};
+  }
+  if (!json) {
+    return {};
+  }
+  if (json.length > CALL_HOME_REPORT_PAYLOAD_MAX_CHARS) {
+    json = json.slice(0, CALL_HOME_REPORT_PAYLOAD_MAX_CHARS);
+  }
+  try {
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function summarizeCallHomeEvent(event) {
+  const payload = event?.payload && typeof event.payload === "object" ? event.payload : {};
+  return {
+    eventId: normalizeString(event?.eventId, ""),
+    type: normalizeString(event?.type, "report"),
+    createdAt: normalizeString(event?.createdAt, ""),
+    satelliteId: normalizeString(event?.satelliteId, ""),
+    status: normalizeString(event?.status, "unknown"),
+    message: normalizeString(event?.message, ""),
+    payload,
   };
 }
 
@@ -3029,6 +3075,10 @@ export function createManagerApp(options = {}) {
     return `${protocol}://${host}/api/remote-support/v1`;
   }
 
+  function buildCallHomeApiBasePath(req) {
+    return `${buildRemoteSupportApiBasePath(req).replace(/\/+$/, "")}/call-home`;
+  }
+
   function buildRemoteSupportCurlExamples({ req, token }) {
     const base = buildRemoteSupportApiBasePath(req).replace(/\/+$/, "");
     const quotedToken = String(token || "").replace(/'/g, "'\\''");
@@ -3037,6 +3087,16 @@ export function createManagerApp(options = {}) {
       `curl -sS -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/troubleshoot'`,
       `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/troubleshoot/run' -d '{"actionId":"snapshot.network"}'`,
       `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/intelligence/workflow/chat' -d '{"workflowId":"troubleshoot-recommendation","input":"Analyze the latest diagnostics report."}'`,
+    ];
+  }
+
+  function buildCallHomeCurlExamples({ req, token }) {
+    const base = buildCallHomeApiBasePath(req).replace(/\/+$/, "");
+    const quotedToken = String(token || "").replace(/'/g, "'\\''");
+    return [
+      `curl -sS -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/healthz'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/register' -d '{"satelliteId":"diag-sat-01","status":"starting","message":"boot"}'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/report' -d '{"satelliteId":"diag-sat-01","status":"ok","message":"path-check-complete","payload":{"probe":"ok"}}'`,
     ];
   }
 
@@ -3059,6 +3119,109 @@ export function createManagerApp(options = {}) {
       hints.push("hostname -I");
     }
     return hints;
+  }
+
+  function buildCallHomePodBundle({ req, token, tokenMeta, ttlMinutes = 30, generatedAt = new Date().toISOString() }) {
+    const base = buildCallHomeApiBasePath(req).replace(/\/+$/, "");
+    const baseEscaped = base.replace(/"/g, '\\"');
+    const tokenEscaped = String(token || "").replace(/"/g, '\\"');
+    const satelliteId = `diag-${randomUUID().slice(0, 8)}`;
+    const dockerImage = "alpine:3.20";
+    const entrypointScript = `#!/bin/sh
+set -eu
+
+SATELLITE_ID="\${SATELLITE_ID:-${satelliteId}}"
+CALL_HOME_TOKEN="\${CALL_HOME_TOKEN:-${tokenEscaped}}"
+CALL_HOME_BASE_URL="\${CALL_HOME_BASE_URL:-${baseEscaped}}"
+CALL_HOME_CANDIDATES="\${CALL_HOME_CANDIDATES:-$CALL_HOME_BASE_URL,http://host.docker.internal:8090/api/remote-support/v1/call-home}"
+
+if ! command -v curl >/dev/null 2>&1; then
+  apk add --no-cache curl >/dev/null
+fi
+
+ACTIVE_BASE=""
+IFS=','; for candidate in $CALL_HOME_CANDIDATES; do
+  candidate_trim="$(echo "$candidate" | sed 's/[[:space:]]*$//')"
+  [ -n "$candidate_trim" ] || continue
+  if curl -fsS -m 3 -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" "$candidate_trim/healthz" >/tmp/callhome-healthz.json 2>/tmp/callhome-healthz.err; then
+    ACTIVE_BASE="$candidate_trim"
+    break
+  fi
+done
+unset IFS
+
+if [ -z "$ACTIVE_BASE" ]; then
+  echo "call-home: failed to reach API using candidates: $CALL_HOME_CANDIDATES"
+  cat /tmp/callhome-healthz.err 2>/dev/null || true
+  exit 12
+fi
+
+HOSTNAME_VALUE="$(hostname 2>/dev/null || echo unknown)"
+REGISTER_BODY="$(printf '{"satelliteId":"%s","status":"starting","message":"diag pod connected","payload":{"hostname":"%s"}}' "$SATELLITE_ID" "$HOSTNAME_VALUE")"
+
+curl -fsS -m 6 -X POST \
+  -H "content-type: application/json" \
+  -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" \
+  "$ACTIVE_BASE/register" \
+  -d "$REGISTER_BODY" >/tmp/callhome-register.json
+
+curl -fsS -m 8 -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" "$ACTIVE_BASE/../diagnostics" >/tmp/callhome-diagnostics.json || true
+curl -fsS -m 8 -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" "$ACTIVE_BASE/../troubleshoot" >/tmp/callhome-troubleshoot.json || true
+
+REPORT_BODY="$(printf '{"satelliteId":"%s","status":"ok","message":"diag pod completed connectivity workflow","payload":{"activeBase":"%s","hostname":"%s"}}' "$SATELLITE_ID" "$ACTIVE_BASE" "$HOSTNAME_VALUE")"
+
+curl -fsS -m 8 -X POST \
+  -H "content-type: application/json" \
+  -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" \
+  "$ACTIVE_BASE/report" \
+  -d "$REPORT_BODY" >/tmp/callhome-report.json
+
+echo "call-home: success ($ACTIVE_BASE)"
+`;
+
+    const launchScript = `#!/usr/bin/env bash
+set -euo pipefail
+export CALL_HOME_TOKEN='${String(token || "").replace(/'/g, "'\\''")}'
+export CALL_HOME_BASE_URL='${base.replace(/'/g, "'\\''")}'
+export SATELLITE_ID='${satelliteId}'
+docker run --rm --name blastdoor-diag-${satelliteId} -e CALL_HOME_TOKEN -e CALL_HOME_BASE_URL -e SATELLITE_ID ${dockerImage} sh -lc "$(cat <<'EOS'
+${entrypointScript}
+EOS
+)"
+`;
+
+    const composeYaml = `services:
+  blastdoor-diag:
+    image: ${dockerImage}
+    container_name: blastdoor-diag-${satelliteId}
+    restart: "no"
+    environment:
+      CALL_HOME_TOKEN: "${String(token || "").replace(/"/g, '\\"')}"
+      CALL_HOME_BASE_URL: "${baseEscaped}"
+      SATELLITE_ID: "${satelliteId}"
+    command:
+      - sh
+      - -lc
+      - |
+${entrypointScript
+  .split("\n")
+  .map((line) => `        ${line}`)
+  .join("\n")}
+`;
+
+    return {
+      generatedAt,
+      satelliteId,
+      token,
+      tokenMeta,
+      ttlMinutes,
+      callHomeBaseUrl: base,
+      dockerImage,
+      launchScript,
+      composeYaml,
+      entrypointScript,
+      curlExamples: buildCallHomeCurlExamples({ req, token }),
+    };
   }
 
   async function writeRemoteSupportTokenLastUsed({ settings, tokenId }) {
@@ -3088,6 +3251,29 @@ export function createManagerApp(options = {}) {
       remoteSupport: {
         ...remoteSupport,
         tokens: nextTokens,
+      },
+    });
+  }
+
+  async function appendCallHomeEvent({ settings, type, satelliteId, status, message, payload }) {
+    const current = settings || (await readConsoleSettings());
+    const remoteSupport = current.remoteSupport || {};
+    const existing = Array.isArray(remoteSupport.callHomeEvents) ? remoteSupport.callHomeEvents : [];
+    const event = summarizeCallHomeEvent({
+      eventId: randomUUID(),
+      type: normalizeString(type, "report"),
+      createdAt: new Date().toISOString(),
+      satelliteId: normalizeString(satelliteId, ""),
+      status: normalizeString(status, "unknown"),
+      message: normalizeString(message, ""),
+      payload: sanitizeCallHomePayload(payload),
+    });
+    const nextEvents = trimCallHomeEvents([...existing, event], CALL_HOME_EVENTS_MAX);
+    return await writeConsoleSettings({
+      ...current,
+      remoteSupport: {
+        ...remoteSupport,
+        callHomeEvents: nextEvents,
       },
     });
   }
@@ -3132,6 +3318,7 @@ export function createManagerApp(options = {}) {
         ok: true,
         settings: updated,
         token: summarizeRemoteSupportToken(entry),
+        rawToken: token,
       };
     }
 
@@ -4165,6 +4352,7 @@ export function createManagerApp(options = {}) {
         return;
       }
       req.remoteSupportToken = auth.token;
+      req.remoteSupportSettings = auth.settings;
       await handler(req, res);
     });
   }
@@ -4177,6 +4365,7 @@ export function createManagerApp(options = {}) {
         return;
       }
       req.remoteSupportToken = auth.token;
+      req.remoteSupportSettings = auth.settings;
       await handler(req, res);
     });
   }
@@ -5625,6 +5814,7 @@ export function createManagerApp(options = {}) {
         ok: true,
         config: {
           enabled: remoteSupport.enabled === true,
+          callHomeEnabled: remoteSupport.callHomeEnabled === true,
           defaultTokenTtlMinutes: clampRemoteSupportTokenTtlMinutes(
             remoteSupport.defaultTokenTtlMinutes,
             REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
@@ -5632,6 +5822,7 @@ export function createManagerApp(options = {}) {
           minTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
           maxTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
           tokens: tokens.map(summarizeRemoteSupportToken),
+          callHomeEvents: trimCallHomeEvents(remoteSupport.callHomeEvents, 50),
         },
       });
     } catch (error) {
@@ -5647,6 +5838,7 @@ export function createManagerApp(options = {}) {
       const currentRemoteSupport = current.remoteSupport || {};
       const previousEnabled = currentRemoteSupport.enabled === true;
       const enabled = parseBooleanLike(req.body?.enabled, currentRemoteSupport.enabled === true);
+      const callHomeEnabled = parseBooleanLike(req.body?.callHomeEnabled, currentRemoteSupport.callHomeEnabled === true);
       const defaultTokenTtlMinutes = clampRemoteSupportTokenTtlMinutes(
         req.body?.defaultTokenTtlMinutes,
         clampRemoteSupportTokenTtlMinutes(
@@ -5660,8 +5852,10 @@ export function createManagerApp(options = {}) {
         remoteSupport: {
           ...currentRemoteSupport,
           enabled,
+          callHomeEnabled,
           defaultTokenTtlMinutes,
           tokens: Array.isArray(currentRemoteSupport.tokens) ? currentRemoteSupport.tokens : [],
+          callHomeEvents: trimCallHomeEvents(currentRemoteSupport.callHomeEvents, CALL_HOME_EVENTS_MAX),
         },
       });
 
@@ -5680,10 +5874,12 @@ export function createManagerApp(options = {}) {
         ok: true,
         config: {
           enabled: next.remoteSupport.enabled === true,
+          callHomeEnabled: next.remoteSupport.callHomeEnabled === true,
           defaultTokenTtlMinutes: next.remoteSupport.defaultTokenTtlMinutes,
           minTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
           maxTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
           tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
+          callHomeEvents: trimCallHomeEvents(next.remoteSupport.callHomeEvents, 50),
         },
         networkExposure,
       });
@@ -5741,8 +5937,10 @@ export function createManagerApp(options = {}) {
         tokenMeta: summarizeRemoteSupportToken(tokenRecord),
         config: {
           enabled: next.remoteSupport.enabled === true,
+          callHomeEnabled: next.remoteSupport.callHomeEnabled === true,
           defaultTokenTtlMinutes: next.remoteSupport.defaultTokenTtlMinutes,
           tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
+          callHomeEvents: trimCallHomeEvents(next.remoteSupport.callHomeEvents, 50),
         },
         examples: buildRemoteSupportCurlExamples({ req, token: rawToken }),
       });
@@ -5875,10 +6073,141 @@ export function createManagerApp(options = {}) {
         tokenMeta: summarizeRemoteSupportToken(rotatedTokenRecord),
         config: {
           enabled: next.remoteSupport.enabled === true,
+          callHomeEnabled: next.remoteSupport.callHomeEnabled === true,
+          defaultTokenTtlMinutes: next.remoteSupport.defaultTokenTtlMinutes,
+          tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
+          callHomeEvents: trimCallHomeEvents(next.remoteSupport.callHomeEvents, 50),
+        },
+        examples: buildRemoteSupportCurlExamples({ req, token: rawToken }),
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/call-home/config", async (_req, res) => {
+    try {
+      const settings = await readConsoleSettings();
+      const remoteSupport = settings.remoteSupport || {};
+      res.json({
+        ok: true,
+        config: {
+          remoteSupportEnabled: remoteSupport.enabled === true,
+          callHomeEnabled: remoteSupport.callHomeEnabled === true,
+          callHomeEventCount: Array.isArray(remoteSupport.callHomeEvents) ? remoteSupport.callHomeEvents.length : 0,
+          defaultTokenTtlMinutes: clampRemoteSupportTokenTtlMinutes(
+            remoteSupport.defaultTokenTtlMinutes,
+            REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+          ),
+          minTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+          maxTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/call-home/events", async (req, res) => {
+    try {
+      const settings = await readConsoleSettings();
+      const remoteSupport = settings.remoteSupport || {};
+      const limit = Math.max(1, Math.min(200, Number.parseInt(String(req.query?.limit || "50"), 10) || 50));
+      const events = trimCallHomeEvents(remoteSupport.callHomeEvents, limit);
+      res.json({
+        ok: true,
+        events,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/call-home/events/clear", async (_req, res) => {
+    try {
+      const current = await readConsoleSettings();
+      const currentRemoteSupport = current.remoteSupport || {};
+      const next = await writeConsoleSettings({
+        ...current,
+        remoteSupport: {
+          ...currentRemoteSupport,
+          callHomeEvents: [],
+        },
+      });
+      res.json({
+        ok: true,
+        events: trimCallHomeEvents(next.remoteSupport.callHomeEvents, 50),
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/call-home/pods/generate", async (req, res) => {
+    try {
+      const current = await readConsoleSettings();
+      const currentRemoteSupport = current.remoteSupport || {};
+      if (currentRemoteSupport.enabled !== true) {
+        throw new Error("Remote support API must be enabled before generating a diagnostic pod.");
+      }
+      if (currentRemoteSupport.callHomeEnabled !== true) {
+        throw new Error("Call-home API must be enabled before generating a diagnostic pod.");
+      }
+
+      const ttlMinutes = clampRemoteSupportTokenTtlMinutes(
+        req.body?.ttlMinutes,
+        clampRemoteSupportTokenTtlMinutes(
+          currentRemoteSupport.defaultTokenTtlMinutes,
+          REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+        ),
+      );
+      const label = normalizeString(req.body?.label, "Diagnostic Pod Token");
+      const rawToken = randomBytes(24).toString("base64url");
+      const createdAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+      const tokenRecord = {
+        tokenId: randomUUID(),
+        label,
+        tokenHash: createPasswordHash(rawToken),
+        createdAt,
+        expiresAt,
+        lastUsedAt: "",
+        revokedAt: "",
+      };
+
+      const next = await writeConsoleSettings({
+        ...current,
+        remoteSupport: {
+          ...currentRemoteSupport,
+          tokens: [...(Array.isArray(currentRemoteSupport.tokens) ? currentRemoteSupport.tokens : []), tokenRecord],
+          callHomeEvents: trimCallHomeEvents(currentRemoteSupport.callHomeEvents, CALL_HOME_EVENTS_MAX),
+        },
+      });
+
+      const pod = buildCallHomePodBundle({
+        req,
+        token: rawToken,
+        tokenMeta: summarizeRemoteSupportToken(tokenRecord),
+        ttlMinutes,
+      });
+
+      res.json({
+        ok: true,
+        pod,
+        config: {
+          enabled: next.remoteSupport.enabled === true,
+          callHomeEnabled: next.remoteSupport.callHomeEnabled === true,
           defaultTokenTtlMinutes: next.remoteSupport.defaultTokenTtlMinutes,
           tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
         },
-        examples: buildRemoteSupportCurlExamples({ req, token: rawToken }),
       });
     } catch (error) {
       res.status(400).json({
@@ -5919,6 +6248,9 @@ export function createManagerApp(options = {}) {
         "/intelligence/workflow/chat": { post: { summary: "Send a command to an intelligence workflow." } },
         "/intelligence/agents": { get: { summary: "List configured intelligence agents." } },
         "/intelligence/agents/{agentName}/command": { post: { summary: "Send a command to an agent workflow." } },
+        "/call-home/healthz": { get: { summary: "Call-home endpoint health check." } },
+        "/call-home/register": { post: { summary: "Register a diagnostic satellite pod with the control plane." } },
+        "/call-home/report": { post: { summary: "Submit call-home diagnostic event/report payload." } },
       },
     });
   });
@@ -5929,6 +6261,98 @@ export function createManagerApp(options = {}) {
       service: "remote-support-api",
       generatedAt: new Date().toISOString(),
     });
+  });
+
+  registerRemoteSupportGet("/call-home/healthz", async (req, res) => {
+    const remoteSupport = req.remoteSupportSettings?.remoteSupport || {};
+    if (remoteSupport.callHomeEnabled !== true) {
+      res.status(404).json({
+        error: "Call-home API is disabled.",
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      service: "call-home-api",
+      generatedAt: new Date().toISOString(),
+      callHomeEnabled: true,
+      tokenId: req.remoteSupportToken?.tokenId || "",
+    });
+  });
+
+  registerRemoteSupportPost("/call-home/register", async (req, res) => {
+    const remoteSupport = req.remoteSupportSettings?.remoteSupport || {};
+    if (remoteSupport.callHomeEnabled !== true) {
+      res.status(404).json({
+        error: "Call-home API is disabled.",
+      });
+      return;
+    }
+    try {
+      const satelliteId = normalizeString(req.body?.satelliteId, "");
+      const status = normalizeString(req.body?.status, "starting");
+      const message = normalizeString(req.body?.message, "");
+      const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
+      const next = await appendCallHomeEvent({
+        settings: req.remoteSupportSettings,
+        type: "register",
+        satelliteId,
+        status,
+        message,
+        payload: {
+          ...payload,
+          tokenId: req.remoteSupportToken?.tokenId || "",
+          tokenLabel: req.remoteSupportToken?.label || "",
+          sourceIp: normalizeString(req.ip, ""),
+        },
+      });
+      res.json({
+        ok: true,
+        accepted: true,
+        eventCount: Array.isArray(next.remoteSupport?.callHomeEvents) ? next.remoteSupport.callHomeEvents.length : 0,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerRemoteSupportPost("/call-home/report", async (req, res) => {
+    const remoteSupport = req.remoteSupportSettings?.remoteSupport || {};
+    if (remoteSupport.callHomeEnabled !== true) {
+      res.status(404).json({
+        error: "Call-home API is disabled.",
+      });
+      return;
+    }
+    try {
+      const satelliteId = normalizeString(req.body?.satelliteId, "");
+      const status = normalizeString(req.body?.status, "unknown");
+      const message = normalizeString(req.body?.message, "");
+      const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
+      const next = await appendCallHomeEvent({
+        settings: req.remoteSupportSettings,
+        type: "report",
+        satelliteId,
+        status,
+        message,
+        payload: {
+          ...payload,
+          tokenId: req.remoteSupportToken?.tokenId || "",
+          sourceIp: normalizeString(req.ip, ""),
+        },
+      });
+      res.json({
+        ok: true,
+        accepted: true,
+        eventCount: Array.isArray(next.remoteSupport?.callHomeEvents) ? next.remoteSupport.callHomeEvents.length : 0,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   registerRemoteSupportGet("/diagnostics", async (req, res) => {

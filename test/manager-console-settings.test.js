@@ -33,6 +33,7 @@ test("normalizeManagerConsoleSettings applies defaults and clamps values", () =>
     },
     remoteSupport: {
       enabled: "true",
+      callHomeEnabled: "true",
       defaultTokenTtlMinutes: 99999,
       tokens: [
         {
@@ -48,6 +49,17 @@ test("normalizeManagerConsoleSettings applies defaults and clamps values", () =>
           tokenHash: "",
         },
       ],
+      callHomeEvents: [
+        {
+          eventId: "evt-1",
+          type: "register",
+          createdAt: "2026-03-02T00:00:00.000Z",
+          satelliteId: "diag-1",
+          status: "ok",
+          message: "connected",
+          payload: { hostname: "diag-1" },
+        },
+      ],
     },
   });
 
@@ -57,9 +69,12 @@ test("normalizeManagerConsoleSettings applies defaults and clamps values", () =>
   assert.equal(normalized.access.passwordHash, "scrypt$demo$hash");
   assert.equal(normalized.access.sessionTtlHours, 168);
   assert.equal(normalized.remoteSupport.enabled, true);
+  assert.equal(normalized.remoteSupport.callHomeEnabled, true);
   assert.equal(normalized.remoteSupport.defaultTokenTtlMinutes, 1440);
   assert.equal(normalized.remoteSupport.tokens.length, 1);
   assert.equal(normalized.remoteSupport.tokens[0].tokenId, "tok-1");
+  assert.equal(normalized.remoteSupport.callHomeEvents.length, 1);
+  assert.equal(normalized.remoteSupport.callHomeEvents[0].eventId, "evt-1");
 });
 
 test("sanitizeManagerConsoleSettingsForClient redacts hash while preserving flags", () => {
@@ -76,9 +91,11 @@ test("sanitizeManagerConsoleSettingsForClient redacts hash while preserving flag
   assert.equal(payload.access.passwordConfigured, true);
   assert.equal(Object.prototype.hasOwnProperty.call(payload.access, "passwordHash"), false);
   assert.equal(payload.remoteSupport.enabled, false);
+  assert.equal(payload.remoteSupport.callHomeEnabled, false);
   assert.equal(payload.remoteSupport.defaultTokenTtlMinutes, 30);
   assert.equal(payload.remoteSupport.tokenCount, 0);
   assert.equal(payload.remoteSupport.activeTokenCount, 0);
+  assert.equal(payload.remoteSupport.callHomeEventCount, 0);
 });
 
 test("manager console settings read/write persists normalized data", async () => {
@@ -100,6 +117,7 @@ test("manager console settings read/write persists normalized data", async () =>
       },
       remoteSupport: {
         enabled: true,
+        callHomeEnabled: true,
         defaultTokenTtlMinutes: 45,
       },
     });
@@ -108,6 +126,7 @@ test("manager console settings read/write persists normalized data", async () =>
     assert.equal(saved.access.requirePassword, true);
     assert.equal(saved.access.sessionTtlHours, 16);
     assert.equal(saved.remoteSupport.enabled, true);
+    assert.equal(saved.remoteSupport.callHomeEnabled, true);
     assert.equal(saved.remoteSupport.defaultTokenTtlMinutes, 45);
 
     const loaded = await readManagerConsoleSettings(settingsPath);
@@ -116,6 +135,7 @@ test("manager console settings read/write persists normalized data", async () =>
     assert.equal(loaded.access.requirePassword, true);
     assert.equal(loaded.access.sessionTtlHours, 16);
     assert.equal(loaded.remoteSupport.enabled, true);
+    assert.equal(loaded.remoteSupport.callHomeEnabled, true);
     assert.equal(loaded.remoteSupport.defaultTokenTtlMinutes, 45);
   });
 });

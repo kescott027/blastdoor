@@ -281,6 +281,23 @@
           <button id="remoteSupportRefreshBtn" type="button">Refresh Tokens</button>
         </div>
         <div class="grid">
+          <label>Enable Call-Home API
+            <select id="callHomeEnabled">
+              <option value="false">Disabled</option>
+              <option value="true">Enabled</option>
+            </select>
+          </label>
+          <label>Diagnostic Pod Token TTL (minutes)
+            <input id="callHomePodTtlMinutes" type="number" min="30" max="1440" step="1" value="30" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="callHomeGeneratePodBtn" type="button">Generate Diagnostic Pod</button>
+          <button id="callHomeRefreshEventsBtn" type="button">Refresh Call-Home Events</button>
+          <button id="callHomeClearEventsBtn" type="button">Clear Call-Home Events</button>
+          <button id="callHomeAiAnalyzeBtn" type="button">AI Analyze Call-Home</button>
+        </div>
+        <div class="grid">
           <label>New Token Label
             <input id="remoteSupportTokenLabel" placeholder="Remote Support Token" />
           </label>
@@ -303,6 +320,10 @@
         <p class="status-message" id="remoteSupportStatusMessage"></p>
         <h4>Generated Token + Example Commands</h4>
         <pre id="remoteSupportOutput" class="log-box"></pre>
+        <h4>Diagnostic Pod Bundle</h4>
+        <pre id="callHomePodOutput" class="log-box"></pre>
+        <h4>Call-Home Events</h4>
+        <pre id="callHomeEventsOutput" class="log-box"></pre>
       </section>
 
       <section class="panel troubleshooting-panel hidden" id="troubleshootingSection" hidden>

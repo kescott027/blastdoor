@@ -16,8 +16,10 @@ export const DEFAULT_MANAGER_CONSOLE_SETTINGS = {
   },
   remoteSupport: {
     enabled: false,
+    callHomeEnabled: false,
     defaultTokenTtlMinutes: 30,
     tokens: [],
+    callHomeEvents: [],
   },
 };
 
@@ -76,6 +78,29 @@ function normalizeRemoteSupportTokens(value) {
     .filter((entry) => entry.tokenId && entry.tokenHash);
 }
 
+function normalizeCallHomeEvents(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => {
+      const event = entry && typeof entry === "object" ? entry : {};
+      const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+      return {
+        eventId: typeof event.eventId === "string" ? event.eventId : "",
+        type: typeof event.type === "string" ? event.type : "",
+        createdAt: typeof event.createdAt === "string" ? event.createdAt : "",
+        satelliteId: typeof event.satelliteId === "string" ? event.satelliteId : "",
+        status: typeof event.status === "string" ? event.status : "",
+        message: typeof event.message === "string" ? event.message : "",
+        payload,
+      };
+    })
+    .filter((entry) => entry.eventId && entry.createdAt)
+    .slice(-200);
+}
+
 function isRemoteSupportTokenActive(token, nowMs = Date.now()) {
   if (!token || typeof token !== "object") {
     return false;
@@ -131,11 +156,16 @@ export function normalizeManagerConsoleSettings(input = {}) {
         sourceRemoteSupport.enabled,
         DEFAULT_MANAGER_CONSOLE_SETTINGS.remoteSupport.enabled,
       ),
+      callHomeEnabled: normalizeBoolean(
+        sourceRemoteSupport.callHomeEnabled,
+        DEFAULT_MANAGER_CONSOLE_SETTINGS.remoteSupport.callHomeEnabled,
+      ),
       defaultTokenTtlMinutes: normalizeRemoteSupportTokenTtlMinutes(
         sourceRemoteSupport.defaultTokenTtlMinutes,
         DEFAULT_MANAGER_CONSOLE_SETTINGS.remoteSupport.defaultTokenTtlMinutes,
       ),
       tokens: normalizeRemoteSupportTokens(sourceRemoteSupport.tokens),
+      callHomeEvents: normalizeCallHomeEvents(sourceRemoteSupport.callHomeEvents),
     },
   };
 
@@ -154,9 +184,11 @@ export function sanitizeManagerConsoleSettingsForClient(settings) {
     },
     remoteSupport: {
       enabled: normalized.remoteSupport.enabled,
+      callHomeEnabled: normalized.remoteSupport.callHomeEnabled,
       defaultTokenTtlMinutes: normalized.remoteSupport.defaultTokenTtlMinutes,
       tokenCount: normalized.remoteSupport.tokens.length,
       activeTokenCount: normalized.remoteSupport.tokens.filter((entry) => isRemoteSupportTokenActive(entry)).length,
+      callHomeEventCount: normalized.remoteSupport.callHomeEvents.length,
     },
   };
 }

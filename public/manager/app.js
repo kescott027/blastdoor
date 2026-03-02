@@ -22,6 +22,13 @@ const remoteSupportRotateBtn = document.getElementById("remoteSupportRotateBtn")
 const remoteSupportStatusMessage = document.getElementById("remoteSupportStatusMessage");
 const remoteSupportOutput = document.getElementById("remoteSupportOutput");
 const remoteSupportStepHint = document.getElementById("remoteSupportStepHint");
+const callHomeEnabled = document.getElementById("callHomeEnabled");
+const callHomePodTtlMinutes = document.getElementById("callHomePodTtlMinutes");
+const callHomeGeneratePodBtn = document.getElementById("callHomeGeneratePodBtn");
+const callHomeRefreshEventsBtn = document.getElementById("callHomeRefreshEventsBtn");
+const callHomeClearEventsBtn = document.getElementById("callHomeClearEventsBtn");
+const callHomePodOutput = document.getElementById("callHomePodOutput");
+const callHomeEventsOutput = document.getElementById("callHomeEventsOutput");
 const blastDoorsToggle = document.getElementById("blastDoorsToggle");
 const blastDoorsState = document.getElementById("blastDoorsState");
 const blastDoorsClosedField = document.getElementById("blastDoorsClosedField");
@@ -227,6 +234,8 @@ const hasLegacyAppearancePicker = Boolean(
 let latestDiagnostics = null;
 let latestRemoteSupportConfig = null;
 let latestRemoteSupportOutputText = "";
+let latestCallHomePodOutputText = "";
+let latestCallHomeEvents = [];
 let latestTroubleshootReport = null;
 let latestThemes = [];
 let latestActiveThemeId = "";
@@ -1421,6 +1430,12 @@ function renderRemoteSupportConfig(payload) {
   if (remoteSupportTokenTtlMinutes) {
     setFieldValueIfNotEditing(remoteSupportTokenTtlMinutes, String(config.defaultTokenTtlMinutes || 30));
   }
+  if (callHomePodTtlMinutes) {
+    setFieldValueIfNotEditing(callHomePodTtlMinutes, String(config.defaultTokenTtlMinutes || 30));
+  }
+  if (callHomeEnabled) {
+    setFieldValueIfNotEditing(callHomeEnabled, config.callHomeEnabled === true ? "true" : "false");
+  }
 
   if (remoteSupportTokenSelect && !isActivelyEditingField(remoteSupportTokenSelect)) {
     remoteSupportTokenSelect.innerHTML = "";
@@ -1458,16 +1473,33 @@ function renderRemoteSupportConfig(payload) {
   if (remoteSupportGenerateTokenBtn) {
     remoteSupportGenerateTokenBtn.disabled = !enabled;
   }
+  if (callHomeEnabled) {
+    callHomeEnabled.disabled = !enabled;
+  }
+  if (callHomePodTtlMinutes) {
+    callHomePodTtlMinutes.disabled = !enabled;
+  }
+  if (callHomeGeneratePodBtn) {
+    callHomeGeneratePodBtn.disabled = !enabled || config.callHomeEnabled !== true;
+  }
+  if (callHomeRefreshEventsBtn) {
+    callHomeRefreshEventsBtn.disabled = !enabled || config.callHomeEnabled !== true;
+  }
+  if (callHomeClearEventsBtn) {
+    callHomeClearEventsBtn.disabled = !enabled || config.callHomeEnabled !== true;
+  }
   if (remoteSupportCopyOutputBtn) {
     remoteSupportCopyOutputBtn.disabled = !latestRemoteSupportOutputText;
   }
   if (remoteSupportStepHint) {
     if (!enabled) {
       remoteSupportStepHint.textContent = "Step 1: Enable Remote Support API and click Save Remote API Config.";
+    } else if (config.callHomeEnabled !== true) {
+      remoteSupportStepHint.textContent = "Step 2: Enable Call-Home API and save config to allow diagnostic pod registration.";
     } else if (!latestRemoteSupportOutputText) {
-      remoteSupportStepHint.textContent = "Step 2: Generate a token. It is only displayed once.";
+      remoteSupportStepHint.textContent = "Step 3: Generate a token. It is only displayed once.";
     } else {
-      remoteSupportStepHint.textContent = "Step 3: Copy token + curl examples and share securely with your remote troubleshooter.";
+      remoteSupportStepHint.textContent = "Step 4: Copy token + call-home bundle and share securely with your remote troubleshooter.";
     }
   }
 }
@@ -1480,6 +1512,43 @@ async function refreshRemoteSupportConfig(showMessage = false) {
   renderRemoteSupportConfig(payload);
   if (showMessage) {
     setRemoteSupportMessage("Remote support API settings loaded.");
+  }
+}
+
+function renderCallHomeEvents(payload = {}) {
+  latestCallHomeEvents = Array.isArray(payload.events) ? payload.events : [];
+  if (!callHomeEventsOutput) {
+    return;
+  }
+  if (latestCallHomeEvents.length === 0) {
+    callHomeEventsOutput.textContent = "No call-home events captured yet.";
+    return;
+  }
+  const lines = [];
+  for (const entry of latestCallHomeEvents) {
+    lines.push(
+      `[${String(entry.createdAt || "unknown")}] ${String(entry.type || "event")} satellite=${String(entry.satelliteId || "-")} status=${String(entry.status || "-")}`,
+    );
+    if (entry.message) {
+      lines.push(`  message: ${String(entry.message)}`);
+    }
+    if (entry.payload && typeof entry.payload === "object") {
+      const payloadJson = JSON.stringify(entry.payload, null, 2)
+        .split("\n")
+        .map((line) => `  ${line}`)
+        .join("\n");
+      lines.push(payloadJson);
+    }
+    lines.push("");
+  }
+  callHomeEventsOutput.textContent = lines.join("\n").trim();
+}
+
+async function refreshCallHomeEvents(showMessage = false) {
+  const payload = await api("GET", "/call-home/events?limit=100");
+  renderCallHomeEvents(payload);
+  if (showMessage) {
+    setRemoteSupportMessage(`Loaded ${latestCallHomeEvents.length} call-home event(s).`);
   }
 }
 
@@ -2681,12 +2750,14 @@ async function refreshTlsPanel(showMessage = true) {
 
 async function refreshAll() {
   try {
-    const [configResult, monitorResult, controlPlaneResult, managerSettingsResult, remoteSupportConfigResult] = await Promise.all([
+    const [configResult, monitorResult, controlPlaneResult, managerSettingsResult, remoteSupportConfigResult, callHomeEventsResult] =
+      await Promise.all([
       api("GET", "/config"),
       api("GET", "/monitor"),
       api("GET", "/control-plane-status"),
       api("GET", "/manager-settings"),
       api("GET", "/remote-support/config"),
+      api("GET", "/call-home/events?limit=100"),
     ]);
     fillForm(configResult.config);
     updateStatusCards(monitorResult);
@@ -2694,6 +2765,7 @@ async function refreshAll() {
     latestManagerSettings = managerSettingsResult.settings || null;
     fillLayoutSettings(managerSettingsResult.settings || {});
     renderRemoteSupportConfig(remoteSupportConfigResult);
+    renderCallHomeEvents(callHomeEventsResult);
     await refreshFailures(false);
     await runPluginRefreshHandlers();
     scheduleControlsDockPositionUpdate();
@@ -3275,6 +3347,7 @@ if (remoteSupportTokenSelect) {
 bindClick("remoteSupportRefreshBtn", async () => {
   try {
     await refreshRemoteSupportConfig(true);
+    await refreshCallHomeEvents(false);
   } catch (error) {
     setRemoteSupportMessage(error.message || String(error), true);
   }
@@ -3283,9 +3356,11 @@ bindClick("remoteSupportRefreshBtn", async () => {
 bindClick("remoteSupportSaveConfigBtn", async () => {
   try {
     const enabled = String(remoteSupportEnabled?.value || "false") === "true";
+    const callHomeEnabledValue = String(callHomeEnabled?.value || "false") === "true";
     const defaultTokenTtlMinutes = Number.parseInt(String(remoteSupportDefaultTtlMinutes?.value || "30"), 10);
     const payload = await api("POST", "/remote-support/config", {
       enabled,
+      callHomeEnabled: callHomeEnabledValue,
       defaultTokenTtlMinutes,
     });
     renderRemoteSupportConfig(payload);
@@ -3425,6 +3500,107 @@ bindClick("remoteSupportRotateBtn", async () => {
     }
     renderRemoteSupportConfig(payload);
     setRemoteSupportMessage("Token rotated. Previous token is now revoked.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("callHomeRefreshEventsBtn", async () => {
+  try {
+    await refreshCallHomeEvents(true);
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("callHomeClearEventsBtn", async () => {
+  try {
+    const payload = await api("POST", "/call-home/events/clear", {});
+    renderCallHomeEvents(payload);
+    setRemoteSupportMessage("Call-home events cleared.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("callHomeGeneratePodBtn", async () => {
+  try {
+    if (latestRemoteSupportConfig?.enabled !== true || latestRemoteSupportConfig?.callHomeEnabled !== true) {
+      throw new Error("Enable both Remote Support API and Call-Home API before generating a diagnostic pod.");
+    }
+    const label = String(remoteSupportTokenLabel?.value || "").trim() || "Diagnostic Pod Token";
+    const ttlMinutes = Number.parseInt(String(callHomePodTtlMinutes?.value || remoteSupportTokenTtlMinutes?.value || "30"), 10);
+    const payload = await api("POST", "/call-home/pods/generate", {
+      label,
+      ttlMinutes,
+    });
+    renderRemoteSupportConfig(payload);
+    const pod = payload?.pod || {};
+    const lines = [
+      `Generated: ${String(pod.generatedAt || "")}`,
+      `Satellite ID: ${String(pod.satelliteId || "")}`,
+      `Token (displayed once): ${String(pod.token || "")}`,
+      "",
+      "Quick launch script:",
+      String(pod.launchScript || ""),
+      "",
+      "docker-compose.yml:",
+      String(pod.composeYaml || ""),
+      "",
+      "Entrypoint script:",
+      String(pod.entrypointScript || ""),
+      "",
+      "Call-home curl examples:",
+      ...(Array.isArray(pod.curlExamples) ? pod.curlExamples : []),
+    ];
+    latestCallHomePodOutputText = lines.join("\n");
+    if (callHomePodOutput) {
+      callHomePodOutput.textContent = latestCallHomePodOutputText;
+    }
+    setRemoteSupportMessage("Diagnostic pod bundle generated with one-time token.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("callHomeAiAnalyzeBtn", async () => {
+  try {
+    const diagnosticsPayload = latestDiagnostics || (await api("GET", "/diagnostics"));
+    latestDiagnostics = diagnosticsPayload;
+    const troubleshootPayload = latestTroubleshootReport ? { report: latestTroubleshootReport } : await api("GET", "/troubleshoot");
+    latestTroubleshootReport = troubleshootPayload.report || latestTroubleshootReport;
+    if (!latestCallHomeEvents.length) {
+      await refreshCallHomeEvents(false);
+    }
+    const callHomeContext = {
+      events: latestCallHomeEvents,
+      reportCount: latestCallHomeEvents.length,
+    };
+    const errorText = [
+      "Analyze remote call-home connectivity for Blastdoor.",
+      `Events captured: ${latestCallHomeEvents.length}`,
+      JSON.stringify(callHomeContext, null, 2),
+    ].join("\n\n");
+    const payload = await api("POST", "/assistant/workflow/troubleshoot-recommendation", {
+      errorText,
+      diagnosticsReport: diagnosticsPayload.report || {},
+      troubleshootReport: troubleshootPayload.report || {},
+      context: {
+        callHomeEvents: latestCallHomeEvents,
+      },
+    });
+    const result = payload?.result || payload || {};
+    const lines = [
+      "AI Call-Home Analysis",
+      "",
+      typeof result.assistantNarrative === "string" ? result.assistantNarrative : "",
+      "",
+      JSON.stringify(result, null, 2),
+    ].filter(Boolean);
+    if (callHomePodOutput) {
+      callHomePodOutput.textContent = lines.join("\n");
+    }
+    setRemoteSupportMessage("AI analysis generated from call-home events.");
   } catch (error) {
     setRemoteSupportMessage(error.message || String(error), true);
   }

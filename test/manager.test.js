@@ -3675,6 +3675,96 @@ test("manager remote support API supports token-gated diagnostics and intelligen
       assert.equal(openapi.status, 200);
       assert.equal(openapi.body.openapi, "3.0.3");
       assert.equal(Boolean(openapi.body.paths["/diagnostics"]), true);
+      assert.equal(Boolean(openapi.body.paths["/call-home/healthz"]), true);
+
+      const callHomeDisabled = await request(port, {
+        pathname: "/api/remote-support/v1/call-home/healthz",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+      });
+      assert.equal(callHomeDisabled.status, 404);
+
+      const enableCallHome = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/config",
+        body: {
+          enabled: true,
+          callHomeEnabled: true,
+          defaultTokenTtlMinutes: 30,
+        },
+      });
+      assert.equal(enableCallHome.status, 200);
+      assert.equal(enableCallHome.body.config.callHomeEnabled, true);
+
+      const callHomeHealth = await request(port, {
+        pathname: "/api/remote-support/v1/call-home/healthz",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+      });
+      assert.equal(callHomeHealth.status, 200);
+      assert.equal(callHomeHealth.body.ok, true);
+
+      const callHomeRegister = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/v1/call-home/register",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+        body: {
+          satelliteId: "diag-sat-01",
+          status: "starting",
+          message: "booting",
+          payload: {
+            hostname: "diag-sat-01",
+          },
+        },
+      });
+      assert.equal(callHomeRegister.status, 200);
+      assert.equal(callHomeRegister.body.ok, true);
+
+      const callHomeReport = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/v1/call-home/report",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+        body: {
+          satelliteId: "diag-sat-01",
+          status: "ok",
+          message: "connectivity passed",
+          payload: {
+            pathProbe: "ok",
+          },
+        },
+      });
+      assert.equal(callHomeReport.status, 200);
+      assert.equal(callHomeReport.body.ok, true);
+
+      const callHomeEvents = await request(port, {
+        pathname: "/api/call-home/events?limit=20",
+      });
+      assert.equal(callHomeEvents.status, 200);
+      assert.equal(callHomeEvents.body.ok, true);
+      assert.equal(Array.isArray(callHomeEvents.body.events), true);
+      assert.equal(callHomeEvents.body.events.length >= 2, true);
+
+      const callHomePod = await request(port, {
+        method: "POST",
+        pathname: "/api/call-home/pods/generate",
+        body: {
+          label: "Pod token",
+          ttlMinutes: 45,
+        },
+      });
+      assert.equal(callHomePod.status, 200);
+      assert.equal(callHomePod.body.ok, true);
+      assert.equal(typeof callHomePod.body.pod?.launchScript, "string");
+      assert.equal(typeof callHomePod.body.pod?.composeYaml, "string");
+      assert.equal(typeof callHomePod.body.pod?.entrypointScript, "string");
+      assert.equal(Array.isArray(callHomePod.body.pod?.curlExamples), true);
+      assert.equal(callHomePod.body.pod.curlExamples.length >= 2, true);
 
       const runSnapshot = await request(port, {
         method: "POST",
