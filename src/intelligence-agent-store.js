@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { hydrateAgentExecutionGraph } from "./intelligence-agent-scaffold.js";
 
 function normalizeString(value, fallback = "") {
   if (value === undefined || value === null) {
@@ -31,14 +32,18 @@ function normalizeAgent(input = {}) {
     throw new Error("agent.name is required.");
   }
   return {
-    id,
-    name,
-    intent: normalizeString(source.intent, ""),
-    scaffoldIds: normalizeArray(source.scaffoldIds).map((entry) => normalizeString(entry, "")).filter(Boolean),
-    scaffolds: normalizeArray(source.scaffolds),
-    approvals: normalizeObject(source.approvals),
-    workflow: normalizeObject(source.workflow),
-    meta: normalizeObject(source.meta),
+    ...hydrateAgentExecutionGraph({
+      id,
+      name,
+      intent: normalizeString(source.intent, ""),
+      scaffoldIds: normalizeArray(source.scaffoldIds).map((entry) => normalizeString(entry, "")).filter(Boolean),
+      scaffolds: normalizeArray(source.scaffolds),
+      approvals: normalizeObject(source.approvals),
+      workflow: normalizeObject(source.workflow),
+      meta: normalizeObject(source.meta),
+      createdAt: normalizeString(source.createdAt, now),
+      updatedAt: now,
+    }),
     createdAt: normalizeString(source.createdAt, now),
     updatedAt: now,
   };

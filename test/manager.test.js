@@ -2814,6 +2814,21 @@ test("manager intelligence agent scaffold endpoints support catalog, generate, s
       assert.equal(Array.isArray(generated.body.draft.scaffoldIds), true);
       assert.equal(generated.body.draft.scaffoldIds.includes("request-human-approval"), true);
       assert.equal(generated.body.draft.approvals.required, true);
+      assert.equal(Array.isArray(generated.body.draft.executionGraph?.nodes), true);
+      assert.equal(Array.isArray(generated.body.draft.executionGraph?.edges), true);
+      assert.equal(Array.isArray(generated.body.draft.executionGraph?.approvalGates), true);
+
+      const validated = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/agents/validate",
+        body: {
+          agent: generated.body.draft,
+        },
+      });
+      assert.equal(validated.status, 200);
+      assert.equal(validated.body.ok, true);
+      assert.equal(validated.body.validation?.ok, true);
+      assert.equal(Array.isArray(validated.body.agent?.executionGraph?.nodes), true);
 
       const saved = await request(port, {
         method: "POST",
@@ -2825,6 +2840,8 @@ test("manager intelligence agent scaffold endpoints support catalog, generate, s
       assert.equal(saved.status, 200);
       assert.equal(saved.body.ok, true);
       assert.equal(saved.body.agent.id, generated.body.draft.id);
+      assert.equal(Array.isArray(saved.body.agent.executionGraph?.nodes), true);
+      assert.equal(saved.body.agent.executionGraphValidation?.ok, true);
 
       const listed = await request(port, {
         pathname: "/api/assistant/agents",

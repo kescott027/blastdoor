@@ -11,7 +11,9 @@ import { createIntelligencePlanStore } from "../intelligence-plan-store.js";
 import {
   buildAgentScaffoldPrompt,
   composeAgentDraft,
+  hydrateAgentExecutionGraph,
   listAgentScaffolds,
+  validateExecutionGraph,
 } from "../intelligence-agent-scaffold.js";
 import {
   deleteIntelligenceAgent,
@@ -214,12 +216,19 @@ function chooseWorkflowById(workflowStore, workflowId) {
 
 function summarizeAgentForList(agent) {
   const source = agent && typeof agent === "object" ? agent : {};
+  const graph = source.executionGraph && typeof source.executionGraph === "object" ? source.executionGraph : {};
+  const graphNodes = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
+  const graphEdges = Array.isArray(graph.edges) ? graph.edges.length : 0;
+  const graphGates = Array.isArray(graph.approvalGates) ? graph.approvalGates.length : 0;
   return {
     id: String(source.id || "").trim(),
     name: String(source.name || "").trim(),
     intent: String(source.intent || "").trim(),
     scaffoldCount: Array.isArray(source.scaffoldIds) ? source.scaffoldIds.length : 0,
     approvalRequired: Boolean(source.approvals?.required),
+    graphNodes,
+    graphEdges,
+    graphGates,
     updatedAt: String(source.updatedAt || "").trim(),
   };
 }
@@ -941,6 +950,23 @@ export function createIntelligencePlugin() {
               draft,
               scaffolds: scaffoldPrompt.selectedScaffolds,
               result: result || {},
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/agents/validate", async (req, res) => {
+          try {
+            const draft = req.body?.agent && typeof req.body.agent === "object" ? req.body.agent : req.body || {};
+            const hydrated = hydrateAgentExecutionGraph(draft);
+            const validation = validateExecutionGraph(hydrated.executionGraph);
+            res.json({
+              ok: true,
+              agent: hydrated,
+              validation,
             });
           } catch (error) {
             res.status(400).json({

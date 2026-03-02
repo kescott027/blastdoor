@@ -234,6 +234,7 @@ function createState(root) {
     agentIntent: root.querySelector("[data-intel-agent-intent]"),
     agentScaffoldList: root.querySelector("[data-intel-agent-scaffolds]"),
     agentGenerate: root.querySelector("[data-intel-agent-generate]"),
+    agentValidate: root.querySelector("[data-intel-agent-validate]"),
     agentSave: root.querySelector("[data-intel-agent-save]"),
     agentDelete: root.querySelector("[data-intel-agent-delete]"),
     agentOutput: root.querySelector("[data-intel-agent-output]"),
@@ -309,6 +310,7 @@ function validateState(state) {
     "agentIntent",
     "agentScaffoldList",
     "agentGenerate",
+    "agentValidate",
     "agentSave",
     "agentDelete",
     "agentOutput",
@@ -492,6 +494,7 @@ function createPanelMarkup() {
       </label>
       <div class="button-row">
         <button type="button" data-intel-agent-generate>Generate Draft From Scaffolds</button>
+        <button type="button" class="secondary" data-intel-agent-validate>Validate Graph</button>
         <button type="button" data-intel-agent-save>Save Draft</button>
         <button type="button" class="secondary" data-intel-agent-delete>Delete</button>
       </div>
@@ -874,6 +877,16 @@ export async function registerManagerPlugin(context) {
       .filter(Boolean);
   }
 
+  function buildAgentDraftFromForm() {
+    const sourceDraft = runtime.currentAgentDraft && typeof runtime.currentAgentDraft === "object" ? runtime.currentAgentDraft : {};
+    return {
+      ...sourceDraft,
+      name: asString(state.agentName.value, "").trim() || asString(sourceDraft.name, "").trim() || "Scaffold Agent",
+      intent: asString(state.agentIntent.value, "").trim() || asString(sourceDraft.intent, "").trim(),
+      scaffoldIds: getSelectedAgentScaffoldIds(),
+    };
+  }
+
   function applyAgentDraftToForm(agent = null) {
     const current = agent && typeof agent === "object" ? agent : null;
     if (!current) {
@@ -942,13 +955,7 @@ export async function registerManagerPlugin(context) {
   }
 
   async function saveAgentDraft() {
-    const sourceDraft = runtime.currentAgentDraft && typeof runtime.currentAgentDraft === "object" ? runtime.currentAgentDraft : {};
-    const draft = {
-      ...sourceDraft,
-      name: asString(state.agentName.value, "").trim() || asString(sourceDraft.name, "").trim() || "Scaffold Agent",
-      intent: asString(state.agentIntent.value, "").trim() || asString(sourceDraft.intent, "").trim(),
-      scaffoldIds: getSelectedAgentScaffoldIds(),
-    };
+    const draft = buildAgentDraftFromForm();
     if (!draft.intent) {
       throw new Error("Agent intent is required before saving.");
     }
@@ -961,6 +968,26 @@ export async function registerManagerPlugin(context) {
     state.agentOutput.textContent = JSON.stringify(payload || {}, null, 2);
     await loadAgents(false, payload?.agent?.id || draft.id);
     panel.setStatus(`Saved scaffold agent '${payload?.agent?.name || draft.name}'.`);
+  }
+
+  async function validateAgentDraft() {
+    const draft = buildAgentDraftFromForm();
+    if (!draft.intent) {
+      throw new Error("Agent intent is required before validation.");
+    }
+    const payload = await context.apiPost("/assistant/agents/validate", {
+      agent: draft,
+    });
+    state.agentOutput.textContent = JSON.stringify(payload || {}, null, 2);
+    runtime.currentAgentDraft = payload?.agent || draft;
+    if (runtime.currentAgentDraft) {
+      applyAgentDraftToForm(runtime.currentAgentDraft);
+    }
+    if (payload?.validation?.ok) {
+      panel.setStatus("Execution graph is valid.");
+    } else {
+      panel.setStatus("Execution graph has issues. Review output.", true);
+    }
   }
 
   async function deleteAgentDraft() {
@@ -1183,6 +1210,14 @@ export async function registerManagerPlugin(context) {
   state.agentGenerate.addEventListener("click", async () => {
     try {
       await generateAgentDraft();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.agentValidate.addEventListener("click", async () => {
+    try {
+      await validateAgentDraft();
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
