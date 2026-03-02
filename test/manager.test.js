@@ -3614,6 +3614,16 @@ test("manager remote support API supports token-gated diagnostics and intelligen
     const port = server.address().port;
 
     try {
+      const createWhileDisabled = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/tokens/create",
+        body: {
+          label: "Should fail",
+        },
+      });
+      assert.equal(createWhileDisabled.status, 400);
+      assert.match(String(createWhileDisabled.body.error || ""), /disabled/i);
+
       const configSaved = await request(port, {
         method: "POST",
         pathname: "/api/remote-support/config",

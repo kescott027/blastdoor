@@ -14,10 +14,13 @@ const remoteSupportDefaultTtlMinutes = document.getElementById("remoteSupportDef
 const remoteSupportRefreshBtn = document.getElementById("remoteSupportRefreshBtn");
 const remoteSupportTokenLabel = document.getElementById("remoteSupportTokenLabel");
 const remoteSupportTokenTtlMinutes = document.getElementById("remoteSupportTokenTtlMinutes");
+const remoteSupportGenerateTokenBtn = document.getElementById("remoteSupportGenerateTokenBtn");
+const remoteSupportCopyOutputBtn = document.getElementById("remoteSupportCopyOutputBtn");
 const remoteSupportTokenSelect = document.getElementById("remoteSupportTokenSelect");
 const remoteSupportRevokeBtn = document.getElementById("remoteSupportRevokeBtn");
 const remoteSupportStatusMessage = document.getElementById("remoteSupportStatusMessage");
 const remoteSupportOutput = document.getElementById("remoteSupportOutput");
+const remoteSupportStepHint = document.getElementById("remoteSupportStepHint");
 const blastDoorsToggle = document.getElementById("blastDoorsToggle");
 const blastDoorsState = document.getElementById("blastDoorsState");
 const blastDoorsClosedField = document.getElementById("blastDoorsClosedField");
@@ -903,20 +906,20 @@ function fillLayoutSettings(settings = {}) {
   const layout = settings.layout || {};
   const access = settings.access || {};
   if (layoutDarkModePercent) {
-    layoutDarkModePercent.value = String(clampPercent(layout.darkModePercent, 100));
+    setFieldValueIfNotEditing(layoutDarkModePercent, String(clampPercent(layout.darkModePercent, 100)));
   }
   if (layoutLightModePercent) {
-    layoutLightModePercent.value = String(clampPercent(layout.lightModePercent, 0));
+    setFieldValueIfNotEditing(layoutLightModePercent, String(clampPercent(layout.lightModePercent, 0)));
   }
   if (layoutRequirePassword) {
-    layoutRequirePassword.checked = Boolean(access.requirePassword);
+    setFieldCheckedIfNotEditing(layoutRequirePassword, Boolean(access.requirePassword));
   }
   if (layoutSessionTtlHours) {
     const ttl = Number.parseInt(String(access.sessionTtlHours || "12"), 10);
-    layoutSessionTtlHours.value = String(Number.isFinite(ttl) ? Math.max(1, Math.min(168, ttl)) : 12);
+    setFieldValueIfNotEditing(layoutSessionTtlHours, String(Number.isFinite(ttl) ? Math.max(1, Math.min(168, ttl)) : 12));
   }
   if (layoutManagerPassword) {
-    layoutManagerPassword.value = "";
+    setFieldValueIfNotEditing(layoutManagerPassword, "");
   }
   syncLayoutSliderValues();
   applyConsoleLayout({
@@ -1060,16 +1063,19 @@ function fillForm(config) {
   const fields = form.querySelectorAll("input[name]");
   for (const field of fields) {
     if (field.name === "AUTH_PASSWORD") {
-      field.value = "";
+      setFieldValueIfNotEditing(field, "");
       continue;
     }
-
-    field.value = config[field.name] || "";
+    if (field.type === "checkbox") {
+      setFieldCheckedIfNotEditing(field, parseBooleanish(config[field.name]));
+      continue;
+    }
+    setFieldValueIfNotEditing(field, config[field.name] || "");
   }
 
   const blastDoorsClosed = parseBooleanish(config.BLAST_DOORS_CLOSED);
-  blastDoorsToggle.checked = blastDoorsClosed;
-  blastDoorsClosedField.value = toBooleanString(blastDoorsClosed);
+  setFieldCheckedIfNotEditing(blastDoorsToggle, blastDoorsClosed);
+  setFieldValueIfNotEditing(blastDoorsClosedField, toBooleanString(blastDoorsClosed));
   blastDoorsState.textContent = blastDoorsClosed ? "Locked" : "Unlocked";
 }
 
@@ -1361,6 +1367,30 @@ async function copyToClipboard(text) {
   document.body.removeChild(fallback);
 }
 
+function isActivelyEditingField(field) {
+  if (!field) {
+    return false;
+  }
+  return document.activeElement === field && !field.disabled && !field.readOnly;
+}
+
+function setFieldValueIfNotEditing(field, value) {
+  if (!field || isActivelyEditingField(field)) {
+    return;
+  }
+  const next = value === undefined || value === null ? "" : String(value);
+  if (field.value !== next) {
+    field.value = next;
+  }
+}
+
+function setFieldCheckedIfNotEditing(field, checked) {
+  if (!field || isActivelyEditingField(field)) {
+    return;
+  }
+  field.checked = Boolean(checked);
+}
+
 function renderDiagnostics(payload) {
   latestDiagnostics = payload;
   diagSummary.textContent = payload.summary || "";
@@ -1380,17 +1410,18 @@ function formatRemoteSupportTokenOption(entry) {
 function renderRemoteSupportConfig(payload) {
   latestRemoteSupportConfig = payload?.config || null;
   const config = latestRemoteSupportConfig || {};
+  const enabled = config.enabled === true;
   if (remoteSupportEnabled) {
-    remoteSupportEnabled.value = config.enabled ? "true" : "false";
+    setFieldValueIfNotEditing(remoteSupportEnabled, enabled ? "true" : "false");
   }
   if (remoteSupportDefaultTtlMinutes) {
-    remoteSupportDefaultTtlMinutes.value = String(config.defaultTokenTtlMinutes || 30);
+    setFieldValueIfNotEditing(remoteSupportDefaultTtlMinutes, String(config.defaultTokenTtlMinutes || 30));
   }
   if (remoteSupportTokenTtlMinutes) {
-    remoteSupportTokenTtlMinutes.value = String(config.defaultTokenTtlMinutes || 30);
+    setFieldValueIfNotEditing(remoteSupportTokenTtlMinutes, String(config.defaultTokenTtlMinutes || 30));
   }
 
-  if (remoteSupportTokenSelect) {
+  if (remoteSupportTokenSelect && !isActivelyEditingField(remoteSupportTokenSelect)) {
     remoteSupportTokenSelect.innerHTML = "";
     const tokens = Array.isArray(config.tokens) ? config.tokens : [];
     if (tokens.length === 0) {
@@ -1410,7 +1441,29 @@ function renderRemoteSupportConfig(payload) {
 
   if (remoteSupportRevokeBtn) {
     const selected = String(remoteSupportTokenSelect?.value || "");
-    remoteSupportRevokeBtn.disabled = !selected;
+    remoteSupportRevokeBtn.disabled = !enabled || !selected;
+  }
+
+  if (remoteSupportTokenLabel) {
+    remoteSupportTokenLabel.disabled = !enabled;
+  }
+  if (remoteSupportTokenTtlMinutes) {
+    remoteSupportTokenTtlMinutes.disabled = !enabled;
+  }
+  if (remoteSupportGenerateTokenBtn) {
+    remoteSupportGenerateTokenBtn.disabled = !enabled;
+  }
+  if (remoteSupportCopyOutputBtn) {
+    remoteSupportCopyOutputBtn.disabled = !latestRemoteSupportOutputText;
+  }
+  if (remoteSupportStepHint) {
+    if (!enabled) {
+      remoteSupportStepHint.textContent = "Step 1: Enable Remote Support API and click Save Remote API Config.";
+    } else if (!latestRemoteSupportOutputText) {
+      remoteSupportStepHint.textContent = "Step 2: Generate a token. It is only displayed once.";
+    } else {
+      remoteSupportStepHint.textContent = "Step 3: Copy token + curl examples and share securely with your remote troubleshooter.";
+    }
   }
 }
 
@@ -2540,31 +2593,31 @@ function buildTlsPayload() {
 
 function fillTlsForm(payload = {}) {
   if (tlsEnabled) {
-    tlsEnabled.checked = Boolean(payload.tlsEnabled);
+    setFieldCheckedIfNotEditing(tlsEnabled, Boolean(payload.tlsEnabled));
   }
   if (tlsDomain) {
-    tlsDomain.value = String(payload.tlsDomain || "");
+    setFieldValueIfNotEditing(tlsDomain, String(payload.tlsDomain || ""));
   }
   if (tlsEmail) {
-    tlsEmail.value = String(payload.tlsEmail || "");
+    setFieldValueIfNotEditing(tlsEmail, String(payload.tlsEmail || ""));
   }
   if (tlsChallengeMethod) {
-    tlsChallengeMethod.value = String(payload.tlsChallengeMethod || "webroot");
+    setFieldValueIfNotEditing(tlsChallengeMethod, String(payload.tlsChallengeMethod || "webroot"));
   }
   if (tlsWebrootPath) {
-    tlsWebrootPath.value = String(payload.tlsWebrootPath || "/var/www/html");
+    setFieldValueIfNotEditing(tlsWebrootPath, String(payload.tlsWebrootPath || "/var/www/html"));
   }
   if (tlsCertFile) {
-    tlsCertFile.value = String(payload.tlsCertFile || "");
+    setFieldValueIfNotEditing(tlsCertFile, String(payload.tlsCertFile || ""));
   }
   if (tlsKeyFile) {
-    tlsKeyFile.value = String(payload.tlsKeyFile || "");
+    setFieldValueIfNotEditing(tlsKeyFile, String(payload.tlsKeyFile || ""));
   }
   if (tlsCaFile) {
-    tlsCaFile.value = String(payload.tlsCaFile || "");
+    setFieldValueIfNotEditing(tlsCaFile, String(payload.tlsCaFile || ""));
   }
   if (tlsPassphrase) {
-    tlsPassphrase.value = "";
+    setFieldValueIfNotEditing(tlsPassphrase, "");
   }
 }
 
@@ -3227,7 +3280,11 @@ bindClick("remoteSupportSaveConfigBtn", async () => {
       defaultTokenTtlMinutes,
     });
     renderRemoteSupportConfig(payload);
-    setRemoteSupportMessage("Remote support API configuration saved.");
+    setRemoteSupportMessage(
+      enabled
+        ? "Remote support API enabled. Generate a token next."
+        : "Remote support API disabled.",
+    );
   } catch (error) {
     setRemoteSupportMessage(error.message || String(error), true);
   }
@@ -3235,6 +3292,9 @@ bindClick("remoteSupportSaveConfigBtn", async () => {
 
 bindClick("remoteSupportGenerateTokenBtn", async () => {
   try {
+    if (latestRemoteSupportConfig?.enabled !== true) {
+      throw new Error("Enable Remote Support API and save config before generating a token.");
+    }
     const label = String(remoteSupportTokenLabel?.value || "").trim();
     const ttlMinutes = Number.parseInt(String(remoteSupportTokenTtlMinutes?.value || "30"), 10);
     const payload = await api("POST", "/remote-support/tokens/create", {
@@ -3267,7 +3327,7 @@ bindClick("remoteSupportGenerateTokenBtn", async () => {
 
 bindClick("remoteSupportCopyOutputBtn", async () => {
   try {
-    await copyToClipboard(latestRemoteSupportOutputText || remoteSupportOutput?.textContent || "");
+    await copyToClipboard(latestRemoteSupportOutputText || "");
     setRemoteSupportMessage("Token + commands copied.");
   } catch (error) {
     setRemoteSupportMessage(error.message || String(error), true);

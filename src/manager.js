@@ -5488,6 +5488,9 @@ export function createManagerApp(options = {}) {
     try {
       const current = await readConsoleSettings();
       const currentRemoteSupport = current.remoteSupport || {};
+      if (currentRemoteSupport.enabled !== true) {
+        throw new Error("Remote support API is disabled. Enable and save config before creating tokens.");
+      }
       const ttlMinutes = clampRemoteSupportTokenTtlMinutes(
         req.body?.ttlMinutes,
         clampRemoteSupportTokenTtlMinutes(

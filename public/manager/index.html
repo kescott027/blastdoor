@@ -259,6 +259,12 @@
           Enable token-authenticated external troubleshooting access (read-only diagnostics + non-destructive actions).
           Token TTL defaults to 30 minutes and can be set up to 24 hours.
         </p>
+        <h4>Quick Start</h4>
+        <ol class="panel-note">
+          <li>Set <strong>Enable Remote Support API</strong> to Enabled and click <strong>Save Remote API Config</strong>.</li>
+          <li>Enter token label + TTL, then click <strong>Generate Token</strong> (token is shown once).</li>
+          <li>Copy the generated token + `curl` examples and use them from your remote machine or AI tooling.</li>
+        </ol>
         <div class="grid">
           <label>Enable Remote Support API
             <select id="remoteSupportEnabled">
@@ -286,6 +292,7 @@
           <button id="remoteSupportGenerateTokenBtn" type="button">Generate Token</button>
           <button id="remoteSupportCopyOutputBtn" type="button">Copy Token + CURL</button>
         </div>
+        <p class="panel-note" id="remoteSupportStepHint"></p>
         <label>Issued Tokens
           <select id="remoteSupportTokenSelect"></select>
         </label>
