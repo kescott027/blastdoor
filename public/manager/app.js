@@ -3045,7 +3045,7 @@ function setMainPanelDefaultVisibility() {
 }
 
 function toggleMainPanelSections(sectionIds, options = {}) {
-  const { scroll = true } = options;
+  const { scroll = false } = options;
   const ids = Array.isArray(sectionIds) ? sectionIds : [sectionIds];
   const sections = ids
     .map((id) => managedMainSections.find((section) => section.id === id) || null)
