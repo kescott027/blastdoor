@@ -1950,6 +1950,34 @@ function createTroubleshootChecks({ config, health, foundryHealth, environment }
     });
   }
 
+  const assistantEnabled = parseBooleanLike(config.ASSISTANT_ENABLED, false);
+  const assistantProvider = normalizeString(config.ASSISTANT_PROVIDER, "ollama").toLowerCase();
+  const assistantOllamaUrl = normalizeString(config.ASSISTANT_OLLAMA_URL, "");
+  if (assistantEnabled && assistantProvider === "ollama" && assistantOllamaUrl) {
+    try {
+      const parsedAssistantUrl = new URL(assistantOllamaUrl);
+      if (isLoopbackHost(parsedAssistantUrl.hostname) && (environment.isWsl || environment.isContainer)) {
+        checks.push({
+          id: "assistant.ollama-loopback-runtime",
+          title: "Ollama loopback URL in isolated runtime",
+          status: "warn",
+          detail:
+            "ASSISTANT_OLLAMA_URL uses localhost/loopback while Blastdoor runs in WSL/container, which usually cannot reach host Ollama.",
+          recommendation:
+            "Set ASSISTANT_OLLAMA_URL to a host-reachable address (for WSL use the Windows host gateway IP; for Docker often host.docker.internal), then restart Blastdoor.",
+        });
+      }
+    } catch {
+      checks.push({
+        id: "assistant.ollama-url-invalid",
+        title: "Ollama URL format",
+        status: "error",
+        detail: `ASSISTANT_OLLAMA_URL is invalid (${assistantOllamaUrl}).`,
+        recommendation: "Set ASSISTANT_OLLAMA_URL to a valid http(s) URL such as http://127.0.0.1:11434.",
+      });
+    }
+  }
+
   const cookieSecure = parseBooleanLike(config.COOKIE_SECURE, false);
   checks.push({
     id: "auth.cookie-secure",
@@ -2236,6 +2264,51 @@ function buildWslFoundryTarget(config, gatewayIp) {
   return `${protocol}//${gatewayIp}:${port}${safePathname}`;
 }
 
+function buildWslOllamaUrl(config, gatewayIp) {
+  const rawUrl = normalizeString(config.ASSISTANT_OLLAMA_URL, "http://127.0.0.1:11434");
+  let protocol = "http:";
+  let port = "11434";
+  let pathname = "";
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      protocol = parsed.protocol;
+    }
+    port = normalizeString(parsed.port, "") || port;
+    pathname = normalizeString(parsed.pathname, "");
+  } catch {
+    // Keep defaults.
+  }
+
+  const safePathname = pathname && pathname !== "/" ? pathname : "";
+  return `${protocol}//${gatewayIp}:${port}${safePathname}`;
+}
+
+async function detectWslDefaultGatewayIp({ workspaceDir, commandRunner }) {
+  const routeResult = await commandRunner({
+    command: "ip",
+    args: ["route", "show", "default"],
+    cwd: workspaceDir,
+    timeoutMs: 4000,
+  });
+  if (!routeResult.ok) {
+    throw new Error(
+      `Unable to detect WSL default gateway via 'ip route show default' (${routeResult.error || "command failed"}).`,
+    );
+  }
+
+  const gatewayIp = parseDefaultGatewayIpFromRouteOutput(routeResult.stdout);
+  if (!gatewayIp) {
+    throw new Error("Unable to parse a default gateway IPv4 address from 'ip route show default' output.");
+  }
+
+  return {
+    gatewayIp,
+    commandResult: routeResult,
+  };
+}
+
 async function runTroubleshootAction({ actionId, config, environment, workspaceDir, commandRunner, envPath }) {
   if (actionId === "snapshot.network") {
     const outputs = await runCommandBatch(
@@ -2314,22 +2387,10 @@ async function runTroubleshootAction({ actionId, config, environment, workspaceD
       throw new Error("envPath is required for fix.wsl-foundry-target.");
     }
 
-    const routeResult = await commandRunner({
-      command: "ip",
-      args: ["route", "show", "default"],
-      cwd: workspaceDir,
-      timeoutMs: 4000,
+    const { gatewayIp, commandResult: routeResult } = await detectWslDefaultGatewayIp({
+      workspaceDir,
+      commandRunner,
     });
-    if (!routeResult.ok) {
-      throw new Error(
-        `Unable to detect WSL default gateway via 'ip route show default' (${routeResult.error || "command failed"}).`,
-      );
-    }
-
-    const gatewayIp = parseDefaultGatewayIpFromRouteOutput(routeResult.stdout);
-    if (!gatewayIp) {
-      throw new Error("Unable to parse a default gateway IPv4 address from 'ip route show default' output.");
-    }
 
     const previousFoundryTarget = normalizeString(config.FOUNDRY_TARGET, CONFIG_DEFAULTS.FOUNDRY_TARGET);
     const newFoundryTarget = buildWslFoundryTarget(config, gatewayIp);
@@ -3897,22 +3958,10 @@ export function createManagerApp(options = {}) {
         throw new Error("FOUNDRY_TARGET autodetect is currently available only in WSL.");
       }
 
-      const routeResult = await commandRunner({
-        command: "ip",
-        args: ["route", "show", "default"],
-        cwd: workspaceDir,
-        timeoutMs: 4000,
+      const { gatewayIp } = await detectWslDefaultGatewayIp({
+        workspaceDir,
+        commandRunner,
       });
-      if (!routeResult.ok) {
-        throw new Error(
-          `Unable to detect WSL default gateway via 'ip route show default' (${routeResult.error || "command failed"}).`,
-        );
-      }
-
-      const gatewayIp = parseDefaultGatewayIpFromRouteOutput(routeResult.stdout);
-      if (!gatewayIp) {
-        throw new Error("Unable to parse a default gateway IPv4 address from 'ip route show default' output.");
-      }
 
       const foundryTarget = buildWslFoundryTarget(config, gatewayIp);
       const suggestedConfig = {
@@ -3930,6 +3979,34 @@ export function createManagerApp(options = {}) {
         gatewayIp,
         health,
         apiStatus,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/config/assistant-ollama-url-autodetect", async (_req, res) => {
+    try {
+      const config = await readEnvConfig(envPath);
+      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+      if (!environment.isWsl) {
+        throw new Error("ASSISTANT_OLLAMA_URL autodetect is currently available only in WSL.");
+      }
+
+      const { gatewayIp } = await detectWslDefaultGatewayIp({
+        workspaceDir,
+        commandRunner,
+      });
+      const assistantOllamaUrl = buildWslOllamaUrl(config, gatewayIp);
+      const health = await probeHttpHealth(`${assistantOllamaUrl.replace(/\/+$/, "")}/api/tags`, 1500);
+
+      res.json({
+        ok: true,
+        assistantOllamaUrl,
+        gatewayIp,
+        health,
       });
     } catch (error) {
       res.status(400).json({

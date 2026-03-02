@@ -30,6 +30,23 @@ function clampInteger(value, fallback, min, max) {
   return Math.min(max, Math.max(min, parsed));
 }
 
+function parseUrlHost(value) {
+  const raw = normalizeString(value, "");
+  if (!raw) {
+    return "";
+  }
+  try {
+    return normalizeString(new URL(raw).hostname, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isLoopbackHost(hostname) {
+  const host = normalizeString(hostname, "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
 function computeErrorFingerprint(errorText) {
   const normalized = normalizeString(errorText, "").toLowerCase();
   if (!normalized) {
@@ -103,6 +120,8 @@ export function inferEnvironmentConfigurationRecommendations(input = {}) {
   const currentConfig = diagnostics.config && typeof diagnostics.config === "object" ? diagnostics.config : {};
   const environment = diagnostics.environment && typeof diagnostics.environment === "object" ? diagnostics.environment : {};
   const installType = normalizeString(installationConfig.installType, normalizeString(currentConfig.INSTALL_PROFILE, "local"));
+  const foundryHost = parseUrlHost(currentConfig.FOUNDRY_TARGET);
+  const ollamaHost = parseUrlHost(currentConfig.ASSISTANT_OLLAMA_URL);
 
   const recommendations = [];
   const suggestedDefaults = {
@@ -196,6 +215,26 @@ export function inferEnvironmentConfigurationRecommendations(input = {}) {
         source: "diagnostics.environment.isWsl",
       }),
     );
+  }
+
+  if (environment.isWsl && isLoopbackHost(ollamaHost)) {
+    const suggestedOllamaUrl =
+      foundryHost && !isLoopbackHost(foundryHost)
+        ? `http://${foundryHost}:11434`
+        : "http://<windows-host-gateway-ip>:11434";
+    recommendations.push(
+      createRecommendation({
+        id: "assistant.ollama-wsl-host",
+        priority: "high",
+        title: "Use Windows host gateway for Ollama from WSL",
+        reason:
+          "ASSISTANT_OLLAMA_URL points at localhost/loopback, which typically resolves inside WSL instead of the Windows host where Ollama is running.",
+        currentValue: normalizeString(currentConfig.ASSISTANT_OLLAMA_URL, ""),
+        suggestedValue: suggestedOllamaUrl,
+        source: "diagnostics.config.ASSISTANT_OLLAMA_URL",
+      }),
+    );
+    suggestedDefaults.ASSISTANT_OLLAMA_URL = suggestedOllamaUrl;
   }
 
   if (!normalizeString(currentConfig.SESSION_SECRET, "") || normalizeString(currentConfig.SESSION_SECRET, "") === "********") {

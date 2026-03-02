@@ -3,7 +3,9 @@ import { formatUnexpectedPayload, getApiBaseCandidates, resolveApiBasePath, reso
 const statusMessage = document.getElementById("statusMessage");
 const form = document.getElementById("configForm");
 const foundryTargetInput = form?.querySelector("input[name='FOUNDRY_TARGET']") || null;
+const assistantOllamaUrlInput = form?.querySelector("input[name='ASSISTANT_OLLAMA_URL']") || null;
 const foundryTargetAutodetectBtn = document.getElementById("foundryTargetAutodetectBtn");
+const assistantOllamaAutodetectBtn = document.getElementById("assistantOllamaAutodetectBtn");
 const diagStatusMessage = document.getElementById("diagStatusMessage");
 const diagSummary = document.getElementById("diagSummary");
 const diagJson = document.getElementById("diagJson");
@@ -530,6 +532,19 @@ function setFoundryTargetAutodetectVisibility(isWsl) {
   foundryTargetAutodetectBtn.title = show ? "Detect reachable Foundry target for WSL" : "Available only in WSL";
 }
 
+function setAssistantOllamaAutodetectVisibility(isWsl) {
+  if (!assistantOllamaAutodetectBtn) {
+    return;
+  }
+  const show = Boolean(isWsl);
+  assistantOllamaAutodetectBtn.hidden = !show;
+  assistantOllamaAutodetectBtn.classList.toggle("hidden", !show);
+  assistantOllamaAutodetectBtn.disabled = !show;
+  assistantOllamaAutodetectBtn.title = show
+    ? "Detect reachable Ollama URL for WSL"
+    : "Available only in WSL";
+}
+
 function foundryApiResponseLabel(apiStatus = {}) {
   if (apiStatus.statusCode) {
     return String(apiStatus.statusCode);
@@ -974,6 +989,7 @@ function updateControlPlaneCards(payload = {}) {
     foundryApiResponseValue.textContent = foundryApiResponseLabel(foundry.apiStatus || {});
   }
   setFoundryTargetAutodetectVisibility(Boolean(environment.isWsl));
+  setAssistantOllamaAutodetectVisibility(Boolean(environment.isWsl));
 
   if (postgresRunningValue) {
     postgresRunningValue.textContent = yesNoLabel(Boolean(postgres.running));
@@ -2674,6 +2690,33 @@ bindClick("foundryTargetAutodetectBtn", async () => {
 
     setMessage(
       `Autodetected FOUNDRY_TARGET=${detectedTarget} (${checkState}). Click Save Config to persist, then restart Blastdoor.`,
+    );
+  } catch (error) {
+    setMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("assistantOllamaAutodetectBtn", async () => {
+  try {
+    const payload = await api("POST", "/config/assistant-ollama-url-autodetect", {});
+    const detectedUrl = String(payload?.assistantOllamaUrl || "").trim();
+    if (!detectedUrl) {
+      throw new Error("Autodetect did not return an ASSISTANT_OLLAMA_URL value.");
+    }
+
+    if (assistantOllamaUrlInput) {
+      assistantOllamaUrlInput.value = detectedUrl;
+    }
+
+    const health = payload?.health || {};
+    const checkState = health.statusCode
+      ? `HTTP ${health.statusCode}`
+      : health.error
+        ? `unreachable (${health.error})`
+        : "unknown";
+
+    setMessage(
+      `Autodetected ASSISTANT_OLLAMA_URL=${detectedUrl} (${checkState}). Click Save Config to persist, then restart Blastdoor.`,
     );
   } catch (error) {
     setMessage(error.message || String(error), true);

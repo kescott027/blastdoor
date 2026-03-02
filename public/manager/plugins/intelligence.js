@@ -192,6 +192,7 @@ function createState(root) {
     assistantUrl: root.querySelector("[data-intel-assistant-url]"),
     assistantToken: root.querySelector("[data-intel-assistant-token]"),
     assistantOllamaUrl: root.querySelector("[data-intel-assistant-ollama-url]"),
+    assistantOllamaAutodetectBtn: root.querySelector("[data-intel-assistant-ollama-autodetect]"),
     assistantOllamaModel: root.querySelector("[data-intel-assistant-ollama-model]"),
     assistantTimeoutMs: root.querySelector("[data-intel-assistant-timeout-ms]"),
     assistantRetryMaxAttempts: root.querySelector("[data-intel-assistant-retry-max-attempts]"),
@@ -242,6 +243,7 @@ function validateState(state) {
     "assistantUrl",
     "assistantToken",
     "assistantOllamaUrl",
+    "assistantOllamaAutodetectBtn",
     "assistantOllamaModel",
     "assistantTimeoutMs",
     "assistantRetryMaxAttempts",
@@ -330,7 +332,10 @@ function createPanelMarkup() {
             <input type="password" data-intel-assistant-token />
           </label>
           <label>Ollama URL
-            <input type="text" data-intel-assistant-ollama-url />
+            <div class="input-action-row">
+              <input type="text" data-intel-assistant-ollama-url />
+              <button type="button" class="secondary" data-intel-assistant-ollama-autodetect>Autodetect</button>
+            </div>
           </label>
           <label>Ollama Model
             <input type="text" data-intel-assistant-ollama-model />
@@ -724,6 +729,29 @@ export async function registerManagerPlugin(context) {
     try {
       await loadStatus(true);
       await loadWorkflows(false);
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.assistantOllamaAutodetectBtn.addEventListener("click", async () => {
+    try {
+      const payload = await context.apiPost("/config/assistant-ollama-url-autodetect", {});
+      const detectedUrl = asString(payload?.assistantOllamaUrl, "").trim();
+      if (!detectedUrl) {
+        throw new Error("Autodetect did not return an Ollama URL.");
+      }
+      state.assistantOllamaUrl.value = detectedUrl;
+
+      const health = payload?.health || {};
+      const checkState = health.statusCode
+        ? `HTTP ${health.statusCode}`
+        : health.error
+          ? `unreachable (${health.error})`
+          : "unknown";
+      panel.setStatus(
+        `Autodetected ASSISTANT_OLLAMA_URL=${detectedUrl} (${checkState}). Save Intelligence Config to persist.`,
+      );
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
