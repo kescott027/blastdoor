@@ -2,11 +2,19 @@
   --bg-0: #090b10;
   --bg-1: #131926;
   --bg-2: #1d2640;
+  --panel-top-alpha: 0.03;
+  --panel-border-alpha: 0.1;
+  --status-top-alpha: 0.035;
+  --manager-filter: none;
   --ink: #e7edf6;
   --muted: #9ca8bd;
   --accent: #9be0ff;
   --accent-2: #b6ffac;
   --danger: #ff8a8a;
+  --controls-dock-width: 220px;
+  --controls-dock-gap: 14px;
+  --controls-dock-top: 152px;
+  --controls-dock-max-height: calc(100vh - 164px);
 }
 
 * {
@@ -22,6 +30,8 @@ body {
     radial-gradient(circle at 90% 25%, rgba(182, 255, 172, 0.09), transparent 30%),
     linear-gradient(180deg, var(--bg-1), var(--bg-0));
   min-height: 100vh;
+  filter: var(--manager-filter);
+  transition: filter 150ms ease;
 }
 
 .hero {
@@ -40,6 +50,29 @@ body {
   color: var(--muted);
 }
 
+.hero-actions {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+}
+
+.failure-alert-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 138, 138, 0.7);
+  background: rgba(255, 138, 138, 0.18);
+  color: #ffe6e6;
+  font-weight: 600;
+}
+
+.failure-alert-btn:hover {
+  border-color: rgba(255, 138, 138, 1);
+  background: rgba(255, 138, 138, 0.26);
+}
+
 .hero-glow {
   position: absolute;
   inset: 0;
@@ -48,17 +81,135 @@ body {
 }
 
 .layout {
-  max-width: 1220px;
-  margin: 1.2rem auto 2rem;
-  padding: 0 1rem;
+  margin: 0;
+  padding: 0;
   display: grid;
   grid-template-columns: repeat(12, 1fr);
   gap: 1rem;
 }
 
-.panel {
+.top-status-bar {
+  margin: 0.9rem 0 0 0.5rem;
+  width: calc(100vw - 1rem);
+  display: grid;
+  grid-template-columns: repeat(7, minmax(170px, 1fr));
+  gap: 0.7rem;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 0.45rem 0;
+  backdrop-filter: blur(6px);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.status-card {
+  border: 1px solid rgba(255, 255, 255, var(--panel-border-alpha));
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, var(--status-top-alpha)), transparent);
+  padding: 0.6rem 0.7rem;
+}
+
+.status-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.86rem;
+  color: var(--accent-2);
+}
+
+.status-card p {
+  margin: 0.1rem 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.status-card strong {
+  color: var(--ink);
+}
+
+.mini-log {
+  margin: 0;
+  min-height: 84px;
+  max-height: 120px;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(8, 11, 17, 0.92);
+  padding: 0.45rem;
+  font-size: 0.72rem;
+  color: var(--accent-2);
+}
+
+.console-shell {
+  width: min(1420px, 98vw);
+  margin: 0.9rem auto 2rem;
+  padding-left: calc(var(--controls-dock-width) + var(--controls-dock-gap));
+  align-items: start;
+}
+
+.left-dock {
+  position: fixed;
+  top: var(--controls-dock-top);
+  left: 0.5rem;
+  width: var(--controls-dock-width);
+  max-height: var(--controls-dock-max-height);
+  overflow: auto;
   border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 0.8rem;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
+  z-index: 30;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.left-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.left-dock h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+}
+
+.left-dock-header h2 {
+  margin: 0;
+}
+
+body.controls-dock-collapsed .console-shell {
+  padding-left: 0;
+}
+
+body.controls-dock-collapsed .left-dock {
+  transform: translateX(calc(-1 * (var(--controls-dock-width) + 1.2rem)));
+  opacity: 0;
+  pointer-events: none;
+}
+
+.controls-dock-open {
+  position: fixed;
+  left: 0.5rem;
+  top: var(--controls-dock-top);
+  z-index: 34;
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+}
+
+.dock-menu {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.dock-menu button {
+  width: 100%;
+  text-align: left;
+}
+
+.panel {
+  border: 1px solid rgba(255, 255, 255, var(--panel-border-alpha));
+  background: linear-gradient(180deg, rgba(255, 255, 255, var(--panel-top-alpha)), transparent);
   border-radius: 12px;
   padding: 1rem;
   backdrop-filter: blur(2px);
@@ -72,11 +223,23 @@ body {
   grid-column: span 8;
 }
 
+.management-menu-panel {
+  grid-column: span 4;
+}
+
 .diagnostics-panel {
   grid-column: span 12;
 }
 
 .troubleshooting-panel {
+  grid-column: span 12;
+}
+
+.config-maint-panel {
+  grid-column: span 12;
+}
+
+.modules-panel {
   grid-column: span 12;
 }
 
@@ -89,6 +252,15 @@ body {
 
 .plugin-panel {
   grid-column: span 6;
+}
+
+.modules-list {
+  margin: 0.55rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--accent-2);
+  font-size: 0.86rem;
+  display: grid;
+  gap: 0.25rem;
 }
 
 .runtime-panel {
@@ -107,6 +279,11 @@ body {
 .troubleshooting-panel .log-box {
   min-height: 120px;
   max-height: 220px;
+}
+
+.config-maint-panel .log-box {
+  min-height: 140px;
+  max-height: 260px;
 }
 
 .panel-note {
@@ -252,6 +429,17 @@ label {
   color: var(--muted);
 }
 
+.input-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.42rem;
+  align-items: center;
+}
+
+.input-action-row button {
+  white-space: nowrap;
+}
+
 input {
   width: 100%;
   border-radius: 7px;
@@ -282,6 +470,35 @@ input:focus {
 
 .hidden {
   display: none;
+}
+
+.inline-management-panel {
+  width: min(1420px, 98vw);
+  margin: 0 auto 1rem;
+}
+
+.inline-management-panel .session-dock-panel,
+.inline-management-panel .failures-dock-panel,
+.inline-management-panel .appearance-dock-panel,
+.inline-management-panel .user-dock-panel {
+  height: auto;
+  overflow: visible;
+  padding: 0;
+}
+
+.inline-management-panel .session-dock-header,
+.inline-management-panel .failures-dock-header,
+.inline-management-panel .appearance-dock-header,
+.inline-management-panel .user-dock-header {
+  position: static;
+  background: none;
+  padding-bottom: 0;
+}
+
+.inline-management-panel .session-list-wrap,
+.inline-management-panel .failures-list-wrap,
+.inline-management-panel .user-list-wrap {
+  max-height: 320px;
 }
 
 .appearance-dock.hidden {
@@ -725,11 +942,281 @@ textarea:focus {
   margin: 0;
 }
 
+.failures-dock.hidden {
+  display: none;
+}
+
+.failures-dock[hidden] {
+  display: none;
+}
+
+.failures-dock {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 36;
+  width: min(760px, 100vw);
+  height: 100vh;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(7, 10, 18, 0.95);
+  backdrop-filter: blur(8px);
+  box-shadow: -18px 0 50px rgba(0, 0, 0, 0.45);
+}
+
+.failures-dock-panel {
+  height: 100%;
+  overflow: auto;
+  padding: 1rem 1rem 1.8rem;
+}
+
+.failures-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  position: sticky;
+  top: 0;
+  background: linear-gradient(180deg, rgba(7, 10, 18, 0.98), rgba(7, 10, 18, 0.9));
+  padding-bottom: 0.45rem;
+  z-index: 1;
+}
+
+.failures-dock-header h2 {
+  margin: 0;
+}
+
+.failures-list-wrap {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 300px;
+  background: rgba(8, 11, 17, 0.78);
+}
+
+.failures-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+
+.failures-table th,
+.failures-table td {
+  text-align: left;
+  padding: 0.45rem 0.42rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  vertical-align: top;
+}
+
+.failures-table thead th {
+  position: sticky;
+  top: 0;
+  background: rgba(20, 28, 45, 0.95);
+  color: var(--muted);
+  z-index: 1;
+}
+
+.failures-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.failures-table tbody tr.selected {
+  background: rgba(155, 224, 255, 0.15);
+}
+
+.session-dock.hidden {
+  display: none;
+}
+
+.session-dock[hidden] {
+  display: none;
+}
+
+.session-dock {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 37;
+  width: min(760px, 100vw);
+  height: 100vh;
+  border-right: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(7, 10, 18, 0.95);
+  backdrop-filter: blur(8px);
+  box-shadow: 18px 0 50px rgba(0, 0, 0, 0.45);
+}
+
+.session-dock-panel {
+  height: 100%;
+  overflow: auto;
+  padding: 1rem 1rem 1.8rem;
+}
+
+.session-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  position: sticky;
+  top: 0;
+  background: linear-gradient(180deg, rgba(7, 10, 18, 0.98), rgba(7, 10, 18, 0.9));
+  padding-bottom: 0.45rem;
+  z-index: 1;
+}
+
+.session-dock-header h2 {
+  margin: 0;
+}
+
+.session-list-wrap {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 320px;
+  background: rgba(8, 11, 17, 0.78);
+}
+
+.session-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+
+.session-table th,
+.session-table td {
+  text-align: left;
+  padding: 0.45rem 0.42rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  vertical-align: top;
+}
+
+.session-table thead th {
+  position: sticky;
+  top: 0;
+  background: rgba(20, 28, 45, 0.95);
+  color: var(--muted);
+  z-index: 1;
+}
+
+.session-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.session-table tbody tr.selected {
+  background: rgba(182, 255, 172, 0.14);
+}
+
+.session-table td.actions-cell {
+  min-width: 110px;
+}
+
+.session-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.session-row-actions button {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.73rem;
+}
+
+.layout-dock.hidden {
+  display: none;
+}
+
+.layout-dock[hidden] {
+  display: none;
+}
+
+.layout-dock {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 38;
+  width: min(540px, 100vw);
+  height: 100vh;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(8, 11, 20, 0.94);
+  backdrop-filter: blur(8px);
+  box-shadow: -18px 0 50px rgba(0, 0, 0, 0.45);
+}
+
+.layout-dock-panel {
+  height: 100%;
+  overflow: auto;
+  padding: 1rem 1rem 1.8rem;
+}
+
+.layout-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  position: sticky;
+  top: 0;
+  background: linear-gradient(180deg, rgba(8, 11, 20, 0.98), rgba(8, 11, 20, 0.88));
+  padding-bottom: 0.45rem;
+  z-index: 1;
+}
+
+.layout-dock-header h2 {
+  margin: 0;
+}
+
+.layout-settings-box {
+  margin: 0.8rem 0 0.6rem;
+  padding: 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(10, 14, 24, 0.82);
+}
+
+.layout-settings-box h3 {
+  margin: 0 0 0.35rem;
+}
+
 @media (max-width: 980px) {
+  .top-status-bar {
+    grid-template-columns: repeat(7, minmax(170px, 1fr));
+    width: calc(100vw - 1rem);
+    overflow-x: auto;
+  }
+
+  .console-shell {
+    width: calc(100vw - 1rem);
+    padding-left: 0;
+  }
+
+  .left-dock {
+    top: 0;
+    left: 0;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0 12px 12px 0;
+    border-left: 0;
+    z-index: 45;
+  }
+
+  body.controls-dock-collapsed .left-dock {
+    transform: translateX(calc(-1 * (var(--controls-dock-width) + 1rem)));
+  }
+
+  .controls-dock-open {
+    top: 0.75rem;
+    z-index: 46;
+  }
+
   .service-panel,
+  .management-menu-panel,
   .config-panel,
   .diagnostics-panel,
   .troubleshooting-panel,
+  .config-maint-panel,
+  .modules-panel,
   .plugin-panel,
   .runtime-panel,
   .debug-panel {
@@ -753,6 +1240,18 @@ textarea:focus {
   }
 
   .tls-dock {
+    width: 100vw;
+  }
+
+  .failures-dock {
+    width: 100vw;
+  }
+
+  .session-dock {
+    width: 100vw;
+  }
+
+  .layout-dock {
     width: 100vw;
   }
 }

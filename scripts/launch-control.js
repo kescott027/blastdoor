@@ -7,9 +7,11 @@ import process from "node:process";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { appendFailureRecord } from "../src/failure-store.js";
 
 const WORKSPACE_DIR = process.cwd();
 const ENV_PATH = path.join(WORKSPACE_DIR, ".env");
+const FAILURE_STORE_PATH = path.join(WORKSPACE_DIR, "data", "launch-failures.json");
 const MANAGER_HOST = process.env.MANAGER_HOST || "127.0.0.1";
 const MANAGER_PORT = Number.parseInt(process.env.MANAGER_PORT || "8090", 10);
 const MANAGER_URL = `http://${MANAGER_HOST}:${MANAGER_PORT}`;
@@ -50,6 +52,32 @@ function warn(message) {
 
 function error(message) {
   line(`[launch] ERROR: ${message}`);
+}
+
+async function recordLaunchFailure({
+  action = "",
+  source = "launch-console",
+  message = "",
+  details = "",
+} = {}) {
+  const text = String(message || "").trim();
+  if (!text) {
+    return;
+  }
+  try {
+    await appendFailureRecord(FAILURE_STORE_PATH, {
+      source,
+      action,
+      message: text,
+      details: String(details || ""),
+      isWsl: Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP),
+      context: {
+        managerUrl: MANAGER_URL,
+      },
+    });
+  } catch {
+    // Never throw from failure recorder.
+  }
 }
 
 function printBanner() {
@@ -311,6 +339,11 @@ function startManagerProcess() {
     renderControlsIfChanged();
     if (!state.shuttingDown && !state.managerRestartInProgress && !state.managerStopInProgress) {
       error("Manager exited unexpectedly.");
+      void recordLaunchFailure({
+        action: "manager-exit",
+        source: "launch-console",
+        message: `Manager exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"}).`,
+      });
       void shutdown(1);
     }
   });
@@ -653,7 +686,21 @@ async function runAction(actionName, fn) {
   try {
     await fn();
   } catch (actionError) {
-    error(`${actionName} failed: ${actionError.message}`);
+    const message = actionError?.message || String(actionError);
+    const isWsl = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+    if (/EADDRNOTAVAIL|not available on this runtime host/i.test(message)) {
+      const hint = isWsl
+        ? "Fix: set HOST=0.0.0.0 in .env, then use Windows portproxy/firewall for LAN access."
+        : "Fix: set HOST=0.0.0.0 (LAN) or HOST=127.0.0.1 (local only), then restart.";
+      error(`${actionName} failed: ${message} ${hint}`);
+    } else {
+      error(`${actionName} failed: ${message}`);
+    }
+    await recordLaunchFailure({
+      action: actionName,
+      source: "launch-console",
+      message,
+    });
   } finally {
     state.actionInFlight = false;
     renderControlsIfChanged();
@@ -827,8 +874,14 @@ process.on("SIGINT", () => {
   void shutdown(0);
 });
 
-main().catch((startupError) => {
-  error(startupError.message);
+main().catch(async (startupError) => {
+  const message = startupError?.message || String(startupError);
+  error(message);
+  await recordLaunchFailure({
+    action: "startup",
+    source: "launch-console",
+    message,
+  });
   cleanupInput();
   process.exit(1);
 });

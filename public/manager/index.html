@@ -11,10 +11,85 @@
       <div class="hero-glow"></div>
       <h1>Blastdoor Control Console</h1>
       <p>Configure, launch, and monitor your Foundry gateway.</p>
+      <div class="hero-actions">
+        <button id="failuresAlertBtn" type="button" class="failure-alert-btn hidden" hidden title="Open failures">
+          <span aria-hidden="true">⚠</span>
+          <span id="failuresAlertCount">0</span>
+        </button>
+      </div>
     </header>
 
-    <main class="layout">
-      <section class="panel service-panel">
+    <section class="top-status-bar" id="topStatusBar">
+      <div class="status-card">
+        <h3>Blastdoor Admin Control Console</h3>
+        <p>Running: <strong id="adminRunningValue">Unknown</strong></p>
+        <p>PID: <strong id="adminPidValue">-</strong></p>
+        <p>Uptime: <strong id="adminUptimeValue">-</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Blastdoor Portal</h3>
+        <p>Running: <strong id="portalRunningValue">Unknown</strong></p>
+        <p>PID: <strong id="portalPidValue">-</strong></p>
+        <p>Uptime: <strong id="portalUptimeValue">-</strong></p>
+        <p>Health: <strong id="portalHealthValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Blastdoor API</h3>
+        <p>Running: <strong id="apiRunningValue">Unknown</strong></p>
+        <p>PID: <strong id="apiPidValue">-</strong></p>
+        <p>Uptime: <strong id="apiUptimeValue">-</strong></p>
+        <p>Health: <strong id="apiHealthValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Foundry VTT</h3>
+        <p>Reachable: <strong id="foundryReachableValue">Unknown</strong></p>
+        <p>API Response: <strong id="foundryApiResponseValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>PostgreSQL</h3>
+        <p>Running: <strong id="postgresRunningValue">Unknown</strong></p>
+        <p>PID: <strong id="postgresPidValue">-</strong></p>
+        <p>Uptime: <strong id="postgresUptimeValue">-</strong></p>
+        <p>Health: <strong id="postgresHealthValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Object Store</h3>
+        <p>Type: <strong id="objectStoreTypeValue">Unknown</strong></p>
+        <p>Reachable: <strong id="objectStoreReachableValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
+        <h3>Plugins</h3>
+        <pre id="pluginsStatusValue" class="mini-log">No plugins detected.</pre>
+      </div>
+    </section>
+
+    <button id="controlsDockOpenBtn" type="button" class="controls-dock-open hidden" hidden>
+      Show Controls
+    </button>
+
+    <div class="console-shell">
+      <aside class="left-dock" id="controlsDock">
+        <div class="left-dock-header">
+          <h2>Controls</h2>
+          <button id="controlsDockHideBtn" type="button" class="ghost-btn">Hide</button>
+        </div>
+        <div class="dock-menu">
+          <button id="navServiceBtn" type="button">Service Control</button>
+          <button id="navConfigBtn" type="button">Configuration</button>
+          <button id="navSessionBtn" type="button">Session Management</button>
+          <button id="navLayoutBtn" type="button">Control Console Layout</button>
+          <button id="navTlsBtn" type="button">TLS Management</button>
+          <button id="navLoginBtn" type="button">Login Screen Management</button>
+          <button id="navUserBtn" type="button">User Management</button>
+          <button id="navBackupBtn" type="button">Backup Management</button>
+          <button id="navFailuresBtn" type="button">Failures</button>
+          <button id="navDiagBtn" type="button">Diagnostics and Troubleshooting</button>
+          <button id="navModulesBtn" type="button">Modules</button>
+        </div>
+      </aside>
+
+      <main class="layout">
+      <section class="panel service-panel" id="serviceControlSection">
         <h2>Service Control</h2>
         <div class="blastdoors-control">
           <div>
@@ -33,6 +108,8 @@
           <button id="revokeSessionsBtn" type="button">Revoke Sessions</button>
           <button id="refreshBtn" type="button">Refresh</button>
           <button id="openPortalBtn" type="button">Open Portal</button>
+          <button id="sessionMgmtBtn" type="button">Session Management</button>
+          <button id="layoutBtn" type="button">Control Console Layout</button>
           <button id="appearanceBtn" type="button">Login Appearance</button>
           <button id="tlsBtn" type="button">Manage TLS</button>
           <button id="userMgmtBtn" type="button">User Management</button>
@@ -46,14 +123,43 @@
         <p class="status-message" id="statusMessage"></p>
       </section>
 
-      <section class="panel config-panel">
+      <section class="panel management-menu-panel hidden" id="tlsManagementSection" hidden>
+        <h2>TLS Management</h2>
+        <p class="panel-note">Manage certificates, detection, and Let's Encrypt planning.</p>
+        <div class="button-row">
+          <button id="openTlsFromPanelBtn" type="button">Open TLS Management</button>
+        </div>
+      </section>
+
+      <section class="panel management-menu-panel hidden" id="loginManagementSection" hidden>
+        <h2>Login Screen Management</h2>
+        <p class="panel-note">Create and apply Blastdoor portal login themes.</p>
+        <div class="button-row">
+          <button id="openAppearanceFromPanelBtn" type="button">Open Login Screen Management</button>
+        </div>
+      </section>
+
+      <section class="panel management-menu-panel hidden" id="userManagementSection" hidden>
+        <h2>User Management</h2>
+        <p class="panel-note">Create users, set status, rotate temporary access, and invalidate user sessions.</p>
+        <div class="button-row">
+          <button id="openUserMgmtFromPanelBtn" type="button">Open User Management</button>
+        </div>
+      </section>
+
+      <section class="panel config-panel hidden" id="configSection" hidden>
         <h2>Configuration</h2>
         <form id="configForm">
           <input type="hidden" name="BLAST_DOORS_CLOSED" id="blastDoorsClosedField" />
           <div class="grid">
             <label>HOST <input name="HOST" required /></label>
             <label>PORT <input name="PORT" required /></label>
-            <label>FOUNDRY_TARGET <input name="FOUNDRY_TARGET" required /></label>
+            <label>FOUNDRY_TARGET
+              <div class="input-action-row">
+                <input name="FOUNDRY_TARGET" required />
+                <button id="foundryTargetAutodetectBtn" type="button" class="ghost-btn hidden" hidden>Autodetect</button>
+              </div>
+            </label>
             <label>PASSWORD_STORE_MODE <input name="PASSWORD_STORE_MODE" required /></label>
             <label>PASSWORD_STORE_FILE <input name="PASSWORD_STORE_FILE" /></label>
             <label>CONFIG_STORE_MODE <input name="CONFIG_STORE_MODE" required /></label>
@@ -82,6 +188,12 @@
             <label>BLASTDOOR_API_RETRY_MAX_DELAY_MS <input name="BLASTDOOR_API_RETRY_MAX_DELAY_MS" /></label>
             <label>BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD <input name="BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD" /></label>
             <label>BLASTDOOR_API_CIRCUIT_RESET_MS <input name="BLASTDOOR_API_CIRCUIT_RESET_MS" /></label>
+            <label>ASSISTANT_OLLAMA_URL
+              <div class="input-action-row">
+                <input name="ASSISTANT_OLLAMA_URL" />
+                <button id="assistantOllamaAutodetectBtn" type="button" class="ghost-btn hidden" hidden>Autodetect</button>
+              </div>
+            </label>
             <label>EMAIL_PROVIDER (disabled|console|smtp) <input name="EMAIL_PROVIDER" /></label>
             <label>EMAIL_FROM <input name="EMAIL_FROM" /></label>
             <label>EMAIL_ADMIN_TO <input name="EMAIL_ADMIN_TO" /></label>
@@ -101,7 +213,32 @@
         </form>
       </section>
 
-      <section class="panel diagnostics-panel">
+      <section class="panel config-maint-panel hidden" id="backupManagementSection" hidden>
+        <h2>Config Backups</h2>
+        <p class="panel-note">
+          Back up and restore install/runtime config files. Clean Install resets installation profile and env files to defaults.
+        </p>
+        <div class="grid">
+          <label>Backup Name
+            <input id="configBackupName" placeholder="before-prod-change" />
+          </label>
+          <label>Saved Backups
+            <select id="configBackupSelect"></select>
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="configBackupCreateBtn" type="button">Backup Configs</button>
+          <button id="configBackupRefreshBtn" type="button">Refresh Backups</button>
+          <button id="configBackupViewBtn" type="button">View Backup</button>
+          <button id="configBackupRestoreBtn" type="button">Restore Backup</button>
+          <button id="configBackupDeleteBtn" type="button">Delete Backup</button>
+          <button id="configBackupCleanBtn" type="button">Clean Install Config</button>
+        </div>
+        <p class="status-message" id="configBackupStatusMessage"></p>
+        <pre id="configBackupDetails" class="log-box"></pre>
+      </section>
+
+      <section class="panel diagnostics-panel hidden" id="diagnosticsSection" hidden>
         <h2>Diagnostics</h2>
         <p class="panel-note">
           Generates a sanitized report for troubleshooting. Secrets are automatically redacted.
@@ -116,9 +253,80 @@
         <pre id="diagSummary" class="log-box"></pre>
         <h3>JSON</h3>
         <pre id="diagJson" class="log-box"></pre>
+
+        <h3>Remote Support API</h3>
+        <p class="panel-note">
+          Enable token-authenticated external troubleshooting access (read-only diagnostics + non-destructive actions).
+          Token TTL defaults to 30 minutes and can be set up to 24 hours.
+        </p>
+        <h4>Quick Start</h4>
+        <ol class="panel-note">
+          <li>Set <strong>Enable Remote Support API</strong> to Enabled and click <strong>Save Remote API Config</strong>.</li>
+          <li>Enter token label + TTL, then click <strong>Generate Token</strong> (token is shown once).</li>
+          <li>Copy the generated token + `curl` examples and use them from your remote machine or AI tooling.</li>
+        </ol>
+        <div class="grid">
+          <label>Enable Remote Support API
+            <select id="remoteSupportEnabled">
+              <option value="false">Disabled</option>
+              <option value="true">Enabled</option>
+            </select>
+          </label>
+          <label>Default Token TTL (minutes)
+            <input id="remoteSupportDefaultTtlMinutes" type="number" min="30" max="1440" step="1" value="30" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="remoteSupportSaveConfigBtn" type="button">Save Remote API Config</button>
+          <button id="remoteSupportRefreshBtn" type="button">Refresh Tokens</button>
+        </div>
+        <div class="grid">
+          <label>Enable Call-Home API
+            <select id="callHomeEnabled">
+              <option value="false">Disabled</option>
+              <option value="true">Enabled</option>
+            </select>
+          </label>
+          <label>Diagnostic Pod Token TTL (minutes)
+            <input id="callHomePodTtlMinutes" type="number" min="30" max="1440" step="1" value="30" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="callHomeGeneratePodBtn" type="button">Generate Diagnostic Pod</button>
+          <button id="callHomeRefreshEventsBtn" type="button">Refresh Call-Home Events</button>
+          <button id="callHomeClearEventsBtn" type="button">Clear Call-Home Events</button>
+          <button id="callHomeAiAnalyzeBtn" type="button">AI Analyze Call-Home</button>
+        </div>
+        <div class="grid">
+          <label>New Token Label
+            <input id="remoteSupportTokenLabel" placeholder="Remote Support Token" />
+          </label>
+          <label>New Token TTL (minutes)
+            <input id="remoteSupportTokenTtlMinutes" type="number" min="30" max="1440" step="1" value="30" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="remoteSupportGenerateTokenBtn" type="button">Generate Token</button>
+          <button id="remoteSupportCopyOutputBtn" type="button">Copy Token + CURL</button>
+        </div>
+        <p class="panel-note" id="remoteSupportStepHint"></p>
+        <label>Issued Tokens
+          <select id="remoteSupportTokenSelect"></select>
+        </label>
+        <div class="button-row">
+          <button id="remoteSupportRevokeBtn" type="button">Revoke Selected Token</button>
+          <button id="remoteSupportRotateBtn" type="button">Rotate Selected Token</button>
+        </div>
+        <p class="status-message" id="remoteSupportStatusMessage"></p>
+        <h4>Generated Token + Example Commands</h4>
+        <pre id="remoteSupportOutput" class="log-box"></pre>
+        <h4>Diagnostic Pod Bundle</h4>
+        <pre id="callHomePodOutput" class="log-box"></pre>
+        <h4>Call-Home Events</h4>
+        <pre id="callHomeEventsOutput" class="log-box"></pre>
       </section>
 
-      <section class="panel troubleshooting-panel">
+      <section class="panel troubleshooting-panel hidden" id="troubleshootingSection" hidden>
         <h2>Troubleshooting</h2>
         <p class="panel-note">
           Run read-only environment checks and view guided remediation steps. Potentially destructive fixes are never
@@ -126,9 +334,11 @@
         </p>
         <div class="button-row">
           <button id="tsAnalyzeBtn" type="button">Analyze System</button>
+          <button id="tsAiBtn" type="button">AI Troubleshoot</button>
           <button id="tsSnapshotBtn" type="button">Gather Snapshot</button>
           <button id="tsGatewayBtn" type="button">Test Gateway Access</button>
           <button id="tsPortproxyDetectBtn" type="button">Detect WSL Portproxy</button>
+          <button id="tsFoundryWslFixBtn" type="button">Auto-fix WSL Foundry Target</button>
           <button id="tsPortproxyScriptBtn" type="button">Show Portproxy Script</button>
           <button id="tsCopyScriptBtn" type="button">Copy Script</button>
         </div>
@@ -141,22 +351,176 @@
         <pre id="tsScript" class="log-box"></pre>
       </section>
 
-      <section id="pluginPanels" class="plugin-panels"></section>
+      <section class="panel modules-panel hidden" id="modulesSection" hidden>
+        <h2>Modules</h2>
+        <p class="panel-note">Loaded modules and plugin runtime state.</p>
+        <ul id="modulesList" class="modules-list">
+          <li>Intelligence Module</li>
+        </ul>
+      </section>
 
-      <section class="panel runtime-panel">
+      <section id="pluginPanels" class="plugin-panels hidden" hidden></section>
+
+      <section class="panel runtime-panel hidden" id="runtimeLogsSection" hidden>
         <h2>Runtime Logs</h2>
         <pre id="runtimeLogs" class="log-box"></pre>
       </section>
 
-      <section class="panel debug-panel">
+      <section class="panel debug-panel hidden" id="debugLogsSection" hidden>
         <h2>Debug Log Tail</h2>
         <pre id="debugLogs" class="log-box"></pre>
       </section>
-    </main>
+      </main>
+    </div>
+
+    <section
+      id="sessionModal"
+      class="panel inline-management-panel session-panel hidden"
+      hidden
+      role="region"
+      aria-labelledby="sessionTitle"
+    >
+      <section class="session-dock-panel">
+        <header class="session-dock-header">
+          <h2 id="sessionTitle">Session Management</h2>
+          <button id="sessionCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          View currently authenticated sessions and invalidate access tokens when needed.
+        </p>
+        <p class="status-message" id="sessionStatusMessage"></p>
+
+        <div class="button-row">
+          <button id="sessionRefreshBtn" type="button">Refresh Sessions</button>
+          <button id="sessionInvalidateBtn" type="button">Invalidate Selected</button>
+          <button id="sessionRevokeAllBtn" type="button">Revoke All Sessions</button>
+        </div>
+
+        <div class="session-list-wrap">
+          <table class="session-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Last Login</th>
+                <th>Last IP</th>
+                <th>Version</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="sessionTableBody"></tbody>
+          </table>
+        </div>
+
+        <h3>Summary</h3>
+        <pre id="sessionSummary" class="log-box"></pre>
+      </section>
+    </section>
 
     <aside
+      id="layoutModal"
+      class="layout-dock hidden"
+      hidden
+      role="region"
+      aria-labelledby="layoutTitle"
+    >
+      <section class="layout-dock-panel">
+        <header class="layout-dock-header">
+          <h2 id="layoutTitle">Control Console Layout</h2>
+          <button id="layoutCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          Configure control console look-and-feel and optional manager password access protection.
+        </p>
+        <p class="status-message" id="layoutStatusMessage"></p>
+
+        <section class="layout-settings-box">
+          <h3>Appearance</h3>
+          <label>Dark Mode Strength
+            <div class="range-row">
+              <input id="layoutDarkModePercent" type="range" min="0" max="100" step="1" value="100" />
+              <span id="layoutDarkModeValue" class="range-value">100%</span>
+            </div>
+          </label>
+          <label>Light Mode Strength
+            <div class="range-row">
+              <input id="layoutLightModePercent" type="range" min="0" max="100" step="1" value="0" />
+              <span id="layoutLightModeValue" class="range-value">0%</span>
+            </div>
+          </label>
+          <div class="button-row">
+            <button id="layoutSaveBtn" type="button">Save Layout</button>
+            <button id="layoutResetBtn" type="button">Reset Defaults</button>
+          </div>
+        </section>
+
+        <section class="layout-settings-box">
+          <h3>Access Protection</h3>
+          <label class="checkbox-label">
+            <input id="layoutRequirePassword" type="checkbox" />
+            Require password for Blastdoor Control Console
+          </label>
+          <label>New Manager Password (optional)
+            <input id="layoutManagerPassword" type="password" autocomplete="new-password" />
+          </label>
+          <label>Session TTL (hours)
+            <input id="layoutSessionTtlHours" type="number" min="1" max="168" step="1" value="12" />
+          </label>
+          <div class="button-row">
+            <button id="layoutSaveAccessBtn" type="button">Save Access Settings</button>
+            <button id="layoutLogoutBtn" type="button">Logout Manager Session</button>
+          </div>
+        </section>
+      </section>
+    </aside>
+
+    <section
+      id="failuresModal"
+      class="panel inline-management-panel failures-panel hidden"
+      hidden
+      role="region"
+      aria-labelledby="failuresTitle"
+    >
+      <section class="failures-dock-panel">
+        <header class="failures-dock-header">
+          <h2 id="failuresTitle">Failures</h2>
+          <button id="failuresCloseBtn" type="button" class="ghost-btn">Close</button>
+        </header>
+
+        <p class="panel-note">
+          Launch/runtime failures captured by Blastdoor wrappers and manager controls. Includes suggested fixes when recognized.
+        </p>
+        <p class="status-message" id="failuresStatusMessage"></p>
+
+        <div class="button-row">
+          <button id="failuresRefreshBtn" type="button">Refresh Failures</button>
+          <button id="failuresCopyBtn" type="button">Copy Selected</button>
+          <button id="failuresClearBtn" type="button">Clear Failures</button>
+        </div>
+
+        <div class="failures-list-wrap">
+          <table class="failures-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Source</th>
+                <th>Nature</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody id="failuresTableBody"></tbody>
+          </table>
+        </div>
+
+        <h3>Details</h3>
+        <pre id="failuresDetails" class="log-box"></pre>
+      </section>
+    </section>
+
+    <section
       id="appearanceModal"
-      class="appearance-dock hidden"
+      class="panel inline-management-panel appearance-panel hidden"
       hidden
       role="region"
       aria-labelledby="appearanceTitle"
@@ -407,7 +771,7 @@
           </form>
         </section>
       </section>
-    </aside>
+    </section>
 
     <aside
       id="tlsModal"
@@ -477,9 +841,9 @@
       </section>
     </aside>
 
-    <aside
+    <section
       id="userModal"
-      class="user-dock hidden"
+      class="panel inline-management-panel user-panel hidden"
       hidden
       role="region"
       aria-labelledby="userMgmtTitle"
@@ -571,7 +935,7 @@
           <pre id="userTempCodeBox" class="log-box user-tempcode"></pre>
         </section>
       </section>
-    </aside>
+    </section>
 
     <script type="module" src="/manager/app.js"></script>
   </body>

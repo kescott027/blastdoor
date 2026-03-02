@@ -27,6 +27,7 @@ import { createConfigStore } from "./config-store.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { createBlastDoorsStateController } from "./blastdoors-state.js";
 import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
+import { buildThemeAssetUrl, normalizeThemeAssetPath as normalizeThemeAssetPathByType } from "./login-theme.js";
 import { createPluginManager } from "./plugins/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -418,7 +419,7 @@ function renderThemeStyleVars(theme) {
   return vars.join(";");
 }
 
-function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
+function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme, pathPrefix = "" }) {
   const errorBlock = error
     ? `<p class="alert" role="alert">${escapeHtml(error)}</p>`
     : "";
@@ -428,15 +429,21 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
        <input id="totp" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="123456" required />`
     : "";
 
-  const logoMarkup = theme.logoUrl
-    ? `<img class="brand-logo" src="${escapeHtml(theme.logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
+  const styleHref = withPathPrefix("/assets/theme.css", pathPrefix);
+  const loginAction = withPathPrefix("/login", pathPrefix);
+  const logoUrl = withPathPrefix(theme.logoUrl || "", pathPrefix);
+  const closedBackgroundUrl = withPathPrefix(theme.closedBackgroundUrl || "", pathPrefix);
+  const openBackgroundUrl = withPathPrefix(theme.openBackgroundUrl || "", pathPrefix);
+
+  const logoMarkup = logoUrl
+    ? `<img class="brand-logo" src="${escapeHtml(logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
     : `<span class="brand-logo-fallback">BLASTDOOR</span>`;
 
-  const closedBgStyle = theme.closedBackgroundUrl
-    ? ` style="background-image: url('${escapeHtml(theme.closedBackgroundUrl)}');"`
+  const closedBgStyle = closedBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(closedBackgroundUrl)}');"`
     : "";
-  const openBgStyle = theme.openBackgroundUrl
-    ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
+  const openBgStyle = openBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(openBackgroundUrl)}');"`
     : "";
   const themeStyleVars = renderThemeStyleVars(theme);
   const loginBoxMode = normalizeLoginBoxMode(theme?.loginBoxMode);
@@ -447,7 +454,7 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Blastdoor Access</title>
-    <link rel="stylesheet" href="/assets/theme.css" />
+    <link rel="stylesheet" href="${escapeHtml(styleHref)}" />
   </head>
   <body data-login-box-mode="${loginBoxMode}" style="${themeStyleVars}">
     <div class="theme-stage" aria-hidden="true">
@@ -463,7 +470,7 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
         <h1>Blastdoor</h1>
         <p class="intro">Secure jump authorization for your campaign universe.</p>
         ${errorBlock}
-        <form method="post" action="/login" autocomplete="off" novalidate>
+        <form method="post" action="${escapeHtml(loginAction)}" autocomplete="off" novalidate>
           <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
           <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
 
@@ -483,16 +490,23 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
 </html>`;
 }
 
-function renderLoginSuccessPage({ nextPath, accountPath, theme, forcePasswordChange = false }) {
-  const logoMarkup = theme.logoUrl
-    ? `<img class="brand-logo" src="${escapeHtml(theme.logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
+function renderLoginSuccessPage({ nextPath, accountPath, theme, pathPrefix = "", forcePasswordChange = false }) {
+  const styleHref = withPathPrefix("/assets/theme.css", pathPrefix);
+  const logoUrl = withPathPrefix(theme.logoUrl || "", pathPrefix);
+  const closedBackgroundUrl = withPathPrefix(theme.closedBackgroundUrl || "", pathPrefix);
+  const openBackgroundUrl = withPathPrefix(theme.openBackgroundUrl || "", pathPrefix);
+  const continueHref = withPathPrefix(nextPath, pathPrefix);
+  const accountHref = withPathPrefix(accountPath, pathPrefix);
+
+  const logoMarkup = logoUrl
+    ? `<img class="brand-logo" src="${escapeHtml(logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
     : `<span class="brand-logo-fallback">BLASTDOOR</span>`;
 
-  const closedBgStyle = theme.closedBackgroundUrl
-    ? ` style="background-image: url('${escapeHtml(theme.closedBackgroundUrl)}');"`
+  const closedBgStyle = closedBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(closedBackgroundUrl)}');"`
     : "";
-  const openBgStyle = theme.openBackgroundUrl
-    ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
+  const openBgStyle = openBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(openBackgroundUrl)}');"`
     : "";
   const themeStyleVars = renderThemeStyleVars(theme);
   const loginBoxMode = normalizeLoginBoxMode(theme?.loginBoxMode);
@@ -503,7 +517,7 @@ function renderLoginSuccessPage({ nextPath, accountPath, theme, forcePasswordCha
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Blastdoor Access Granted</title>
-    <link rel="stylesheet" href="/assets/theme.css" />
+    <link rel="stylesheet" href="${escapeHtml(styleHref)}" />
   </head>
   <body class="auth-success" data-login-box-mode="${loginBoxMode}" style="${themeStyleVars}">
     <div class="theme-stage" aria-hidden="true">
@@ -523,10 +537,10 @@ function renderLoginSuccessPage({ nextPath, accountPath, theme, forcePasswordCha
         }</p>
         <p class="success-note">If redirection does not start automatically, continue below.</p>
         <p class="success-links">
-          <a class="continue-link" href="${escapeHtml(nextPath)}" id="continueLink">${
+          <a class="continue-link" href="${escapeHtml(continueHref)}" id="continueLink">${
             forcePasswordChange ? "Continue to My Account" : "Continue to Foundry"
           }</a>
-          <a class="continue-link" href="${escapeHtml(accountPath)}" id="accountLink">My Account</a>
+          <a class="continue-link" href="${escapeHtml(accountHref)}" id="accountLink">My Account</a>
         </p>
         <p class="success-note" id="redirectHint">Auto-redirect in 7 seconds...</p>
       </section>
@@ -625,7 +639,7 @@ function renderBlastDoorsClosedPage() {
       }
     </style>
   </head>
-  <body>
+  <body class="account-page" style="overflow-x:hidden;overflow-y:auto;">
     <main>
       <h1>Blast Doors Are Locked</h1>
       <p class="alert">Gateway lockout is active. External routing is disabled.</p>
@@ -742,11 +756,54 @@ function makeAccountPath(nextPath = "/") {
   return `/account?next=${encodeURIComponent(safeNextPath(nextPath, "/"))}`;
 }
 
+function normalizePathPrefix(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  let candidate = raw;
+  if (candidate.includes("://")) {
+    try {
+      candidate = new URL(candidate).pathname || "";
+    } catch {
+      return "";
+    }
+  }
+
+  candidate = candidate.replaceAll("\\", "/").trim();
+  if (!candidate || candidate === "/") {
+    return "";
+  }
+  if (!candidate.startsWith("/")) {
+    candidate = `/${candidate}`;
+  }
+  candidate = candidate.replace(/\/+$/, "");
+  if (!candidate || candidate === "/" || candidate.includes("..")) {
+    return "";
+  }
+
+  return candidate;
+}
+
+function withPathPrefix(urlPath, pathPrefix = "") {
+  const prefix = normalizePathPrefix(pathPrefix);
+  const value = String(urlPath || "");
+  if (!prefix || !value.startsWith("/") || value.startsWith("//")) {
+    return value;
+  }
+  if (value === prefix || value.startsWith(`${prefix}/`)) {
+    return value;
+  }
+  return `${prefix}${value}`;
+}
+
 function renderAccountPage({
   nextPath,
   csrfToken,
   profile,
   username,
+  pathPrefix = "",
   forcePasswordChange = false,
   flashMessage = "",
   flashError = "",
@@ -754,6 +811,12 @@ function renderAccountPage({
   const statusClass = flashError ? "alert" : "success-note";
   const statusText = flashError || flashMessage;
   const continuePath = forcePasswordChange ? makeAccountPath(nextPath) : nextPath;
+  const styleHref = withPathPrefix("/assets/theme.css", pathPrefix);
+  const passwordAction = withPathPrefix("/account/password", pathPrefix);
+  const profileAction = withPathPrefix("/account/profile", pathPrefix);
+  const messageAction = withPathPrefix("/account/message-admin", pathPrefix);
+  const logoutPath = withPathPrefix("/logout", pathPrefix);
+  const continueHref = withPathPrefix(continuePath, pathPrefix);
 
   return `<!doctype html>
 <html lang="en">
@@ -761,11 +824,11 @@ function renderAccountPage({
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Blastdoor My Account</title>
-    <link rel="stylesheet" href="/assets/theme.css" />
+    <link rel="stylesheet" href="${escapeHtml(styleHref)}" />
   </head>
-  <body>
+  <body class="account-page" style="overflow-x:hidden;overflow-y:auto;">
     <div class="sky"></div>
-    <main class="shell account-shell">
+    <main class="shell account-shell" style="display:block;min-height:auto;">
       <section class="panel account-panel">
         <p class="eyebrow">My Account</p>
         <h1>Welcome ${escapeHtml(username)}</h1>
@@ -779,7 +842,7 @@ function renderAccountPage({
         <div class="account-grid">
           <section>
             <h2>Password</h2>
-            <form method="post" action="/account/password">
+            <form method="post" action="${escapeHtml(passwordAction)}">
               <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
               <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
               <label for="currentPassword">Current Password${forcePasswordChange ? " (optional)" : ""}</label>
@@ -794,7 +857,7 @@ function renderAccountPage({
 
           <section>
             <h2>Profile</h2>
-            <form method="post" action="/account/profile">
+            <form method="post" action="${escapeHtml(profileAction)}">
               <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
               <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
               <label for="friendlyName">Friendly Name</label>
@@ -814,7 +877,7 @@ function renderAccountPage({
 
         <section class="account-message-panel">
           <h2>Message Admin</h2>
-          <form method="post" action="/account/message-admin">
+          <form method="post" action="${escapeHtml(messageAction)}">
             <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
             <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
             <label for="adminSubject">Subject</label>
@@ -826,8 +889,8 @@ function renderAccountPage({
         </section>
 
         <p class="success-links">
-          <a class="continue-link" href="${escapeHtml(continuePath)}">Continue to Foundry</a>
-          <a class="continue-link" href="/logout">Log Out</a>
+          <a class="continue-link" href="${escapeHtml(continueHref)}">Continue to Foundry</a>
+          <a class="continue-link" href="${escapeHtml(logoutPath)}">Log Out</a>
         </p>
       </section>
     </main>
@@ -881,6 +944,9 @@ function normalizeManagedUserStatus(value) {
 export function createApp(config, options = {}) {
   validateConfig(config);
   const logger = options.logger || createNoopLogger();
+  const isWslRuntime = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+  const isContainerRuntime =
+    Boolean(process.env.CONTAINER || process.env.DOCKER_CONTAINER) || fsSync.existsSync("/.dockerenv");
 
   if (config.requireTotp) {
     authenticator.options = { window: 1, step: 30 };
@@ -944,16 +1010,103 @@ export function createApp(config, options = {}) {
     });
   });
 
+  function normalizeThemeAssetPath(value, type) {
+    return normalizeThemeAssetPathByType(value, type);
+  }
+
+  function resolveThemeAssetAbsolutePath(relativePath, type) {
+    const normalizedPath = normalizeThemeAssetPath(relativePath, type);
+    if (!normalizedPath) {
+      return "";
+    }
+
+    const baseDir = path.resolve(graphicsDir);
+    const absolutePath = path.resolve(baseDir, normalizedPath);
+    if (absolutePath === baseDir || !absolutePath.startsWith(`${baseDir}${path.sep}`)) {
+      return "";
+    }
+
+    return absolutePath;
+  }
+
+  async function themeAssetExists(relativePath, type) {
+    const absolutePath = resolveThemeAssetAbsolutePath(relativePath, type);
+    if (!absolutePath) {
+      return false;
+    }
+
+    try {
+      await fs.access(absolutePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function sanitizeResolvedLoginTheme(theme) {
+    const normalized = {
+      id: "",
+      name: "Default",
+      logoPath: "",
+      logoUrl: "",
+      closedBackgroundPath: "",
+      closedBackgroundUrl: "",
+      openBackgroundPath: "",
+      openBackgroundUrl: "",
+      createdAt: "",
+      updatedAt: "",
+      ...(theme && typeof theme === "object" ? theme : {}),
+    };
+
+    const assetDefs = [
+      { key: "logo", pathKey: "logoPath", urlKey: "logoUrl", type: "logo" },
+      { key: "closedBackground", pathKey: "closedBackgroundPath", urlKey: "closedBackgroundUrl", type: "background" },
+      { key: "openBackground", pathKey: "openBackgroundPath", urlKey: "openBackgroundUrl", type: "background" },
+    ];
+
+    for (const asset of assetDefs) {
+      const normalizedPath = normalizeThemeAssetPath(normalized[asset.pathKey], asset.type);
+      if (!normalizedPath) {
+        normalized[asset.pathKey] = "";
+        normalized[asset.urlKey] = "";
+        continue;
+      }
+
+      const exists = await themeAssetExists(normalizedPath, asset.type);
+      if (exists) {
+        normalized[asset.pathKey] = normalizedPath;
+        normalized[asset.urlKey] = buildThemeAssetUrl(normalizedPath);
+        continue;
+      }
+
+      if (logger.debugEnabled) {
+        logger.warn("theme.asset_missing", {
+          assetType: asset.key,
+          assetPath: normalizedPath,
+          themeId: normalized.id || "",
+        });
+      }
+      normalized[asset.pathKey] = "";
+      normalized[asset.urlKey] = "";
+    }
+
+    return normalized;
+  }
+
   async function resolveLoginTheme() {
     try {
-      return await blastdoorApi.getActiveTheme();
+      const theme = await blastdoorApi.getActiveTheme();
+      return await sanitizeResolvedLoginTheme(theme);
     } catch (error) {
       logger.warn("theme.load_failed", {
         error: {
           message: error instanceof Error ? error.message : String(error),
         },
       });
-      return await blastdoorApi.getActiveTheme().catch(() => ({
+      return await blastdoorApi
+        .getActiveTheme()
+        .then((theme) => sanitizeResolvedLoginTheme(theme))
+        .catch(() => ({
         id: "",
         name: "Default",
         logoPath: "",
@@ -964,8 +1117,16 @@ export function createApp(config, options = {}) {
         openBackgroundUrl: "",
         createdAt: "",
         updatedAt: "",
-      }));
+        }));
     }
+  }
+
+  const configuredPathPrefix = normalizePathPrefix(config.publicBaseUrl);
+  function resolveRequestPathPrefix(req) {
+    const forwardedPrefix = normalizePathPrefix(
+      req.get("x-forwarded-prefix") || req.get("x-forwarded-pathbase") || "",
+    );
+    return forwardedPrefix || configuredPathPrefix;
   }
 
   const app = express();
@@ -988,6 +1149,8 @@ export function createApp(config, options = {}) {
         imgSrc: ["'self'", "data:", "blob:"],
         fontSrc: ["'self'", "data:"],
         connectSrc: ["'self'"],
+        // Keep static assets on HTTP deployments from being auto-upgraded to HTTPS.
+        "upgrade-insecure-requests": null,
       },
     },
     crossOriginEmbedderPolicy: false,
@@ -1090,7 +1253,8 @@ export function createApp(config, options = {}) {
         req.session.destroy(() => {
           res.clearCookie("blastdoor.sid");
           if (wantsHtml) {
-            res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+            const loginPath = withPathPrefix("/login", resolveRequestPathPrefix(req));
+            res.redirect(`${loginPath}?next=${encodeURIComponent(nextPath)}`);
             return;
           }
           res.status(401).json({ error: "Authentication required" });
@@ -1117,7 +1281,8 @@ export function createApp(config, options = {}) {
           req.session.destroy(() => {
             res.clearCookie("blastdoor.sid");
             if (wantsHtml) {
-              res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+              const loginPath = withPathPrefix("/login", resolveRequestPathPrefix(req));
+              res.redirect(`${loginPath}?next=${encodeURIComponent(nextPath)}`);
               return;
             }
             res.status(401).json({ error: "Authentication required" });
@@ -1134,12 +1299,13 @@ export function createApp(config, options = {}) {
           requestPath.startsWith("/account") || requestPath.startsWith("/logout") || requestPath.startsWith("/login");
 
         if (requiresPasswordChange && !accountAllowed) {
+          const outwardAccountPath = withPathPrefix(accountPath, resolveRequestPathPrefix(req));
           if (wantsHtml) {
-            return res.redirect(accountPath);
+            return res.redirect(outwardAccountPath);
           }
           return res.status(428).json({
             error: "Password change required.",
-            accountPath,
+            accountPath: outwardAccountPath,
           });
         }
       } catch (error) {
@@ -1161,7 +1327,8 @@ export function createApp(config, options = {}) {
         logger.debug("auth.guard.redirect", collectRequestContext(req));
       }
 
-      return res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+      const loginPath = withPathPrefix("/login", resolveRequestPathPrefix(req));
+      return res.redirect(`${loginPath}?next=${encodeURIComponent(nextPath)}`);
     }
 
     if (logger.debugEnabled) {
@@ -1218,6 +1385,7 @@ export function createApp(config, options = {}) {
         csrfToken,
         profile,
         username: req.session.user,
+        pathPrefix: resolveRequestPathPrefix(req),
         forcePasswordChange,
         flashMessage: message,
         flashError: error,
@@ -1244,7 +1412,8 @@ export function createApp(config, options = {}) {
       const nextPath = safeNextPath(req.query.next, "/");
       return req.session.destroy(() => {
         res.clearCookie("blastdoor.sid");
-        res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+        const prefixedLoginPath = withPathPrefix("/login", resolveRequestPathPrefix(req));
+        res.redirect(`${prefixedLoginPath}?next=${encodeURIComponent(nextPath)}`);
       });
     }
 
@@ -1283,6 +1452,7 @@ export function createApp(config, options = {}) {
           nextPath,
           accountPath,
           theme,
+          pathPrefix: resolveRequestPathPrefix(req),
           forcePasswordChange,
         }),
       );
@@ -1300,6 +1470,7 @@ export function createApp(config, options = {}) {
         nextPath,
         requireTotp: config.requireTotp,
         theme,
+        pathPrefix: resolveRequestPathPrefix(req),
       }),
     );
     },
@@ -1435,6 +1606,7 @@ export function createApp(config, options = {}) {
           nextPath,
           requireTotp: config.requireTotp,
           theme,
+          pathPrefix: resolveRequestPathPrefix(req),
         }),
       );
     }
@@ -1528,6 +1700,7 @@ export function createApp(config, options = {}) {
                 nextPath: transitionNextPath,
                 accountPath,
                 theme,
+                pathPrefix: resolveRequestPathPrefix(req),
                 forcePasswordChange: requirePasswordChange,
               }),
             );
@@ -1550,6 +1723,7 @@ export function createApp(config, options = {}) {
                   updatedAt: "",
                 },
                 accountPath,
+                pathPrefix: resolveRequestPathPrefix(req),
                 forcePasswordChange: requirePasswordChange,
               }),
             );
@@ -1715,7 +1889,7 @@ export function createApp(config, options = {}) {
       }
 
       res.clearCookie("blastdoor.sid");
-      res.redirect("/login");
+      res.redirect(withPathPrefix("/login", resolveRequestPathPrefix(req)));
     });
   }
 
@@ -1758,7 +1932,20 @@ export function createApp(config, options = {}) {
           err.code === "ECONNREFUSED"
             ? "Foundry target refused the connection. Verify FOUNDRY_TARGET and that Foundry is running."
             : "Verify FOUNDRY_TARGET and upstream Foundry availability.";
-        res.end(`Gateway error: ${err.message}\nTarget: ${config.foundryTarget}\n${suggestion}`);
+        let networkHint = "";
+        if (err.code === "ECONNREFUSED") {
+          try {
+            const target = new URL(String(config.foundryTarget || ""));
+            if (isLoopbackHost(normalizeHostname(target.hostname)) && (isWslRuntime || isContainerRuntime)) {
+              networkHint =
+                "\nRuntime networking hint: Blastdoor is running inside WSL/container, so localhost resolves inside that runtime. " +
+                "If Foundry runs on the host OS, set FOUNDRY_TARGET to a host-reachable address (for Docker often host.docker.internal, or your host/LAN IP).";
+            }
+          } catch {
+            // Ignore target URL parse failures in hint path.
+          }
+        }
+        res.end(`Gateway error: ${err.message}\nTarget: ${config.foundryTarget}\n${suggestion}${networkHint}`);
       },
     },
   });
@@ -1919,6 +2106,41 @@ export function createServer(config, options = {}) {
   } else {
     server = http.createServer(app);
   }
+
+  server.on("error", (error) => {
+    const code = error?.code || null;
+    const address = error?.address || config.host || null;
+    const port = error?.port || config.port || null;
+    const isWsl = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+    let hint = null;
+    if (code === "EADDRNOTAVAIL") {
+      hint = isWsl
+        ? "HOST is not available in this WSL runtime. Use HOST=0.0.0.0 and expose LAN access via Windows portproxy."
+        : "HOST is not available on this machine. Use HOST=0.0.0.0 or a local interface address.";
+    } else if (code === "EADDRINUSE") {
+      hint = "Port is already in use. Stop the conflicting process or change PORT.";
+    }
+
+    logger.error("server.listen_error", {
+      code,
+      message: error instanceof Error ? error.message : String(error),
+      host: config.host,
+      port: config.port,
+      address,
+      listenPort: port,
+      hint,
+    });
+
+    if (typeof options.onListenError === "function") {
+      options.onListenError(error, { config, hint });
+    }
+
+    if (options.exitOnListenError !== false) {
+      process.nextTick(() => {
+        process.exit(1);
+      });
+    }
+  });
 
   server.listen(config.port, config.host, () => {
     if (options.silent) {

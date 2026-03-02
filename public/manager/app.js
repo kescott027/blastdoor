@@ -2,9 +2,33 @@ import { formatUnexpectedPayload, getApiBaseCandidates, resolveApiBasePath, reso
 
 const statusMessage = document.getElementById("statusMessage");
 const form = document.getElementById("configForm");
+const foundryTargetInput = form?.querySelector("input[name='FOUNDRY_TARGET']") || null;
+const assistantOllamaUrlInput = form?.querySelector("input[name='ASSISTANT_OLLAMA_URL']") || null;
+const foundryTargetAutodetectBtn = document.getElementById("foundryTargetAutodetectBtn");
+const assistantOllamaAutodetectBtn = document.getElementById("assistantOllamaAutodetectBtn");
 const diagStatusMessage = document.getElementById("diagStatusMessage");
 const diagSummary = document.getElementById("diagSummary");
 const diagJson = document.getElementById("diagJson");
+const remoteSupportEnabled = document.getElementById("remoteSupportEnabled");
+const remoteSupportDefaultTtlMinutes = document.getElementById("remoteSupportDefaultTtlMinutes");
+const remoteSupportRefreshBtn = document.getElementById("remoteSupportRefreshBtn");
+const remoteSupportTokenLabel = document.getElementById("remoteSupportTokenLabel");
+const remoteSupportTokenTtlMinutes = document.getElementById("remoteSupportTokenTtlMinutes");
+const remoteSupportGenerateTokenBtn = document.getElementById("remoteSupportGenerateTokenBtn");
+const remoteSupportCopyOutputBtn = document.getElementById("remoteSupportCopyOutputBtn");
+const remoteSupportTokenSelect = document.getElementById("remoteSupportTokenSelect");
+const remoteSupportRevokeBtn = document.getElementById("remoteSupportRevokeBtn");
+const remoteSupportRotateBtn = document.getElementById("remoteSupportRotateBtn");
+const remoteSupportStatusMessage = document.getElementById("remoteSupportStatusMessage");
+const remoteSupportOutput = document.getElementById("remoteSupportOutput");
+const remoteSupportStepHint = document.getElementById("remoteSupportStepHint");
+const callHomeEnabled = document.getElementById("callHomeEnabled");
+const callHomePodTtlMinutes = document.getElementById("callHomePodTtlMinutes");
+const callHomeGeneratePodBtn = document.getElementById("callHomeGeneratePodBtn");
+const callHomeRefreshEventsBtn = document.getElementById("callHomeRefreshEventsBtn");
+const callHomeClearEventsBtn = document.getElementById("callHomeClearEventsBtn");
+const callHomePodOutput = document.getElementById("callHomePodOutput");
+const callHomeEventsOutput = document.getElementById("callHomeEventsOutput");
 const blastDoorsToggle = document.getElementById("blastDoorsToggle");
 const blastDoorsState = document.getElementById("blastDoorsState");
 const blastDoorsClosedField = document.getElementById("blastDoorsClosedField");
@@ -12,7 +36,55 @@ const tsStatusMessage = document.getElementById("tsStatusMessage");
 const tsHints = document.getElementById("tsHints");
 const tsOutput = document.getElementById("tsOutput");
 const tsScript = document.getElementById("tsScript");
+const adminRunningValue = document.getElementById("adminRunningValue");
+const adminPidValue = document.getElementById("adminPidValue");
+const adminUptimeValue = document.getElementById("adminUptimeValue");
+const portalRunningValue = document.getElementById("portalRunningValue");
+const portalPidValue = document.getElementById("portalPidValue");
+const portalUptimeValue = document.getElementById("portalUptimeValue");
+const portalHealthValue = document.getElementById("portalHealthValue");
+const apiRunningValue = document.getElementById("apiRunningValue");
+const apiPidValue = document.getElementById("apiPidValue");
+const apiUptimeValue = document.getElementById("apiUptimeValue");
+const apiHealthValue = document.getElementById("apiHealthValue");
+const foundryReachableValue = document.getElementById("foundryReachableValue");
+const foundryApiResponseValue = document.getElementById("foundryApiResponseValue");
+const postgresRunningValue = document.getElementById("postgresRunningValue");
+const postgresPidValue = document.getElementById("postgresPidValue");
+const postgresUptimeValue = document.getElementById("postgresUptimeValue");
+const postgresHealthValue = document.getElementById("postgresHealthValue");
+const objectStoreTypeValue = document.getElementById("objectStoreTypeValue");
+const objectStoreReachableValue = document.getElementById("objectStoreReachableValue");
+const pluginsStatusValue = document.getElementById("pluginsStatusValue");
+const topStatusBar = document.getElementById("topStatusBar");
+const controlsDockOpenBtn = document.getElementById("controlsDockOpenBtn");
+const controlsDockHideBtn = document.getElementById("controlsDockHideBtn");
+const configBackupStatusMessage = document.getElementById("configBackupStatusMessage");
+const configBackupName = document.getElementById("configBackupName");
+const configBackupSelect = document.getElementById("configBackupSelect");
+const configBackupDetails = document.getElementById("configBackupDetails");
 const pluginPanelsContainer = document.getElementById("pluginPanels");
+const modulesList = document.getElementById("modulesList");
+const failuresAlertBtn = document.getElementById("failuresAlertBtn");
+const failuresAlertCount = document.getElementById("failuresAlertCount");
+const failuresModal = document.getElementById("failuresModal");
+const failuresStatusMessage = document.getElementById("failuresStatusMessage");
+const failuresTableBody = document.getElementById("failuresTableBody");
+const failuresDetails = document.getElementById("failuresDetails");
+const sessionModal = document.getElementById("sessionModal");
+const sessionStatusMessage = document.getElementById("sessionStatusMessage");
+const sessionTableBody = document.getElementById("sessionTableBody");
+const sessionSummary = document.getElementById("sessionSummary");
+const sessionInvalidateBtn = document.getElementById("sessionInvalidateBtn");
+const layoutModal = document.getElementById("layoutModal");
+const layoutStatusMessage = document.getElementById("layoutStatusMessage");
+const layoutDarkModePercent = document.getElementById("layoutDarkModePercent");
+const layoutLightModePercent = document.getElementById("layoutLightModePercent");
+const layoutDarkModeValue = document.getElementById("layoutDarkModeValue");
+const layoutLightModeValue = document.getElementById("layoutLightModeValue");
+const layoutRequirePassword = document.getElementById("layoutRequirePassword");
+const layoutManagerPassword = document.getElementById("layoutManagerPassword");
+const layoutSessionTtlHours = document.getElementById("layoutSessionTtlHours");
 const appearanceModal = document.getElementById("appearanceModal");
 const appearanceStatusMessage = document.getElementById("appearanceStatusMessage");
 const appearanceThemeSelect = document.getElementById("appearanceThemeSelect");
@@ -98,6 +170,7 @@ const tlsDetectionOutput = document.getElementById("tlsDetectionOutput");
 const tlsPlanOutput = document.getElementById("tlsPlanOutput");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
+const CONTROLS_DOCK_STORAGE_KEY = "blastdoor.manager.controlsDockCollapsed";
 const THEME_LAYOUT_DEFAULTS = {
   loginBoxWidthPercent: 100,
   loginBoxHeightPercent: 100,
@@ -159,6 +232,10 @@ const hasLegacyAppearancePicker = Boolean(
 );
 
 let latestDiagnostics = null;
+let latestRemoteSupportConfig = null;
+let latestRemoteSupportOutputText = "";
+let latestCallHomePodOutputText = "";
+let latestCallHomeEvents = [];
 let latestTroubleshootReport = null;
 let latestThemes = [];
 let latestActiveThemeId = "";
@@ -186,12 +263,53 @@ let latestUsers = [];
 let selectedUserUsername = "";
 let userEditorMode = "new";
 let latestTlsPlan = "";
+let latestConfigBackups = [];
+let latestFailures = [];
+let selectedFailureId = "";
+let latestSessions = [];
+let selectedSessionUsername = "";
+let selectedSessionKey = "";
+let latestManagerSettings = null;
 const managerPluginState = {
   loaded: false,
   modules: [],
   refreshHandlers: [],
   styles: new Set(),
 };
+
+function resolveSection(id, fallbackSelector = "") {
+  const byId = document.getElementById(id);
+  if (byId) {
+    return byId;
+  }
+
+  if (!fallbackSelector) {
+    return null;
+  }
+
+  const fallback = document.querySelector(fallbackSelector);
+  if (fallback && !fallback.id) {
+    fallback.id = id;
+  }
+  return fallback;
+}
+
+const managedMainSections = [
+  resolveSection("serviceControlSection", ".service-panel"),
+  resolveSection("configSection", ".config-panel"),
+  resolveSection("tlsManagementSection", "#tlsManagementSection"),
+  resolveSection("loginManagementSection", "#loginManagementSection"),
+  resolveSection("userManagementSection", "#userManagementSection"),
+  resolveSection("backupManagementSection", "#backupManagementSection"),
+  resolveSection("diagnosticsSection", "#diagnosticsSection"),
+  resolveSection("troubleshootingSection", ".troubleshooting-panel"),
+  resolveSection("modulesSection", "#modulesSection"),
+  resolveSection("pluginPanels", "#pluginPanels"),
+  resolveSection("runtimeLogsSection", ".runtime-panel"),
+  resolveSection("debugLogsSection", ".debug-panel"),
+].filter(Boolean);
+const mainPanelDefaultVisibleIds = new Set(["serviceControlSection"]);
+let controlsDockPositionRaf = 0;
 
 function bindClick(id, handler) {
   const element = document.getElementById(id);
@@ -202,6 +320,60 @@ function bindClick(id, handler) {
 
   element.addEventListener("click", handler);
   return true;
+}
+
+function setControlsDockCollapsed(collapsed, persist = true) {
+  const isCollapsed = Boolean(collapsed);
+  document.body.classList.toggle("controls-dock-collapsed", isCollapsed);
+
+  if (controlsDockOpenBtn) {
+    controlsDockOpenBtn.hidden = !isCollapsed;
+    controlsDockOpenBtn.classList.toggle("hidden", !isCollapsed);
+  }
+
+  if (controlsDockHideBtn) {
+    controlsDockHideBtn.setAttribute("aria-expanded", String(!isCollapsed));
+  }
+
+  if (!persist) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(CONTROLS_DOCK_STORAGE_KEY, isCollapsed ? "1" : "0");
+  } catch {
+    // Ignore storage errors and continue with in-memory state.
+  }
+}
+
+function updateControlsDockPosition() {
+  const minTopPx = 84;
+  let dockTopPx = minTopPx;
+  if (topStatusBar) {
+    const rect = topStatusBar.getBoundingClientRect();
+    dockTopPx = Math.max(minTopPx, Math.round(rect.bottom + 12));
+  }
+
+  document.documentElement.style.setProperty("--controls-dock-top", `${dockTopPx}px`);
+  document.documentElement.style.setProperty("--controls-dock-max-height", `calc(100vh - ${dockTopPx + 12}px)`);
+}
+
+function scheduleControlsDockPositionUpdate() {
+  if (controlsDockPositionRaf) {
+    return;
+  }
+  controlsDockPositionRaf = window.requestAnimationFrame(() => {
+    controlsDockPositionRaf = 0;
+    updateControlsDockPosition();
+  });
+}
+
+function loadControlsDockCollapsedState() {
+  try {
+    return window.localStorage.getItem(CONTROLS_DOCK_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 function ensureThemeEditorFormControls() {
@@ -222,9 +394,25 @@ function setDiagMessage(text, isError = false) {
   diagStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
+function setRemoteSupportMessage(text, isError = false) {
+  if (!remoteSupportStatusMessage) {
+    return;
+  }
+  remoteSupportStatusMessage.textContent = text;
+  remoteSupportStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
 function setTsMessage(text, isError = false) {
   tsStatusMessage.textContent = text;
   tsStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setConfigBackupMessage(text, isError = false) {
+  if (!configBackupStatusMessage) {
+    return;
+  }
+  configBackupStatusMessage.textContent = text;
+  configBackupStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
 function setAppearanceMessage(text, isError = false) {
@@ -246,6 +434,30 @@ function setTlsMessage(text, isError = false) {
   }
   tlsStatusMessage.textContent = text;
   tlsStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setFailuresMessage(text, isError = false) {
+  if (!failuresStatusMessage) {
+    return;
+  }
+  failuresStatusMessage.textContent = text;
+  failuresStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setSessionMessage(text, isError = false) {
+  if (!sessionStatusMessage) {
+    return;
+  }
+  sessionStatusMessage.textContent = text;
+  sessionStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setLayoutMessage(text, isError = false) {
+  if (!layoutStatusMessage) {
+    return;
+  }
+  layoutStatusMessage.textContent = text;
+  layoutStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
 function toBooleanString(value) {
@@ -279,6 +491,14 @@ function clampThemeLayoutNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, raw));
 }
 
+function clampPercent(value, fallback) {
+  const raw = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(100, raw));
+}
+
 function normalizeLoginBoxMode(value) {
   return String(value || "").trim().toLowerCase() === "light" ? "light" : THEME_LAYOUT_DEFAULTS.loginBoxMode;
 }
@@ -304,6 +524,445 @@ function toSecondsLabel(seconds) {
   return `${h}h ${rm}m`;
 }
 
+function toTimestampLabel(isoValue) {
+  const raw = String(isoValue || "").trim();
+  if (!raw) {
+    return "-";
+  }
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) {
+    return raw;
+  }
+  return date.toLocaleString();
+}
+
+function yesNoLabel(value) {
+  return value ? "Yes" : "No";
+}
+
+function healthLabel(health = {}) {
+  if (health.ok) {
+    return health.statusCode ? `Healthy (${health.statusCode})` : "Healthy";
+  }
+  if (health.statusCode) {
+    return `Unhealthy (${health.statusCode})`;
+  }
+  if (health.error) {
+    return `Unreachable (${health.error})`;
+  }
+  return "Unknown";
+}
+
+function setFoundryTargetAutodetectVisibility(isWsl) {
+  if (!foundryTargetAutodetectBtn) {
+    return;
+  }
+  const show = Boolean(isWsl);
+  foundryTargetAutodetectBtn.hidden = !show;
+  foundryTargetAutodetectBtn.classList.toggle("hidden", !show);
+  foundryTargetAutodetectBtn.disabled = !show;
+  foundryTargetAutodetectBtn.title = show ? "Detect reachable Foundry target for WSL" : "Available only in WSL";
+}
+
+function setAssistantOllamaAutodetectVisibility(isWsl) {
+  if (!assistantOllamaAutodetectBtn) {
+    return;
+  }
+  const show = Boolean(isWsl);
+  assistantOllamaAutodetectBtn.hidden = !show;
+  assistantOllamaAutodetectBtn.classList.toggle("hidden", !show);
+  assistantOllamaAutodetectBtn.disabled = !show;
+  assistantOllamaAutodetectBtn.title = show
+    ? "Detect reachable Ollama URL for WSL"
+    : "Available only in WSL";
+}
+
+function foundryApiResponseLabel(apiStatus = {}) {
+  if (apiStatus.statusCode) {
+    return String(apiStatus.statusCode);
+  }
+  if (apiStatus.error) {
+    return "Unavailable";
+  }
+  return "Unknown";
+}
+
+function updateFailuresAlertIndicator(summary = {}) {
+  if (!failuresAlertBtn || !failuresAlertCount) {
+    return;
+  }
+  const count = Number.parseInt(String(summary.count || "0"), 10);
+  const safeCount = Number.isInteger(count) && count > 0 ? count : 0;
+  failuresAlertCount.textContent = String(safeCount);
+  if (safeCount > 0) {
+    failuresAlertBtn.hidden = false;
+    failuresAlertBtn.classList.remove("hidden");
+    failuresAlertBtn.title = `Open failures (${safeCount})`;
+    return;
+  }
+  failuresAlertBtn.hidden = true;
+  failuresAlertBtn.classList.add("hidden");
+  failuresAlertBtn.title = "Open failures";
+}
+
+function renderFailureDetails(failure) {
+  if (!failuresDetails) {
+    return;
+  }
+  if (!failure) {
+    failuresDetails.textContent = "";
+    return;
+  }
+  const lines = [
+    `ID: ${failure.id || ""}`,
+    `Created: ${toTimestampLabel(failure.createdAt)}`,
+    `Source: ${failure.source || "unknown"}`,
+    `Action: ${failure.action || "-"}`,
+    `Nature: ${failure.nature || "unknown"}`,
+    `Severity: ${failure.severity || "info"}`,
+    "",
+    "Message:",
+    String(failure.message || ""),
+  ];
+  if (failure.details) {
+    lines.push("", "Details:", String(failure.details));
+  }
+  if (Array.isArray(failure.fixes) && failure.fixes.length > 0) {
+    lines.push("", "Suggested Fixes:");
+    for (const fix of failure.fixes) {
+      lines.push(`- ${fix}`);
+    }
+  }
+  failuresDetails.textContent = lines.join("\n");
+}
+
+function selectFailure(failureId) {
+  selectedFailureId = String(failureId || "");
+  const selected = latestFailures.find((entry) => String(entry.id || "") === selectedFailureId) || null;
+  renderFailureDetails(selected);
+  if (!failuresTableBody) {
+    return;
+  }
+  const rows = failuresTableBody.querySelectorAll("tr");
+  for (const row of rows) {
+    const rowId = String(row.getAttribute("data-failure-id") || "");
+    row.classList.toggle("selected", rowId === selectedFailureId);
+  }
+}
+
+function renderFailuresTable(entries) {
+  if (!failuresTableBody) {
+    return;
+  }
+  failuresTableBody.textContent = "";
+  if (!entries.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 4;
+    cell.textContent = "No failures recorded.";
+    row.append(cell);
+    failuresTableBody.append(row);
+    selectedFailureId = "";
+    renderFailureDetails(null);
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement("tr");
+    row.setAttribute("data-failure-id", String(entry.id || ""));
+    row.addEventListener("click", () => {
+      selectFailure(entry.id);
+    });
+
+    const whenCell = document.createElement("td");
+    whenCell.textContent = toTimestampLabel(entry.createdAt);
+    row.append(whenCell);
+
+    const sourceCell = document.createElement("td");
+    sourceCell.textContent = String(entry.source || "runtime");
+    row.append(sourceCell);
+
+    const natureCell = document.createElement("td");
+    natureCell.textContent = String(entry.nature || "unknown");
+    row.append(natureCell);
+
+    const messageCell = document.createElement("td");
+    messageCell.textContent = String(entry.message || "").slice(0, 180);
+    row.append(messageCell);
+
+    failuresTableBody.append(row);
+  }
+
+  const preferredId = selectedFailureId || String(entries[0]?.id || "");
+  selectFailure(preferredId);
+}
+
+function openFailuresModal() {
+  if (!failuresModal) {
+    return;
+  }
+  failuresModal.hidden = false;
+  failuresModal.classList.remove("hidden");
+}
+
+function closeFailuresModal() {
+  if (!failuresModal) {
+    return;
+  }
+  failuresModal.hidden = true;
+  failuresModal.classList.add("hidden");
+}
+
+async function refreshFailures(showMessage = false) {
+  const payload = await api("GET", "/failures");
+  const entries = Array.isArray(payload.entries) ? payload.entries : [];
+  latestFailures = entries;
+  renderFailuresTable(entries);
+  updateFailuresAlertIndicator(payload.summary || {});
+  if (showMessage) {
+    setFailuresMessage(`Loaded ${entries.length} failure record(s).`);
+  }
+}
+
+function renderSessionSummary(payload = {}) {
+  if (!sessionSummary) {
+    return;
+  }
+  const summary = payload.summary || {};
+  const lines = [
+    `Generated: ${toTimestampLabel(payload.generatedAt)}`,
+    `Active Sessions: ${Number.parseInt(String(summary.activeCount || "0"), 10) || 0}`,
+    `Session TTL Window: ${Number.parseInt(String(summary.sessionMaxAgeHours || "12"), 10) || 12}h`,
+  ];
+  sessionSummary.textContent = lines.join("\n");
+}
+
+function findSessionByKeyOrUsername(sessionKey, username) {
+  const byKey = latestSessions.find((entry) => String(entry.sessionKey || "") === String(sessionKey || ""));
+  if (byKey) {
+    return byKey;
+  }
+  return latestSessions.find((entry) => String(entry.username || "") === String(username || "")) || null;
+}
+
+function selectSession({ sessionKey = "", username = "" } = {}) {
+  const selected = findSessionByKeyOrUsername(sessionKey, username);
+  selectedSessionKey = selected ? String(selected.sessionKey || "") : "";
+  selectedSessionUsername = selected ? String(selected.username || "") : "";
+  if (sessionInvalidateBtn) {
+    sessionInvalidateBtn.disabled = !selectedSessionUsername;
+  }
+  if (!sessionTableBody) {
+    return;
+  }
+  for (const row of sessionTableBody.querySelectorAll("tr")) {
+    const rowSessionKey = String(row.getAttribute("data-session-key") || "");
+    row.classList.toggle("selected", rowSessionKey && rowSessionKey === selectedSessionKey);
+  }
+}
+
+async function revokeSpecificSession(entry, { showMessage = true } = {}) {
+  const username = String(entry?.username || "");
+  const sessionKey = String(entry?.sessionKey || "");
+  if (!username) {
+    throw new Error("Invalid session row: username is missing.");
+  }
+  if (!sessionKey) {
+    throw new Error("Invalid session row: session key is missing.");
+  }
+
+  await api("POST", "/sessions/revoke", {
+    username,
+    sessionKey,
+  });
+
+  if (showMessage) {
+    setSessionMessage(`Revoked session ${sessionKey} for ${username}.`);
+  }
+}
+
+function renderSessionTable(entries) {
+  if (!sessionTableBody) {
+    return;
+  }
+  sessionTableBody.textContent = "";
+  if (!Array.isArray(entries) || entries.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.textContent = "No active authenticated sessions found.";
+    row.append(cell);
+    sessionTableBody.append(row);
+    selectSession({});
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement("tr");
+    row.setAttribute("data-username", String(entry.username || ""));
+    row.setAttribute("data-session-key", String(entry.sessionKey || ""));
+    row.addEventListener("click", () => {
+      selectSession({
+        sessionKey: entry.sessionKey,
+        username: entry.username,
+      });
+    });
+
+    const userCell = document.createElement("td");
+    const label = entry.friendlyName ? `${entry.friendlyName} (${entry.username})` : String(entry.username || "");
+    userCell.textContent = label;
+    row.append(userCell);
+
+    const loginCell = document.createElement("td");
+    loginCell.textContent = toTimestampLabel(entry.lastLoginAt);
+    row.append(loginCell);
+
+    const ipCell = document.createElement("td");
+    ipCell.textContent = String(entry.lastKnownIp || "-");
+    row.append(ipCell);
+
+    const versionCell = document.createElement("td");
+    versionCell.textContent = String(entry.sessionVersion || 1);
+    row.append(versionCell);
+
+    const actionsCell = document.createElement("td");
+    actionsCell.className = "actions-cell";
+    const actions = document.createElement("div");
+    actions.className = "session-row-actions";
+    const revokeBtn = document.createElement("button");
+    revokeBtn.type = "button";
+    revokeBtn.textContent = "Revoke";
+    revokeBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        await revokeSpecificSession(entry);
+        await refreshSessions(false);
+        await refreshAll();
+      } catch (error) {
+        setSessionMessage(error.message || String(error), true);
+      }
+    });
+    actions.append(revokeBtn);
+    actionsCell.append(actions);
+    row.append(actionsCell);
+
+    sessionTableBody.append(row);
+  }
+
+  const preferred = findSessionByKeyOrUsername(selectedSessionKey, selectedSessionUsername) || entries[0] || null;
+  selectSession({
+    sessionKey: preferred?.sessionKey || "",
+    username: preferred?.username || "",
+  });
+}
+
+async function refreshSessions(showMessage = true) {
+  const payload = await api("GET", "/sessions");
+  const entries = Array.isArray(payload.sessions) ? payload.sessions : [];
+  latestSessions = entries;
+  renderSessionTable(entries);
+  renderSessionSummary(payload);
+  if (showMessage) {
+    setSessionMessage(`Loaded ${entries.length} active session(s).`);
+  }
+}
+
+function openSessionModal() {
+  if (!sessionModal) {
+    return;
+  }
+  sessionModal.hidden = false;
+  sessionModal.classList.remove("hidden");
+}
+
+function closeSessionModal() {
+  if (!sessionModal) {
+    return;
+  }
+  sessionModal.hidden = true;
+  sessionModal.classList.add("hidden");
+}
+
+function applyConsoleLayout(layout = {}) {
+  const darkModePercent = clampPercent(layout.darkModePercent, 100);
+  const lightModePercent = clampPercent(layout.lightModePercent, 0);
+  const panelTopAlpha = Math.max(0.02, Math.min(0.2, 0.02 + (lightModePercent - darkModePercent) * 0.0012));
+  const panelBorderAlpha = Math.max(0.08, Math.min(0.36, 0.1 + lightModePercent * 0.0016));
+  const statusTopAlpha = Math.max(0.03, Math.min(0.24, 0.035 + lightModePercent * 0.0018));
+  const brightness = Math.max(0.7, Math.min(1.6, 0.82 + lightModePercent * 0.005 + darkModePercent * 0.001));
+  const contrast = Math.max(0.88, Math.min(1.36, 0.95 + darkModePercent * 0.002 + lightModePercent * 0.001));
+  const saturation = Math.max(0.84, Math.min(1.32, 0.92 + darkModePercent * 0.001 + lightModePercent * 0.001));
+
+  document.documentElement.style.setProperty("--panel-top-alpha", panelTopAlpha.toFixed(3));
+  document.documentElement.style.setProperty("--panel-border-alpha", panelBorderAlpha.toFixed(3));
+  document.documentElement.style.setProperty("--status-top-alpha", statusTopAlpha.toFixed(3));
+  document.documentElement.style.setProperty(
+    "--manager-filter",
+    `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturation.toFixed(3)})`,
+  );
+}
+
+function syncLayoutSliderValues() {
+  if (layoutDarkModePercent && layoutDarkModeValue) {
+    layoutDarkModeValue.textContent = `${clampPercent(layoutDarkModePercent.value, 100)}%`;
+  }
+  if (layoutLightModePercent && layoutLightModeValue) {
+    layoutLightModeValue.textContent = `${clampPercent(layoutLightModePercent.value, 0)}%`;
+  }
+}
+
+function fillLayoutSettings(settings = {}) {
+  const layout = settings.layout || {};
+  const access = settings.access || {};
+  if (layoutDarkModePercent) {
+    setFieldValueIfNotEditing(layoutDarkModePercent, String(clampPercent(layout.darkModePercent, 100)));
+  }
+  if (layoutLightModePercent) {
+    setFieldValueIfNotEditing(layoutLightModePercent, String(clampPercent(layout.lightModePercent, 0)));
+  }
+  if (layoutRequirePassword) {
+    setFieldCheckedIfNotEditing(layoutRequirePassword, Boolean(access.requirePassword));
+  }
+  if (layoutSessionTtlHours) {
+    const ttl = Number.parseInt(String(access.sessionTtlHours || "12"), 10);
+    setFieldValueIfNotEditing(layoutSessionTtlHours, String(Number.isFinite(ttl) ? Math.max(1, Math.min(168, ttl)) : 12));
+  }
+  if (layoutManagerPassword) {
+    setFieldValueIfNotEditing(layoutManagerPassword, "");
+  }
+  syncLayoutSliderValues();
+  applyConsoleLayout({
+    darkModePercent: layoutDarkModePercent?.value || 100,
+    lightModePercent: layoutLightModePercent?.value || 0,
+  });
+}
+
+async function refreshManagerSettings(showMessage = false) {
+  const payload = await api("GET", "/manager-settings");
+  latestManagerSettings = payload.settings || null;
+  fillLayoutSettings(payload.settings || {});
+  if (showMessage) {
+    setLayoutMessage("Control console settings loaded.");
+  }
+}
+
+function openLayoutModal() {
+  if (!layoutModal) {
+    return;
+  }
+  layoutModal.hidden = false;
+  layoutModal.classList.remove("hidden");
+}
+
+function closeLayoutModal() {
+  if (!layoutModal) {
+    return;
+  }
+  layoutModal.hidden = true;
+  layoutModal.classList.add("hidden");
+}
+
 function updateStatusCards(monitor) {
   const status = monitor?.status || {};
   const health = monitor?.health || {};
@@ -324,20 +983,109 @@ function updateStatusCards(monitor) {
   document.getElementById("debugLogs").textContent = (monitor.debugLogLines || []).join("\n");
 }
 
+function updateControlPlaneCards(payload = {}) {
+  const admin = payload.admin || {};
+  const portal = payload.portal || {};
+  const apiStatus = payload.api || {};
+  const foundry = payload.foundry || {};
+  const environment = payload.environment || {};
+  const postgres = payload.postgres || {};
+  const objectStore = payload.objectStore || {};
+  const plugins = Array.isArray(payload.plugins) ? payload.plugins : [];
+  const failures = payload.failures || {};
+
+  if (adminRunningValue) {
+    adminRunningValue.textContent = yesNoLabel(Boolean(admin.running));
+    adminPidValue.textContent = admin.pid || "-";
+    adminUptimeValue.textContent = toSecondsLabel(admin.uptimeSeconds || 0);
+  }
+
+  if (portalRunningValue) {
+    portalRunningValue.textContent = yesNoLabel(Boolean(portal.running));
+    portalPidValue.textContent = portal.pid || "-";
+    portalUptimeValue.textContent = toSecondsLabel(portal.uptimeSeconds || 0);
+    portalHealthValue.textContent = healthLabel(portal.health || {});
+  }
+
+  if (apiRunningValue) {
+    apiRunningValue.textContent = yesNoLabel(Boolean(apiStatus.running));
+    apiPidValue.textContent = apiStatus.pid || "-";
+    apiUptimeValue.textContent = toSecondsLabel(apiStatus.uptimeSeconds || 0);
+    apiHealthValue.textContent = healthLabel(apiStatus.health || {});
+  }
+
+  if (foundryReachableValue) {
+    foundryReachableValue.textContent = yesNoLabel(Boolean(foundry.reachable));
+  }
+  if (foundryApiResponseValue) {
+    foundryApiResponseValue.textContent = foundryApiResponseLabel(foundry.apiStatus || {});
+  }
+  setFoundryTargetAutodetectVisibility(Boolean(environment.isWsl));
+  setAssistantOllamaAutodetectVisibility(Boolean(environment.isWsl));
+
+  if (postgresRunningValue) {
+    postgresRunningValue.textContent = yesNoLabel(Boolean(postgres.running));
+    postgresPidValue.textContent = postgres.pid || "-";
+    postgresUptimeValue.textContent = toSecondsLabel(postgres.uptimeSeconds || 0);
+    postgresHealthValue.textContent = healthLabel(postgres.health || {});
+  }
+
+  if (objectStoreTypeValue) {
+    objectStoreTypeValue.textContent = String(objectStore.type || "unknown");
+    objectStoreReachableValue.textContent = yesNoLabel(Boolean(objectStore.reachable));
+  }
+
+  if (pluginsStatusValue) {
+    if (plugins.length === 0) {
+      pluginsStatusValue.textContent = "No plugins detected.";
+    } else {
+      pluginsStatusValue.textContent = plugins
+        .map((plugin) => {
+          const running = yesNoLabel(Boolean(plugin.running));
+          const pid = plugin.pid || "-";
+          const uptime = plugin.uptimeSeconds ? toSecondsLabel(plugin.uptimeSeconds) : "-";
+          const health = healthLabel(plugin.health || {});
+          return `${plugin.name || plugin.id}: run=${running} pid=${pid} up=${uptime} health=${health}`;
+        })
+        .join("\n");
+    }
+  }
+
+  if (modulesList) {
+    modulesList.textContent = "";
+    if (plugins.length === 0) {
+      const li = document.createElement("li");
+      li.textContent = "No modules loaded.";
+      modulesList.append(li);
+    } else {
+      for (const plugin of plugins) {
+        const li = document.createElement("li");
+        li.textContent = `${plugin.name || plugin.id} | running: ${yesNoLabel(Boolean(plugin.running))} | health: ${healthLabel(plugin.health || {})}`;
+        modulesList.append(li);
+      }
+    }
+  }
+
+  updateFailuresAlertIndicator(failures);
+}
+
 function fillForm(config) {
   const fields = form.querySelectorAll("input[name]");
   for (const field of fields) {
     if (field.name === "AUTH_PASSWORD") {
-      field.value = "";
+      setFieldValueIfNotEditing(field, "");
       continue;
     }
-
-    field.value = config[field.name] || "";
+    if (field.type === "checkbox") {
+      setFieldCheckedIfNotEditing(field, parseBooleanish(config[field.name]));
+      continue;
+    }
+    setFieldValueIfNotEditing(field, config[field.name] || "");
   }
 
   const blastDoorsClosed = parseBooleanish(config.BLAST_DOORS_CLOSED);
-  blastDoorsToggle.checked = blastDoorsClosed;
-  blastDoorsClosedField.value = toBooleanString(blastDoorsClosed);
+  setFieldCheckedIfNotEditing(blastDoorsToggle, blastDoorsClosed);
+  setFieldValueIfNotEditing(blastDoorsClosedField, toBooleanString(blastDoorsClosed));
   blastDoorsState.textContent = blastDoorsClosed ? "Locked" : "Unlocked";
 }
 
@@ -580,6 +1328,11 @@ async function api(method, routePath, body) {
       }
 
       if (!response.ok) {
+        if (response.status === 401 && payload?.managerAuthRequired) {
+          const nextPath = `${window.location.pathname}${window.location.search || ""}`;
+          window.location.assign(`/manager/login?next=${encodeURIComponent(nextPath)}`);
+          throw new Error("Manager authentication required.");
+        }
         const requestError = new Error(payload.error || `Request failed (${response.status})`);
         if (hasFallback && response.status === 404) {
           lastError = requestError;
@@ -605,7 +1358,7 @@ async function api(method, routePath, body) {
 
 async function copyToClipboard(text) {
   if (!text) {
-    throw new Error("No diagnostics generated yet.");
+    throw new Error("Nothing available to copy.");
   }
 
   if (navigator.clipboard?.writeText) {
@@ -624,10 +1377,179 @@ async function copyToClipboard(text) {
   document.body.removeChild(fallback);
 }
 
+function isActivelyEditingField(field) {
+  if (!field) {
+    return false;
+  }
+  return document.activeElement === field && !field.disabled && !field.readOnly;
+}
+
+function setFieldValueIfNotEditing(field, value) {
+  if (!field || isActivelyEditingField(field)) {
+    return;
+  }
+  const next = value === undefined || value === null ? "" : String(value);
+  if (field.value !== next) {
+    field.value = next;
+  }
+}
+
+function setFieldCheckedIfNotEditing(field, checked) {
+  if (!field || isActivelyEditingField(field)) {
+    return;
+  }
+  field.checked = Boolean(checked);
+}
+
 function renderDiagnostics(payload) {
   latestDiagnostics = payload;
   diagSummary.textContent = payload.summary || "";
   diagJson.textContent = JSON.stringify(payload.report || {}, null, 2);
+}
+
+function formatRemoteSupportTokenOption(entry) {
+  const label = String(entry?.label || "Token").trim() || "Token";
+  const tokenId = String(entry?.tokenId || "").trim();
+  const expiresAt = String(entry?.expiresAt || "").trim();
+  const active = entry?.active === true;
+  const status = active ? "active" : "inactive";
+  const expiresText = expiresAt ? ` expires ${expiresAt}` : "";
+  return `${label} (${tokenId || "unknown"}) [${status}]${expiresText}`;
+}
+
+function renderRemoteSupportConfig(payload) {
+  latestRemoteSupportConfig = payload?.config || null;
+  const config = latestRemoteSupportConfig || {};
+  const enabled = config.enabled === true;
+  if (remoteSupportEnabled) {
+    setFieldValueIfNotEditing(remoteSupportEnabled, enabled ? "true" : "false");
+  }
+  if (remoteSupportDefaultTtlMinutes) {
+    setFieldValueIfNotEditing(remoteSupportDefaultTtlMinutes, String(config.defaultTokenTtlMinutes || 30));
+  }
+  if (remoteSupportTokenTtlMinutes) {
+    setFieldValueIfNotEditing(remoteSupportTokenTtlMinutes, String(config.defaultTokenTtlMinutes || 30));
+  }
+  if (callHomePodTtlMinutes) {
+    setFieldValueIfNotEditing(callHomePodTtlMinutes, String(config.defaultTokenTtlMinutes || 30));
+  }
+  if (callHomeEnabled) {
+    setFieldValueIfNotEditing(callHomeEnabled, config.callHomeEnabled === true ? "true" : "false");
+  }
+
+  if (remoteSupportTokenSelect && !isActivelyEditingField(remoteSupportTokenSelect)) {
+    remoteSupportTokenSelect.innerHTML = "";
+    const tokens = Array.isArray(config.tokens) ? config.tokens : [];
+    if (tokens.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No tokens issued";
+      remoteSupportTokenSelect.append(option);
+    } else {
+      for (const token of tokens) {
+        const option = document.createElement("option");
+        option.value = String(token?.tokenId || "");
+        option.textContent = formatRemoteSupportTokenOption(token);
+        remoteSupportTokenSelect.append(option);
+      }
+    }
+  }
+
+  if (remoteSupportRevokeBtn) {
+    const selected = String(remoteSupportTokenSelect?.value || "");
+    remoteSupportRevokeBtn.disabled = !enabled || !selected;
+  }
+  if (remoteSupportRotateBtn) {
+    const selected = String(remoteSupportTokenSelect?.value || "");
+    remoteSupportRotateBtn.disabled = !enabled || !selected;
+  }
+
+  if (remoteSupportTokenLabel) {
+    remoteSupportTokenLabel.disabled = !enabled;
+  }
+  if (remoteSupportTokenTtlMinutes) {
+    remoteSupportTokenTtlMinutes.disabled = !enabled;
+  }
+  if (remoteSupportGenerateTokenBtn) {
+    remoteSupportGenerateTokenBtn.disabled = !enabled;
+  }
+  if (callHomeEnabled) {
+    callHomeEnabled.disabled = !enabled;
+  }
+  if (callHomePodTtlMinutes) {
+    callHomePodTtlMinutes.disabled = !enabled;
+  }
+  if (callHomeGeneratePodBtn) {
+    callHomeGeneratePodBtn.disabled = !enabled || config.callHomeEnabled !== true;
+  }
+  if (callHomeRefreshEventsBtn) {
+    callHomeRefreshEventsBtn.disabled = !enabled || config.callHomeEnabled !== true;
+  }
+  if (callHomeClearEventsBtn) {
+    callHomeClearEventsBtn.disabled = !enabled || config.callHomeEnabled !== true;
+  }
+  if (remoteSupportCopyOutputBtn) {
+    remoteSupportCopyOutputBtn.disabled = !latestRemoteSupportOutputText;
+  }
+  if (remoteSupportStepHint) {
+    if (!enabled) {
+      remoteSupportStepHint.textContent = "Step 1: Enable Remote Support API and click Save Remote API Config.";
+    } else if (config.callHomeEnabled !== true) {
+      remoteSupportStepHint.textContent = "Step 2: Enable Call-Home API and save config to allow diagnostic pod registration.";
+    } else if (!latestRemoteSupportOutputText) {
+      remoteSupportStepHint.textContent = "Step 3: Generate a token. It is only displayed once.";
+    } else {
+      remoteSupportStepHint.textContent = "Step 4: Copy token + call-home bundle and share securely with your remote troubleshooter.";
+    }
+  }
+}
+
+async function refreshRemoteSupportConfig(showMessage = false) {
+  if (!remoteSupportRefreshBtn) {
+    return;
+  }
+  const payload = await api("GET", "/remote-support/config");
+  renderRemoteSupportConfig(payload);
+  if (showMessage) {
+    setRemoteSupportMessage("Remote support API settings loaded.");
+  }
+}
+
+function renderCallHomeEvents(payload = {}) {
+  latestCallHomeEvents = Array.isArray(payload.events) ? payload.events : [];
+  if (!callHomeEventsOutput) {
+    return;
+  }
+  if (latestCallHomeEvents.length === 0) {
+    callHomeEventsOutput.textContent = "No call-home events captured yet.";
+    return;
+  }
+  const lines = [];
+  for (const entry of latestCallHomeEvents) {
+    lines.push(
+      `[${String(entry.createdAt || "unknown")}] ${String(entry.type || "event")} satellite=${String(entry.satelliteId || "-")} status=${String(entry.status || "-")}`,
+    );
+    if (entry.message) {
+      lines.push(`  message: ${String(entry.message)}`);
+    }
+    if (entry.payload && typeof entry.payload === "object") {
+      const payloadJson = JSON.stringify(entry.payload, null, 2)
+        .split("\n")
+        .map((line) => `  ${line}`)
+        .join("\n");
+      lines.push(payloadJson);
+    }
+    lines.push("");
+  }
+  callHomeEventsOutput.textContent = lines.join("\n").trim();
+}
+
+async function refreshCallHomeEvents(showMessage = false) {
+  const payload = await api("GET", "/call-home/events?limit=100");
+  renderCallHomeEvents(payload);
+  if (showMessage) {
+    setRemoteSupportMessage(`Loaded ${latestCallHomeEvents.length} call-home event(s).`);
+  }
 }
 
 function formatCheckLine(check) {
@@ -648,8 +1570,12 @@ function formatGuidedActionLine(action) {
 function setPortproxyButtonState(report) {
   const isWsl = Boolean(report?.environment?.isWsl);
   const detectBtn = document.getElementById("tsPortproxyDetectBtn");
+  const fixFoundryBtn = document.getElementById("tsFoundryWslFixBtn");
   const scriptBtn = document.getElementById("tsPortproxyScriptBtn");
   detectBtn.disabled = !isWsl;
+  if (fixFoundryBtn) {
+    fixFoundryBtn.disabled = !isWsl;
+  }
   scriptBtn.disabled = !isWsl;
 }
 
@@ -702,6 +1628,67 @@ function renderTroubleshootActionResult(result) {
     ...(result.outputs || []).map(formatActionOutputEntry),
   ];
   tsOutput.textContent = lines.join("\n\n");
+}
+
+function renderConfigBackupList(payload = {}, preferredBackupId = "") {
+  latestConfigBackups = Array.isArray(payload.backups) ? payload.backups : [];
+  if (!configBackupSelect) {
+    return;
+  }
+
+  configBackupSelect.innerHTML = "";
+  if (latestConfigBackups.length === 0) {
+    configBackupSelect.disabled = true;
+    configBackupSelect.append(optionMarkup("", "No backups found", true));
+    return;
+  }
+
+  configBackupSelect.disabled = false;
+  const targetId = preferredBackupId || latestConfigBackups[0].backupId || "";
+  for (const backup of latestConfigBackups) {
+    const label = `${backup.name || backup.backupId} (${backup.createdAt || "unknown"})`;
+    configBackupSelect.append(optionMarkup(backup.backupId, label, backup.backupId === targetId));
+  }
+}
+
+function getSelectedConfigBackupId() {
+  if (!configBackupSelect || configBackupSelect.disabled) {
+    return "";
+  }
+  return String(configBackupSelect.value || "");
+}
+
+function renderConfigBackupView(payload = {}) {
+  if (!configBackupDetails) {
+    return;
+  }
+  const backup = payload.backup || {};
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const lines = [
+    `Backup: ${backup.name || backup.backupId || "unknown"}`,
+    `Backup ID: ${backup.backupId || "unknown"}`,
+    `Created: ${backup.createdAt || "unknown"}`,
+    "",
+  ];
+
+  for (const file of files) {
+    lines.push(`# ${file.relativePath} (${file.exists ? `${file.sizeBytes || 0} bytes` : "missing"})`);
+    lines.push(file.content || "");
+    lines.push("");
+  }
+  configBackupDetails.textContent = lines.join("\n");
+}
+
+async function refreshConfigBackups(showMessage = false) {
+  if (!configBackupSelect) {
+    return;
+  }
+  const currentId = getSelectedConfigBackupId();
+  const payload = await api("GET", "/config-backups");
+  renderConfigBackupList(payload, currentId);
+  if (showMessage) {
+    setConfigBackupMessage(`Loaded ${latestConfigBackups.length} backup(s).`);
+  }
 }
 
 function optionMarkup(value, label, selected = false) {
@@ -1680,31 +2667,31 @@ function buildTlsPayload() {
 
 function fillTlsForm(payload = {}) {
   if (tlsEnabled) {
-    tlsEnabled.checked = Boolean(payload.tlsEnabled);
+    setFieldCheckedIfNotEditing(tlsEnabled, Boolean(payload.tlsEnabled));
   }
   if (tlsDomain) {
-    tlsDomain.value = String(payload.tlsDomain || "");
+    setFieldValueIfNotEditing(tlsDomain, String(payload.tlsDomain || ""));
   }
   if (tlsEmail) {
-    tlsEmail.value = String(payload.tlsEmail || "");
+    setFieldValueIfNotEditing(tlsEmail, String(payload.tlsEmail || ""));
   }
   if (tlsChallengeMethod) {
-    tlsChallengeMethod.value = String(payload.tlsChallengeMethod || "webroot");
+    setFieldValueIfNotEditing(tlsChallengeMethod, String(payload.tlsChallengeMethod || "webroot"));
   }
   if (tlsWebrootPath) {
-    tlsWebrootPath.value = String(payload.tlsWebrootPath || "/var/www/html");
+    setFieldValueIfNotEditing(tlsWebrootPath, String(payload.tlsWebrootPath || "/var/www/html"));
   }
   if (tlsCertFile) {
-    tlsCertFile.value = String(payload.tlsCertFile || "");
+    setFieldValueIfNotEditing(tlsCertFile, String(payload.tlsCertFile || ""));
   }
   if (tlsKeyFile) {
-    tlsKeyFile.value = String(payload.tlsKeyFile || "");
+    setFieldValueIfNotEditing(tlsKeyFile, String(payload.tlsKeyFile || ""));
   }
   if (tlsCaFile) {
-    tlsCaFile.value = String(payload.tlsCaFile || "");
+    setFieldValueIfNotEditing(tlsCaFile, String(payload.tlsCaFile || ""));
   }
   if (tlsPassphrase) {
-    tlsPassphrase.value = "";
+    setFieldValueIfNotEditing(tlsPassphrase, "");
   }
 }
 
@@ -1763,10 +2750,25 @@ async function refreshTlsPanel(showMessage = true) {
 
 async function refreshAll() {
   try {
-    const [configResult, monitorResult] = await Promise.all([api("GET", "/config"), api("GET", "/monitor")]);
+    const [configResult, monitorResult, controlPlaneResult, managerSettingsResult, remoteSupportConfigResult, callHomeEventsResult] =
+      await Promise.all([
+      api("GET", "/config"),
+      api("GET", "/monitor"),
+      api("GET", "/control-plane-status"),
+      api("GET", "/manager-settings"),
+      api("GET", "/remote-support/config"),
+      api("GET", "/call-home/events?limit=100"),
+    ]);
     fillForm(configResult.config);
     updateStatusCards(monitorResult);
+    updateControlPlaneCards(controlPlaneResult);
+    latestManagerSettings = managerSettingsResult.settings || null;
+    fillLayoutSettings(managerSettingsResult.settings || {});
+    renderRemoteSupportConfig(remoteSupportConfigResult);
+    renderCallHomeEvents(callHomeEventsResult);
+    await refreshFailures(false);
     await runPluginRefreshHandlers();
+    scheduleControlsDockPositionUpdate();
   } catch (error) {
     setMessage(error.message || String(error), true);
   }
@@ -1876,6 +2878,60 @@ bindClick("refreshBtn", async () => {
   setMessage("Status refreshed.");
 });
 
+bindClick("foundryTargetAutodetectBtn", async () => {
+  try {
+    const payload = await api("POST", "/config/foundry-target-autodetect", {});
+    const detectedTarget = String(payload?.foundryTarget || "").trim();
+    if (!detectedTarget) {
+      throw new Error("Autodetect did not return a Foundry target.");
+    }
+
+    if (foundryTargetInput) {
+      foundryTargetInput.value = detectedTarget;
+    }
+
+    const apiStatus = payload?.apiStatus || {};
+    const checkState = apiStatus.statusCode
+      ? `HTTP ${apiStatus.statusCode}`
+      : apiStatus.error
+        ? `unreachable (${apiStatus.error})`
+        : "unknown";
+
+    setMessage(
+      `Autodetected FOUNDRY_TARGET=${detectedTarget} (${checkState}). Click Save Config to persist, then restart Blastdoor.`,
+    );
+  } catch (error) {
+    setMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("assistantOllamaAutodetectBtn", async () => {
+  try {
+    const payload = await api("POST", "/config/assistant-ollama-url-autodetect", {});
+    const detectedUrl = String(payload?.assistantOllamaUrl || "").trim();
+    if (!detectedUrl) {
+      throw new Error("Autodetect did not return an ASSISTANT_OLLAMA_URL value.");
+    }
+
+    if (assistantOllamaUrlInput) {
+      assistantOllamaUrlInput.value = detectedUrl;
+    }
+
+    const health = payload?.health || {};
+    const checkState = health.statusCode
+      ? `HTTP ${health.statusCode}`
+      : health.error
+        ? `unreachable (${health.error})`
+        : "unknown";
+
+    setMessage(
+      `Autodetected ASSISTANT_OLLAMA_URL=${detectedUrl} (${checkState}). Click Save Config to persist, then restart Blastdoor.`,
+    );
+  } catch (error) {
+    setMessage(error.message || String(error), true);
+  }
+});
+
 bindClick("openPortalBtn", async () => {
   try {
     let config = buildConfigPayloadFromForm();
@@ -1893,6 +2949,48 @@ bindClick("openPortalBtn", async () => {
     setMessage(`Opened Blastdoor portal: ${portalUrl}`);
   } catch (error) {
     setMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("sessionMgmtBtn", async () => {
+  if (!sessionModal) {
+    setMessage("Session management panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!sessionModal.hidden) {
+    closeSessionModal();
+    setSessionMessage("Session management panel closed.");
+    return;
+  }
+
+  openSessionModal();
+  setSessionMessage("Loading sessions...");
+  try {
+    await refreshSessions(true);
+  } catch (error) {
+    setSessionMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutBtn", async () => {
+  if (!layoutModal) {
+    setMessage("Control console layout panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!layoutModal.hidden) {
+    closeLayoutModal();
+    setLayoutMessage("Control console layout panel closed.");
+    return;
+  }
+
+  openLayoutModal();
+  setLayoutMessage("Loading control console settings...");
+  try {
+    await refreshManagerSettings(true);
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
   }
 });
 
@@ -2234,6 +3332,280 @@ bindClick("diagCopyJsonBtn", async () => {
   }
 });
 
+if (remoteSupportTokenSelect) {
+  remoteSupportTokenSelect.addEventListener("change", () => {
+    const enabled = latestRemoteSupportConfig?.enabled === true;
+    if (remoteSupportRevokeBtn) {
+      remoteSupportRevokeBtn.disabled = !enabled || !String(remoteSupportTokenSelect.value || "");
+    }
+    if (remoteSupportRotateBtn) {
+      remoteSupportRotateBtn.disabled = !enabled || !String(remoteSupportTokenSelect.value || "");
+    }
+  });
+}
+
+bindClick("remoteSupportRefreshBtn", async () => {
+  try {
+    await refreshRemoteSupportConfig(true);
+    await refreshCallHomeEvents(false);
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportSaveConfigBtn", async () => {
+  try {
+    const enabled = String(remoteSupportEnabled?.value || "false") === "true";
+    const callHomeEnabledValue = String(callHomeEnabled?.value || "false") === "true";
+    const defaultTokenTtlMinutes = Number.parseInt(String(remoteSupportDefaultTtlMinutes?.value || "30"), 10);
+    const payload = await api("POST", "/remote-support/config", {
+      enabled,
+      callHomeEnabled: callHomeEnabledValue,
+      defaultTokenTtlMinutes,
+    });
+    renderRemoteSupportConfig(payload);
+    const exposure = payload?.networkExposure || null;
+    if (exposure) {
+      const lines = [
+        `WSL exposure sync status: ${String(exposure.status || "unknown")}`,
+        `Message: ${String(exposure.message || "")}`,
+      ];
+      if (exposure.wslIp) {
+        lines.push(`WSL IP: ${String(exposure.wslIp)}`);
+      }
+      if (Array.isArray(exposure.remediation) && exposure.remediation.length > 0) {
+        lines.push("", "Remediation:");
+        for (const item of exposure.remediation) {
+          lines.push(`- ${String(item)}`);
+        }
+      }
+      if (exposure.script) {
+        lines.push("", "PowerShell script (manual fallback):", String(exposure.script));
+      }
+      latestRemoteSupportOutputText = lines.join("\n");
+      if (remoteSupportOutput) {
+        remoteSupportOutput.textContent = latestRemoteSupportOutputText;
+      }
+      if (exposure.applied === true) {
+        setRemoteSupportMessage(enabled ? "Remote support API enabled and WSL exposure sync applied." : "Remote support API disabled and WSL exposure sync removed.");
+      } else if (String(exposure.status || "").startsWith("blocked")) {
+        setRemoteSupportMessage(`Remote support API ${enabled ? "enabled" : "disabled"}, but network exposure is blocked. See output for remediation.`, true);
+      } else if (String(exposure.status || "").startsWith("failed")) {
+        setRemoteSupportMessage(`Remote support API ${enabled ? "enabled" : "disabled"}, but automatic WSL exposure sync failed. See output for remediation.`, true);
+      } else {
+        setRemoteSupportMessage(enabled ? "Remote support API enabled." : "Remote support API disabled.");
+      }
+    } else {
+      setRemoteSupportMessage(
+        enabled
+          ? "Remote support API enabled. Generate a token next."
+          : "Remote support API disabled.",
+      );
+    }
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportGenerateTokenBtn", async () => {
+  try {
+    if (latestRemoteSupportConfig?.enabled !== true) {
+      throw new Error("Enable Remote Support API and save config before generating a token.");
+    }
+    const label = String(remoteSupportTokenLabel?.value || "").trim();
+    const ttlMinutes = Number.parseInt(String(remoteSupportTokenTtlMinutes?.value || "30"), 10);
+    const payload = await api("POST", "/remote-support/tokens/create", {
+      label,
+      ttlMinutes,
+    });
+    const token = String(payload?.token || "");
+    const tokenMeta = payload?.tokenMeta || {};
+    const examples = Array.isArray(payload?.examples) ? payload.examples : [];
+    const lines = [
+      `Token (displayed once): ${token}`,
+      "",
+      `Token ID: ${tokenMeta.tokenId || ""}`,
+      `Label: ${tokenMeta.label || ""}`,
+      `Expires: ${tokenMeta.expiresAt || ""}`,
+      "",
+      "Example commands:",
+      ...examples,
+    ];
+    latestRemoteSupportOutputText = lines.join("\n");
+    if (remoteSupportOutput) {
+      remoteSupportOutput.textContent = latestRemoteSupportOutputText;
+    }
+    renderRemoteSupportConfig(payload);
+    setRemoteSupportMessage("Remote support token generated.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportCopyOutputBtn", async () => {
+  try {
+    await copyToClipboard(latestRemoteSupportOutputText || "");
+    setRemoteSupportMessage("Token + commands copied.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportRevokeBtn", async () => {
+  try {
+    const tokenId = String(remoteSupportTokenSelect?.value || "");
+    if (!tokenId) {
+      throw new Error("Select a token before revoking.");
+    }
+    const payload = await api("POST", "/remote-support/tokens/revoke", {
+      tokenId,
+    });
+    renderRemoteSupportConfig({ config: { ...(latestRemoteSupportConfig || {}), tokens: payload.tokens || [] } });
+    setRemoteSupportMessage("Token revoked.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportRotateBtn", async () => {
+  try {
+    const tokenId = String(remoteSupportTokenSelect?.value || "");
+    if (!tokenId) {
+      throw new Error("Select a token before rotating.");
+    }
+    const label = String(remoteSupportTokenLabel?.value || "").trim();
+    const ttlMinutes = Number.parseInt(String(remoteSupportTokenTtlMinutes?.value || "30"), 10);
+    const payload = await api("POST", "/remote-support/tokens/rotate", {
+      tokenId,
+      label,
+      ttlMinutes,
+    });
+    const token = String(payload?.token || "");
+    const tokenMeta = payload?.tokenMeta || {};
+    const examples = Array.isArray(payload?.examples) ? payload.examples : [];
+    const lines = [
+      `Rotated token (displayed once): ${token}`,
+      "",
+      `Revoked Token ID: ${String(payload?.revokedTokenId || "")}`,
+      `Token ID: ${tokenMeta.tokenId || ""}`,
+      `Label: ${tokenMeta.label || ""}`,
+      `Expires: ${tokenMeta.expiresAt || ""}`,
+      "",
+      "Example commands:",
+      ...examples,
+    ];
+    latestRemoteSupportOutputText = lines.join("\n");
+    if (remoteSupportOutput) {
+      remoteSupportOutput.textContent = latestRemoteSupportOutputText;
+    }
+    renderRemoteSupportConfig(payload);
+    setRemoteSupportMessage("Token rotated. Previous token is now revoked.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("callHomeRefreshEventsBtn", async () => {
+  try {
+    await refreshCallHomeEvents(true);
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("callHomeClearEventsBtn", async () => {
+  try {
+    const payload = await api("POST", "/call-home/events/clear", {});
+    renderCallHomeEvents(payload);
+    setRemoteSupportMessage("Call-home events cleared.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("callHomeGeneratePodBtn", async () => {
+  try {
+    if (latestRemoteSupportConfig?.enabled !== true || latestRemoteSupportConfig?.callHomeEnabled !== true) {
+      throw new Error("Enable both Remote Support API and Call-Home API before generating a diagnostic pod.");
+    }
+    const label = String(remoteSupportTokenLabel?.value || "").trim() || "Diagnostic Pod Token";
+    const ttlMinutes = Number.parseInt(String(callHomePodTtlMinutes?.value || remoteSupportTokenTtlMinutes?.value || "30"), 10);
+    const payload = await api("POST", "/call-home/pods/generate", {
+      label,
+      ttlMinutes,
+    });
+    renderRemoteSupportConfig(payload);
+    const pod = payload?.pod || {};
+    const lines = [
+      `Generated: ${String(pod.generatedAt || "")}`,
+      `Satellite ID: ${String(pod.satelliteId || "")}`,
+      `Token (displayed once): ${String(pod.token || "")}`,
+      "",
+      "Quick launch script:",
+      String(pod.launchScript || ""),
+      "",
+      "docker-compose.yml:",
+      String(pod.composeYaml || ""),
+      "",
+      "Entrypoint script:",
+      String(pod.entrypointScript || ""),
+      "",
+      "Call-home curl examples:",
+      ...(Array.isArray(pod.curlExamples) ? pod.curlExamples : []),
+    ];
+    latestCallHomePodOutputText = lines.join("\n");
+    if (callHomePodOutput) {
+      callHomePodOutput.textContent = latestCallHomePodOutputText;
+    }
+    setRemoteSupportMessage("Diagnostic pod bundle generated with one-time token.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("callHomeAiAnalyzeBtn", async () => {
+  try {
+    const diagnosticsPayload = latestDiagnostics || (await api("GET", "/diagnostics"));
+    latestDiagnostics = diagnosticsPayload;
+    const troubleshootPayload = latestTroubleshootReport ? { report: latestTroubleshootReport } : await api("GET", "/troubleshoot");
+    latestTroubleshootReport = troubleshootPayload.report || latestTroubleshootReport;
+    if (!latestCallHomeEvents.length) {
+      await refreshCallHomeEvents(false);
+    }
+    const callHomeContext = {
+      events: latestCallHomeEvents,
+      reportCount: latestCallHomeEvents.length,
+    };
+    const errorText = [
+      "Analyze remote call-home connectivity for Blastdoor.",
+      `Events captured: ${latestCallHomeEvents.length}`,
+      JSON.stringify(callHomeContext, null, 2),
+    ].join("\n\n");
+    const payload = await api("POST", "/assistant/workflow/troubleshoot-recommendation", {
+      errorText,
+      diagnosticsReport: diagnosticsPayload.report || {},
+      troubleshootReport: troubleshootPayload.report || {},
+      context: {
+        callHomeEvents: latestCallHomeEvents,
+      },
+    });
+    const result = payload?.result || payload || {};
+    const lines = [
+      "AI Call-Home Analysis",
+      "",
+      typeof result.assistantNarrative === "string" ? result.assistantNarrative : "",
+      "",
+      JSON.stringify(result, null, 2),
+    ].filter(Boolean);
+    if (callHomePodOutput) {
+      callHomePodOutput.textContent = lines.join("\n");
+    }
+    setRemoteSupportMessage("AI analysis generated from call-home events.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
 bindClick("tsAnalyzeBtn", async () => {
   try {
     const payload = await api("GET", "/troubleshoot");
@@ -2244,10 +3616,50 @@ bindClick("tsAnalyzeBtn", async () => {
   }
 });
 
+bindClick("tsAiBtn", async () => {
+  try {
+    const errorContext = [tsStatusMessage?.textContent || "", tsHints?.textContent || "", tsOutput?.textContent || ""]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 12_000);
+
+    const payload = await api("POST", "/assistant/workflow/troubleshoot-recommendation", {
+      errorText: errorContext,
+    });
+    const result = payload?.result || payload || {};
+    tsOutput.textContent = JSON.stringify(result, null, 2);
+    if (result.assistantNarrative) {
+      tsHints.textContent = String(result.assistantNarrative);
+    }
+    setTsMessage("AI troubleshooting recommendation generated.");
+  } catch (error) {
+    const message = String(error?.message || error || "");
+    if (message.includes("/assistant/workflow/troubleshoot-recommendation")) {
+      setTsMessage(
+        "AI troubleshooting endpoint is unavailable. Enable the Intelligence Module in Modules and retry.",
+        true,
+      );
+      return;
+    }
+    setTsMessage(message, true);
+  }
+});
+
 async function runTroubleshootAction(actionId, successMessage) {
   try {
     const payload = await api("POST", "/troubleshoot/run", { actionId });
-    renderTroubleshootActionResult(payload.result || {});
+    const result = payload.result || {};
+    renderTroubleshootActionResult(result);
+    if (result.changedConfig) {
+      await refreshAll();
+      if (result.requiresRestart) {
+        setTsMessage(
+          `${successMessage} Updated FOUNDRY_TARGET to ${result.newFoundryTarget || "detected target"}. Restart Blastdoor service to apply.`,
+        );
+        return;
+      }
+    }
     setTsMessage(successMessage);
   } catch (error) {
     setTsMessage(error.message || String(error), true);
@@ -2264,6 +3676,10 @@ bindClick("tsGatewayBtn", async () => {
 
 bindClick("tsPortproxyDetectBtn", async () => {
   await runTroubleshootAction("detect.wsl-portproxy", "WSL2 portproxy detection complete.");
+});
+
+bindClick("tsFoundryWslFixBtn", async () => {
+  await runTroubleshootAction("fix.wsl-foundry-target", "WSL Foundry target auto-fix complete.");
 });
 
 bindClick("tsPortproxyScriptBtn", async () => {
@@ -2292,6 +3708,430 @@ bindClick("tsCopyScriptBtn", async () => {
     setTsMessage("Guided script copied.");
   } catch (error) {
     setTsMessage(error.message || String(error), true);
+  }
+});
+
+function scrollToSection(id) {
+  const element = document.getElementById(id);
+  if (!element) {
+    return;
+  }
+  element.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function isSectionVisible(section) {
+  if (!section) {
+    return false;
+  }
+  return !section.hidden && !section.classList.contains("hidden");
+}
+
+function setSectionVisible(section, visible) {
+  if (!section) {
+    return;
+  }
+  section.hidden = !visible;
+  section.classList.toggle("hidden", !visible);
+}
+
+function setMainPanelDefaultVisibility() {
+  for (const section of managedMainSections) {
+    setSectionVisible(section, mainPanelDefaultVisibleIds.has(section.id));
+  }
+}
+
+function toggleMainPanelSections(sectionIds, options = {}) {
+  const { scroll = false } = options;
+  const ids = Array.isArray(sectionIds) ? sectionIds : [sectionIds];
+  const sections = ids
+    .map((id) => managedMainSections.find((section) => section.id === id) || null)
+    .filter(Boolean);
+
+  if (!sections.length) {
+    return;
+  }
+
+  const nextVisible = !sections.some(isSectionVisible);
+  for (const section of sections) {
+    setSectionVisible(section, nextVisible);
+  }
+
+  if (!scroll || !nextVisible) {
+    return;
+  }
+
+  scrollToSection(sections[0].id);
+}
+
+bindClick("controlsDockHideBtn", () => {
+  setControlsDockCollapsed(true);
+});
+
+bindClick("controlsDockOpenBtn", () => {
+  setControlsDockCollapsed(false);
+});
+
+bindClick("navServiceBtn", () => {
+  toggleMainPanelSections("serviceControlSection");
+});
+
+bindClick("navConfigBtn", () => {
+  toggleMainPanelSections("configSection");
+});
+
+bindClick("navSessionBtn", () => {
+  const trigger = document.getElementById("sessionMgmtBtn");
+  trigger?.click();
+});
+
+bindClick("navLayoutBtn", () => {
+  const trigger = document.getElementById("layoutBtn");
+  trigger?.click();
+});
+
+bindClick("navTlsBtn", () => {
+  toggleMainPanelSections("tlsManagementSection");
+});
+
+bindClick("navLoginBtn", () => {
+  const trigger = document.getElementById("appearanceBtn");
+  trigger?.click();
+});
+
+bindClick("navUserBtn", () => {
+  const trigger = document.getElementById("userMgmtBtn");
+  trigger?.click();
+});
+
+bindClick("navBackupBtn", () => {
+  toggleMainPanelSections("backupManagementSection");
+});
+
+bindClick("navFailuresBtn", async () => {
+  if (!failuresModal) {
+    setMessage("Failures panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!failuresModal.hidden) {
+    closeFailuresModal();
+    setFailuresMessage("Failures panel closed.");
+    return;
+  }
+
+  openFailuresModal();
+  try {
+    await refreshFailures(true);
+  } catch (error) {
+    setFailuresMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("navDiagBtn", () => {
+  toggleMainPanelSections(["diagnosticsSection", "troubleshootingSection"]);
+});
+
+bindClick("navModulesBtn", () => {
+  toggleMainPanelSections(["modulesSection", "pluginPanels"]);
+});
+
+bindClick("openTlsFromPanelBtn", () => {
+  const trigger = document.getElementById("tlsBtn");
+  trigger?.click();
+});
+
+bindClick("openAppearanceFromPanelBtn", () => {
+  const trigger = document.getElementById("appearanceBtn");
+  trigger?.click();
+});
+
+bindClick("openUserMgmtFromPanelBtn", () => {
+  const trigger = document.getElementById("userMgmtBtn");
+  trigger?.click();
+});
+
+if (failuresAlertBtn) {
+  failuresAlertBtn.addEventListener("click", async () => {
+    openFailuresModal();
+    try {
+      await refreshFailures(true);
+    } catch (error) {
+      setFailuresMessage(error.message || String(error), true);
+    }
+  });
+}
+
+bindClick("failuresCloseBtn", () => {
+  closeFailuresModal();
+});
+
+bindClick("failuresRefreshBtn", async () => {
+  try {
+    await refreshFailures(true);
+  } catch (error) {
+    setFailuresMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("failuresCopyBtn", async () => {
+  try {
+    const selected = latestFailures.find((entry) => String(entry.id || "") === String(selectedFailureId || ""));
+    const payload = selected || latestFailures[0] || null;
+    if (!payload) {
+      throw new Error("No failure record is selected.");
+    }
+    await copyToClipboard(JSON.stringify(payload, null, 2));
+    setFailuresMessage("Selected failure copied.");
+  } catch (error) {
+    setFailuresMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("failuresClearBtn", async () => {
+  try {
+    if (!window.confirm("Clear all stored failure records?")) {
+      return;
+    }
+    await api("POST", "/failures/clear", {});
+    latestFailures = [];
+    selectedFailureId = "";
+    renderFailuresTable([]);
+    updateFailuresAlertIndicator({ count: 0 });
+    setFailuresMessage("Failure records cleared.");
+  } catch (error) {
+    setFailuresMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("sessionCloseBtn", () => {
+  closeSessionModal();
+});
+
+bindClick("sessionRefreshBtn", async () => {
+  try {
+    await refreshSessions(true);
+  } catch (error) {
+    setSessionMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("sessionInvalidateBtn", async () => {
+  try {
+    if (!selectedSessionUsername) {
+      throw new Error("Select a session before invalidating.");
+    }
+    const selected = findSessionByKeyOrUsername(selectedSessionKey, selectedSessionUsername);
+    if (!selected) {
+      throw new Error("Selected session is no longer active.");
+    }
+    await revokeSpecificSession(selected, { showMessage: true });
+    await refreshSessions(false);
+    await refreshAll();
+  } catch (error) {
+    setSessionMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("sessionRevokeAllBtn", async () => {
+  try {
+    const result = await api("POST", "/sessions/revoke-all", {});
+    setSessionMessage(
+      result?.serviceRestarted
+        ? "All sessions revoked. Gateway restarted."
+        : "All sessions revoked. Restart gateway to enforce immediately.",
+    );
+    await refreshSessions(false);
+    await refreshAll();
+  } catch (error) {
+    setSessionMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutCloseBtn", () => {
+  closeLayoutModal();
+});
+
+if (layoutDarkModePercent) {
+  layoutDarkModePercent.addEventListener("input", () => {
+    syncLayoutSliderValues();
+    applyConsoleLayout({
+      darkModePercent: layoutDarkModePercent.value,
+      lightModePercent: layoutLightModePercent?.value || 0,
+    });
+  });
+}
+
+if (layoutLightModePercent) {
+  layoutLightModePercent.addEventListener("input", () => {
+    syncLayoutSliderValues();
+    applyConsoleLayout({
+      darkModePercent: layoutDarkModePercent?.value || 100,
+      lightModePercent: layoutLightModePercent.value,
+    });
+  });
+}
+
+bindClick("layoutSaveBtn", async () => {
+  try {
+    const payload = await api("POST", "/manager-settings/layout", {
+      darkModePercent: layoutDarkModePercent?.value || 100,
+      lightModePercent: layoutLightModePercent?.value || 0,
+    });
+    latestManagerSettings = payload.settings || latestManagerSettings;
+    fillLayoutSettings(payload.settings || {});
+    setLayoutMessage("Console layout settings saved.");
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutResetBtn", async () => {
+  try {
+    const payload = await api("POST", "/manager-settings/layout", {
+      darkModePercent: 100,
+      lightModePercent: 0,
+    });
+    latestManagerSettings = payload.settings || latestManagerSettings;
+    fillLayoutSettings(payload.settings || {});
+    setLayoutMessage("Console layout reset to defaults.");
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutSaveAccessBtn", async () => {
+  try {
+    const payload = await api("POST", "/manager-settings/access", {
+      requirePassword: toBooleanString(Boolean(layoutRequirePassword?.checked)),
+      password: String(layoutManagerPassword?.value || ""),
+      sessionTtlHours: String(layoutSessionTtlHours?.value || "12"),
+      clearPassword: "false",
+    });
+    latestManagerSettings = payload.settings || latestManagerSettings;
+    fillLayoutSettings(payload.settings || {});
+    const protection = payload?.settings?.access?.requirePassword ? "enabled" : "disabled";
+    setLayoutMessage(`Manager access protection ${protection}.`);
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("layoutLogoutBtn", async () => {
+  try {
+    await api("POST", "/manager-auth/logout", {});
+    window.location.assign("/manager/login?next=%2Fmanager%2F");
+  } catch (error) {
+    setLayoutMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupRefreshBtn", async () => {
+  try {
+    await refreshConfigBackups(true);
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupCreateBtn", async () => {
+  try {
+    const payload = await api("POST", "/config-backups/create", {
+      name: String(configBackupName?.value || ""),
+    });
+    renderConfigBackupList(payload, payload.backup?.backupId || "");
+    if (configBackupName) {
+      configBackupName.value = "";
+    }
+    setConfigBackupMessage(`Backup created: ${payload.backup?.backupId || "unknown"}.`);
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupViewBtn", async () => {
+  try {
+    const backupId = getSelectedConfigBackupId();
+    if (!backupId) {
+      throw new Error("Select a backup to view.");
+    }
+    const payload = await api("GET", `/config-backups/view?backupId=${encodeURIComponent(backupId)}`);
+    renderConfigBackupView(payload);
+    setConfigBackupMessage(`Loaded backup view for ${backupId}.`);
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupRestoreBtn", async () => {
+  try {
+    const backupId = getSelectedConfigBackupId();
+    if (!backupId) {
+      throw new Error("Select a backup to restore.");
+    }
+    if (!window.confirm(`Restore configuration from backup '${backupId}'?`)) {
+      return;
+    }
+
+    const payload = await api("POST", "/config-backups/restore", {
+      backupId,
+    });
+    renderConfigBackupList(payload, backupId);
+    await refreshAll();
+    setConfigBackupMessage(
+      payload.result?.serviceRestarted
+        ? `Backup restored (${backupId}) and service restarted.`
+        : `Backup restored (${backupId}). Restart service if needed.`,
+    );
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupDeleteBtn", async () => {
+  try {
+    const backupId = getSelectedConfigBackupId();
+    if (!backupId) {
+      throw new Error("Select a backup to delete.");
+    }
+    if (!window.confirm(`Delete backup '${backupId}'? This cannot be undone.`)) {
+      return;
+    }
+
+    const payload = await api("POST", "/config-backups/delete", {
+      backupId,
+    });
+    renderConfigBackupList(payload);
+    if (configBackupDetails) {
+      configBackupDetails.textContent = "";
+    }
+    setConfigBackupMessage(`Backup deleted: ${backupId}.`);
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("configBackupCleanBtn", async () => {
+  try {
+    if (
+      !window.confirm(
+        "Clean install config will reset installation_config.json, .env, and docker/blastdoor.env to defaults. Continue?",
+      )
+    ) {
+      return;
+    }
+    const payload = await api("POST", "/config-backups/clean-install", {});
+    await refreshAll();
+    await refreshConfigBackups(false);
+    if (configBackupDetails) {
+      configBackupDetails.textContent = JSON.stringify(payload.result || {}, null, 2);
+    }
+    setConfigBackupMessage(
+      payload.result?.serviceRestarted
+        ? "Clean install config complete. Service restarted."
+        : "Clean install config complete. Restart service if needed.",
+    );
+  } catch (error) {
+    setConfigBackupMessage(error.message || String(error), true);
   }
 });
 
@@ -2519,6 +4359,15 @@ if (tlsForm) {
 closeAppearanceModal();
 closeUserModal();
 closeTlsModal();
+closeFailuresModal();
+closeSessionModal();
+closeLayoutModal();
+selectSession({});
+setMainPanelDefaultVisibility();
+setControlsDockCollapsed(loadControlsDockCollapsedState(), false);
+scheduleControlsDockPositionUpdate();
+window.addEventListener("resize", scheduleControlsDockPositionUpdate, { passive: true });
+window.addEventListener("scroll", scheduleControlsDockPositionUpdate, { passive: true });
 
 loadManagerPlugins()
   .catch((error) => {
@@ -2526,6 +4375,11 @@ loadManagerPlugins()
   })
   .finally(async () => {
     await refreshAll();
+    try {
+      await refreshConfigBackups(false);
+    } catch (error) {
+      setConfigBackupMessage(error.message || String(error), true);
+    }
     setInterval(() => {
       refreshAll().catch(() => {});
     }, 3000);

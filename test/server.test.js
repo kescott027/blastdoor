@@ -433,6 +433,9 @@ test("gateway behavior without TOTP", async (t) => {
     assert.match(response.body, /Blastdoor/);
     assert.doesNotMatch(response.body, /Authenticator Code/);
     assert.ok(parseCsrf(response.body));
+    const csp = String(response.headers["content-security-policy"] || "");
+    assert.ok(csp.length > 0);
+    assert.equal(csp.includes("upgrade-insecure-requests"), false);
   });
 
   await t.test("login rejects wrong origin and bad csrf", async () => {
@@ -833,6 +836,123 @@ test("login page renders active theme assets and success transition uses open ba
   });
 });
 
+test("login page falls back when theme image assets are missing", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const graphicsDir = path.join(tempDir, "graphics");
+    const themeStorePath = path.join(graphicsDir, "themes", "themes.json");
+
+    await fs.mkdir(path.dirname(themeStorePath), { recursive: true });
+    await fs.writeFile(
+      themeStorePath,
+      JSON.stringify(
+        {
+          activeThemeId: "theme-missing",
+          themes: [
+            {
+              id: "theme-missing",
+              name: "Missing Theme",
+              logoPath: "logo/missing-logo.png",
+              closedBackgroundPath: "background/missing-closed.png",
+              openBackgroundPath: "background/missing-open.png",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const gateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      graphicsDir,
+      themeStorePath,
+    });
+
+    t.after(async () => {
+      await closeServer(gateway.server);
+      await closeServer(target.server);
+    });
+
+    const loginPage = await request(gateway.port, { path: "/login", headers: { accept: "text/html" } });
+    assert.equal(loginPage.status, 200);
+    assert.equal(loginPage.body.includes('class="brand-logo"'), false);
+    assert.match(loginPage.body, /brand-logo-fallback/);
+    assert.equal(loginPage.body.includes("/graphics/logo/missing-logo.png"), false);
+    assert.equal(loginPage.body.includes("/graphics/background/missing-closed.png"), false);
+    assert.equal(loginPage.body.includes("/graphics/background/missing-open.png"), false);
+  });
+});
+
+test("login page uses forwarded prefix for asset and form URLs", async (t) => {
+  await withTempDir(async (tempDir) => {
+    const target = await startTargetServer();
+    const graphicsDir = path.join(tempDir, "graphics");
+    const logoDir = path.join(graphicsDir, "logo");
+    const backgroundDir = path.join(graphicsDir, "background");
+    const themeStorePath = path.join(graphicsDir, "themes", "themes.json");
+
+    await fs.mkdir(logoDir, { recursive: true });
+    await fs.mkdir(backgroundDir, { recursive: true });
+    await fs.mkdir(path.dirname(themeStorePath), { recursive: true });
+    await fs.writeFile(path.join(logoDir, "prefixed-logo.png"), "logo", "utf8");
+    await fs.writeFile(path.join(backgroundDir, "prefixed-closed.png"), "closed", "utf8");
+    await fs.writeFile(path.join(backgroundDir, "prefixed-open.png"), "open", "utf8");
+    await fs.writeFile(
+      themeStorePath,
+      JSON.stringify(
+        {
+          activeThemeId: "theme-prefixed",
+          themes: [
+            {
+              id: "theme-prefixed",
+              name: "Prefixed Theme",
+              logoPath: "logo/prefixed-logo.png",
+              closedBackgroundPath: "background/prefixed-closed.png",
+              openBackgroundPath: "background/prefixed-open.png",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const gateway = await startGateway({
+      foundryTarget: target.targetUrl,
+      requireTotp: false,
+      graphicsDir,
+      themeStorePath,
+    });
+
+    t.after(async () => {
+      await closeServer(gateway.server);
+      await closeServer(target.server);
+    });
+
+    const loginPage = await request(gateway.port, {
+      path: "/login",
+      headers: { accept: "text/html", "x-forwarded-prefix": "/blastdoor" },
+    });
+    assert.equal(loginPage.status, 200);
+    assert.match(loginPage.body, /href="\/blastdoor\/assets\/theme\.css"/);
+    assert.match(loginPage.body, /action="\/blastdoor\/login"/);
+    assert.match(loginPage.body, /\/blastdoor\/graphics\/logo\/prefixed-logo\.png/);
+    assert.match(loginPage.body, /\/blastdoor\/graphics\/background\/prefixed-closed\.png/);
+    assert.match(loginPage.body, /\/blastdoor\/graphics\/background\/prefixed-open\.png/);
+
+    const redirected = await request(gateway.port, {
+      path: "/",
+      headers: { accept: "text/html", "x-forwarded-prefix": "/blastdoor" },
+    });
+    assert.equal(redirected.status, 302);
+    assert.equal(redirected.headers.location, "/blastdoor/login?next=%2F");
+  });
+});
+
 test("runtime blast doors state file toggles lock mode without service restart", async (t) => {
   await withTempDir(async (tempDir) => {
     const target = await startTargetServer();
@@ -1225,6 +1345,7 @@ test("user profile store supports temp code login and per-user token invalidatio
 
     const accountPage = await request(gateway.port, { path: "/account?next=%2F", headers: { accept: "text/html" } }, jar);
     assert.equal(accountPage.status, 200);
+    assert.match(accountPage.body, /<body class="account-page"/);
     const accountCsrf = parseCsrf(accountPage.body);
 
     const newPassword = "Temp Flow Replacement Password 123!";
@@ -1409,6 +1530,7 @@ test("account self-service updates profile and supports message-admin action", a
 
     const accountPage = await request(gateway.port, { path: "/account?next=%2F", headers: { accept: "text/html" } }, jar);
     assert.equal(accountPage.status, 200);
+    assert.match(accountPage.body, /<body class="account-page"/);
     const accountCsrf = parseCsrf(accountPage.body);
 
     const profileUpdate = await postForm(gateway.port, jar, "/account/profile", {

@@ -1,3 +1,166 @@
+.intelligence-plugin-panel .intel-menu,
+.intelligence-plugin-panel .intel-wizard-wrap,
+.intelligence-plugin-panel .intel-config-wrap,
+.intelligence-plugin-panel .intel-plan-wrap,
+.intelligence-plugin-panel .intel-agent-wrap,
+.intelligence-plugin-panel .intel-workflow-wrap {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: rgba(10, 14, 24, 0.45);
+}
+
+.intelligence-plugin-panel .intel-advanced-menu {
+  margin-top: 0.7rem;
+}
+
+.intelligence-plugin-panel .intel-config-wrap,
+.intelligence-plugin-panel .intel-wizard-wrap,
+.intelligence-plugin-panel .intel-plan-wrap,
+.intelligence-plugin-panel .intel-agent-wrap,
+.intelligence-plugin-panel .intel-workflow-wrap {
+  margin-top: 0.8rem;
+}
+
+.intelligence-plugin-panel .intel-wizard-banner {
+  border: 1px solid rgba(120, 170, 255, 0.35);
+  background: rgba(34, 56, 92, 0.45);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.65rem;
+  color: #d8e8ff;
+}
+
+.intelligence-plugin-panel .intel-step-rail {
+  list-style: none;
+  margin: 0 0 0.7rem 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.intelligence-plugin-panel .intel-step-rail li {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 0.38rem 0.55rem;
+  background: rgba(18, 26, 44, 0.48);
+  color: #d9e4fb;
+}
+
+.intelligence-plugin-panel .intel-step-rail li.wizard-step-current {
+  border-color: rgba(76, 200, 120, 0.75);
+  background: rgba(32, 76, 50, 0.55);
+  color: #effff5;
+}
+
+.intelligence-plugin-panel .intel-step-rail li.wizard-step-complete {
+  border-color: rgba(84, 142, 255, 0.42);
+  background: rgba(26, 44, 76, 0.52);
+}
+
+.intelligence-plugin-panel .intel-step-rail li.wizard-step-future {
+  opacity: 0.6;
+}
+
+.intelligence-plugin-panel .intel-wizard-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) 1fr;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.intelligence-plugin-panel .intel-wizard-entry-pane,
+.intelligence-plugin-panel .intel-wizard-rail-pane {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0.6rem;
+  background: rgba(10, 14, 24, 0.32);
+}
+
+.intelligence-plugin-panel .intel-wizard-entry-block {
+  margin-bottom: 0.6rem;
+}
+
+.intelligence-plugin-panel .intel-wizard-entry-block:last-child {
+  margin-bottom: 0;
+}
+
+.intelligence-plugin-panel .intel-wizard-exec-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.intelligence-plugin-panel .intel-wizard-exec-card {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 0.5rem;
+  background: rgba(16, 24, 39, 0.45);
+}
+
+.intelligence-plugin-panel .intel-wizard-exec-card.wizard-exec-current {
+  border-color: rgba(100, 182, 255, 0.7);
+}
+
+.intelligence-plugin-panel .intel-wizard-exec-card.wizard-exec-complete {
+  border-color: rgba(84, 200, 126, 0.65);
+  background: rgba(25, 54, 38, 0.42);
+}
+
+.intelligence-plugin-panel .intel-wizard-exec-card.wizard-exec-pending {
+  opacity: 0.78;
+}
+
+.intelligence-plugin-panel .intel-wizard-exec-title {
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.intelligence-plugin-panel .intel-wizard-exec-instructions {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.intelligence-plugin-panel .intel-wizard-exec-result {
+  margin-top: 0.35rem;
+  max-height: 140px;
+  overflow: auto;
+  background: rgba(4, 8, 16, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.intelligence-plugin-panel .intel-safe-action-card {
+  border: 1px solid rgba(255, 214, 108, 0.45);
+  background: rgba(78, 57, 22, 0.45);
+  border-radius: 8px;
+  padding: 0.6rem;
+  margin: 0.6rem 0;
+}
+
+.intelligence-plugin-panel .intel-safe-action-card h4 {
+  margin: 0 0 0.35rem 0;
+  font-size: 0.88rem;
+  color: #ffd98f;
+}
+
+@media (max-width: 980px) {
+  .intelligence-plugin-panel .intel-wizard-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.intelligence-plugin-panel .intel-agent-scaffold-list {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.35rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 .intelligence-plugin-panel .intel-config-form {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
@@ -5,19 +168,28 @@
   background: rgba(10, 14, 24, 0.45);
 }
 
-.intelligence-plugin-panel .intel-workflows {
-  margin-top: 0.8rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  padding: 0.7rem;
-  background: rgba(10, 14, 24, 0.45);
+.intelligence-plugin-panel .intel-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
 }
 
-.intelligence-plugin-panel .intel-workflows h3,
+.intelligence-plugin-panel .intel-section-header h3,
 .intelligence-plugin-panel .intel-output-wrap h3 {
-  margin: 0 0 0.45rem;
+  margin: 0;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.intelligence-plugin-panel .intel-workflow-wrap .grid {
+  margin-top: 0.45rem;
+}
+
+.intelligence-plugin-panel .intel-workflow-launch-cell {
+  display: flex;
+  align-items: end;
 }
 
 .intelligence-plugin-panel .intel-output-wrap {
@@ -27,4 +199,49 @@
 .intelligence-plugin-panel .log-box {
   min-height: 170px;
   max-height: 300px;
+}
+
+.intelligence-plugin-panel .intel-chat-wrap {
+  margin-top: 0.8rem;
+}
+
+.intelligence-plugin-panel .intel-chat-log {
+  min-height: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.intelligence-plugin-panel .intel-chat-line {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+}
+
+.intelligence-plugin-panel .intel-chat-line-user {
+  background: rgba(76, 150, 255, 0.22);
+  border: 1px solid rgba(96, 171, 255, 0.45);
+}
+
+.intelligence-plugin-panel .intel-chat-line-assistant {
+  background: rgba(18, 34, 66, 0.52);
+  border: 1px solid rgba(166, 188, 230, 0.25);
+}
+
+.intelligence-plugin-panel .intel-chat-role {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.intelligence-plugin-panel .intel-chat-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.intelligence-plugin-panel [data-intel-chat-input] {
+  flex: 1;
+  min-width: 0;
 }

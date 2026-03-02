@@ -255,7 +255,7 @@ test("createBlastdoorApi local adapter exposes intelligence plugin workflow inte
       postgresSsl: false,
       sessionMaxAgeHours: 12,
       assistantEnabled: true,
-      assistantProvider: "heuristic",
+      assistantProvider: "ollama",
       assistantUrl: "",
       assistantRagEnabled: false,
       assistantAllowWebSearch: false,

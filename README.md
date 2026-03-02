@@ -152,6 +152,13 @@ Node.js 22+ is required.
 make install
 ```
 
+`make install` now launches the installer GUI and auto-opens your browser to the installer URL.
+To disable browser auto-open for headless shells:
+
+```bash
+make install INSTALLER_AUTO_OPEN=false
+```
+
 The installer GUI asks for:
 
 - install model (`local` or `container`)
@@ -160,12 +167,15 @@ The installer GUI asks for:
 - object storage (`local`, `gdrive`, `s3`)
 - Foundry location (`local` or `external`, with external host + port)
 - global service topology (portal/admin/api host + port)
+- container TLS identity (`publicDomain`, `letsEncryptEmail`) when `installType=container`
 
 2. Launch with profile-aware command:
 
 ```bash
 make launch
 ```
+
+For `installType=container`, `make launch` now preflights `docker/blastdoor.env` and blocks startup when required TLS/runtime values are placeholder or missing (`BLASTDOOR_DOMAIN`, `LETSENCRYPT_EMAIL`, `POSTGRES_PASSWORD`, `SESSION_SECRET`, `FOUNDRY_TARGET`).
 
 3. Re-open installer for edits:
 
@@ -247,7 +257,7 @@ Optional tuning values:
 - `ASSISTANT_ENABLED` (`true`/`false`)
 - `ASSISTANT_URL` (optional; if empty, embedded workflows are used)
 - `ASSISTANT_TOKEN` (optional shared token when using standalone assistant service)
-- `ASSISTANT_PROVIDER` (`heuristic` or `ollama`)
+- `ASSISTANT_PROVIDER` (`ollama`)
 - `ASSISTANT_OLLAMA_URL`, `ASSISTANT_OLLAMA_MODEL`
 - `ASSISTANT_TIMEOUT_MS`, `ASSISTANT_RETRY_MAX_ATTEMPTS`
 - `ASSISTANT_RAG_ENABLED`, `ASSISTANT_ALLOW_WEB_SEARCH`
@@ -368,6 +378,8 @@ cp docker/blastdoor.env.example docker/blastdoor.env
 - Set strong `SESSION_SECRET`.
 - Set `FOUNDRY_TARGET` to the Foundry endpoint reachable from the container.
 
+If you configured via `make install` / `make configure`, these values are synced automatically from `data/installation_config.json` into `docker/blastdoor.env`.
+
 3. Start the stack:
 
 ```bash
@@ -390,6 +402,8 @@ Notes:
 
 - Caddy obtains and renews Let's Encrypt certificates automatically when DNS and ports are correct.
 - Required inbound ports for public TLS issuance: `80/tcp` and `443/tcp`.
+- Blastdoor portal is also published directly on `8080/tcp` (`http://<host>:8080`) for resilient-mode access/testing.
+- Blastdoor API is published on localhost `127.0.0.1:8070` for local diagnostics (`/healthz`, internal checks).
 - Blastdoor runs behind Caddy with `TRUST_PROXY=1` and `COOKIE_SECURE=true`.
 - Blastdoor gateway talks to the internal `blastdoor-api` container (`BLASTDOOR_API_URL=http://blastdoor-api:8070`).
 - PostgreSQL data persists in Docker volume `postgres-data`.
@@ -549,6 +563,11 @@ make manager-launch
 ```
 
 Launches the GUI management console used to configure `.env`, start/stop/restart Blastdoor, and monitor runtime/debug logs.
+The admin console also includes config backup operations:
+
+- Backup Configs (named snapshots)
+- View / Restore / Delete backups
+- Clean Install Config (reset install profile + env files to defaults)
 
 ```bash
 make lint

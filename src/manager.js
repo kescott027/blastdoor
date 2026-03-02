@@ -1,19 +1,30 @@
 import "dotenv/config";
 import express from "express";
 import rateLimit from "express-rate-limit";
+import dns from "node:dns/promises";
 import fs from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
-import { createPasswordHash } from "./security.js";
+import { createPasswordHash, safeEqual, verifyPassword } from "./security.js";
 import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
+import { appendFailureRecord, clearFailureStore, readFailureStore, summarizeFailureStore } from "./failure-store.js";
 import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
+import {
+  defaultInstallationConfig,
+  detectPlatformType,
+  normalizeInstallationConfig,
+  readInstallationConfig,
+  syncRuntimeEnvFromInstallation,
+  writeInstallationConfig,
+} from "./installation-config.js";
 import { createPluginManager } from "./plugins/index.js";
 import {
   createThemeId,
@@ -21,6 +32,21 @@ import {
   normalizeThemeAssetPath,
   normalizeThemeLayoutSettings,
 } from "./login-theme.js";
+import {
+  normalizeManagerConsoleSettings,
+  readManagerConsoleSettings,
+  sanitizeManagerConsoleSettingsForClient,
+  writeManagerConsoleSettings,
+} from "./manager-console-settings.js";
+import { readIntelligenceAgentStore } from "./intelligence-agent-store.js";
+import { registerRemoteSupportRoutes } from "./manager/remote-support-routes.js";
+import { registerDiagnosticsRoutes } from "./manager/diagnostics-routes.js";
+import { registerManagerAuthRoutes } from "./manager/auth-routes.js";
+import { registerManagerServiceRoutes } from "./manager/service-routes.js";
+import { registerManagerOperationsRoutes } from "./manager/operations-routes.js";
+import { registerManagerUserRoutes } from "./manager/users-routes.js";
+import { registerManagerThemeRoutes } from "./manager/themes-routes.js";
+import { registerManagerConfigRoutes } from "./manager/config-routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -160,6 +186,23 @@ const SENSITIVE_CONFIG_KEYS = new Set([...BASE_SENSITIVE_CONFIG_KEYS, ...manager
 const REDACTED_MARKER = "[REDACTED]";
 const MANAGED_USER_STATUSES = new Set(["active", "deactivated", "banned"]);
 const USER_FILTER_OPTIONS = new Set(["active", "inactive", "authenticated", "all"]);
+const MANAGER_AUTH_COOKIE_NAME = "blastdoor.manager.sid";
+const CONFIG_BACKUP_NAME_PATTERN = /[^a-zA-Z0-9_-]+/g;
+const CONFIG_BACKUP_ID_PATTERN = /^[a-zA-Z0-9_-]{6,120}$/;
+const CONFIG_BACKUP_VIEW_MAX_BYTES = 512 * 1024;
+const REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES = 30;
+const REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES = 24 * 60;
+const REMOTE_SUPPORT_DEFAULT_TOKEN_LABEL = "Remote Support Token";
+const CALL_HOME_EVENTS_MAX = 200;
+const CALL_HOME_REPORT_PAYLOAD_MAX_CHARS = 32_000;
+const REMOTE_SUPPORT_SAFE_ACTION_ALLOWLIST = new Set([
+  "snapshot.network",
+  "check.gateway-local",
+  "detect.wsl-portproxy",
+]);
+const RUNTIME_IS_CONTAINER =
+  Boolean(process.env.CONTAINER || process.env.DOCKER_CONTAINER || process.env.KUBERNETES_SERVICE_HOST) ||
+  existsSync("/.dockerenv");
 
 function formatEnvValue(value) {
   if (value === "") {
@@ -175,6 +218,104 @@ function formatEnvValue(value) {
 
 function createSessionSecret() {
   return randomBytes(48).toString("base64url");
+}
+
+function clampRemoteSupportTokenTtlMinutes(value, fallback = 30) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES, Math.min(REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES, parsed));
+}
+
+function normalizeRemoteSupportTokenValue(req) {
+  const headerToken = normalizeString(
+    req.get("x-blastdoor-support-token") || req.get("x-blastdoor-remote-support-token"),
+    "",
+  );
+  if (headerToken) {
+    return headerToken;
+  }
+  const authHeader = normalizeString(req.get("authorization"), "");
+  const bearerPrefix = "bearer ";
+  if (authHeader.toLowerCase().startsWith(bearerPrefix)) {
+    return authHeader.slice(bearerPrefix.length).trim();
+  }
+  return "";
+}
+
+function isRemoteSupportTokenActive(token, nowMs = Date.now()) {
+  if (!token || typeof token !== "object") {
+    return false;
+  }
+  if (normalizeString(token.revokedAt, "")) {
+    return false;
+  }
+  const expiresAt = normalizeString(token.expiresAt, "");
+  if (!expiresAt) {
+    return false;
+  }
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return false;
+  }
+  return nowMs < expiresAtMs;
+}
+
+function summarizeRemoteSupportToken(token) {
+  return {
+    tokenId: normalizeString(token?.tokenId, ""),
+    label: normalizeString(token?.label, ""),
+    createdAt: normalizeString(token?.createdAt, ""),
+    expiresAt: normalizeString(token?.expiresAt, ""),
+    lastUsedAt: normalizeString(token?.lastUsedAt, ""),
+    revokedAt: normalizeString(token?.revokedAt, ""),
+    active: isRemoteSupportTokenActive(token),
+  };
+}
+
+function trimCallHomeEvents(events, maxEvents = CALL_HOME_EVENTS_MAX) {
+  if (!Array.isArray(events)) {
+    return [];
+  }
+  return events.slice(-Math.max(1, Number.parseInt(String(maxEvents || CALL_HOME_EVENTS_MAX), 10) || CALL_HOME_EVENTS_MAX));
+}
+
+function sanitizeCallHomePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return {};
+  }
+  let json;
+  try {
+    json = JSON.stringify(payload);
+  } catch {
+    return {};
+  }
+  if (!json) {
+    return {};
+  }
+  if (json.length > CALL_HOME_REPORT_PAYLOAD_MAX_CHARS) {
+    json = json.slice(0, CALL_HOME_REPORT_PAYLOAD_MAX_CHARS);
+  }
+  try {
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function summarizeCallHomeEvent(event) {
+  const payload = event?.payload && typeof event.payload === "object" ? event.payload : {};
+  return {
+    eventId: normalizeString(event?.eventId, ""),
+    type: normalizeString(event?.type, "report"),
+    createdAt: normalizeString(event?.createdAt, ""),
+    satelliteId: normalizeString(event?.satelliteId, ""),
+    status: normalizeString(event?.status, "unknown"),
+    message: normalizeString(event?.message, ""),
+    payload,
+  };
 }
 
 function normalizeString(value, fallback = "") {
@@ -205,10 +346,47 @@ function normalizeUserFilter(value, fallback = "active") {
   return fallback;
 }
 
+function normalizeConfigBackupName(value, fallback = "config") {
+  const sanitized = normalizeString(value, "")
+    .replace(CONFIG_BACKUP_NAME_PATTERN, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+  if (!sanitized) {
+    return fallback;
+  }
+  return sanitized.slice(0, 48);
+}
+
+function createConfigBackupId(name) {
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\..+$/, "")
+    .replace("T", "");
+  return `${timestamp}_${normalizeConfigBackupName(name)}`.slice(0, 120);
+}
+
+function validateConfigBackupId(backupId) {
+  const normalized = normalizeString(backupId, "");
+  if (!CONFIG_BACKUP_ID_PATTERN.test(normalized)) {
+    throw new Error("Invalid backup identifier.");
+  }
+  return normalized;
+}
+
 function validateManagedUsername(value) {
   const username = normalizeUsername(value);
   if (!/^[a-z0-9._-]{3,64}$/.test(username)) {
     throw new Error("Username must be 3-64 chars using a-z, 0-9, '.', '_', or '-'.");
+  }
+  return username;
+}
+
+function validateManagedUsernameForActions(value) {
+  const username = normalizeUsername(value);
+  if (!/^[a-z0-9._-]{1,64}$/.test(username)) {
+    throw new Error("Username must be 1-64 chars using a-z, 0-9, '.', '_', or '-'.");
   }
   return username;
 }
@@ -313,6 +491,15 @@ function sanitizeEmail(value) {
 
 function sanitizeLongText(value, maxLength = 4096) {
   return normalizeString(value, "").slice(0, maxLength);
+}
+
+function escapeDoubleQuotedLiteral(value) {
+  return normalizeString(value, "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function createSessionKey({ username, lastLoginAt, sessionVersion }) {
+  const payload = `${normalizeUsername(username)}|${normalizeString(lastLoginAt, "")}|${Number.parseInt(String(sessionVersion || 1), 10) || 1}`;
+  return createHash("sha256").update(payload).digest("hex").slice(0, 24);
 }
 
 function resolveGatewayBaseUrl(config) {
@@ -620,6 +807,7 @@ function detectEnvironmentInfo({ workspaceDir, envPath }) {
     envPath,
     isWsl: Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP),
     wslDistro: normalizeString(process.env.WSL_DISTRO_NAME, ""),
+    isContainer: RUNTIME_IS_CONTAINER,
   };
 }
 
@@ -627,7 +815,9 @@ function createDiagnosticsSummary(report) {
   const config = report.config;
   const status = report.serviceStatus || {};
   const health = report.health || {};
+  const foundryHealth = report.foundryHealth || {};
   const env = report.environment || {};
+  const loginAppearance = report.loginAppearance || {};
   const usesPostgres = config.PASSWORD_STORE_MODE === "postgres" || config.CONFIG_STORE_MODE === "postgres";
   const usesSqlite = config.PASSWORD_STORE_MODE === "sqlite" || config.CONFIG_STORE_MODE === "sqlite";
   const backend = usesPostgres ? "postgres" : usesSqlite ? "sqlite" : "env/file";
@@ -641,12 +831,19 @@ function createDiagnosticsSummary(report) {
     `Foundry Target: ${config.FOUNDRY_TARGET || "unset"}`,
     `Service Running: ${status.running ? "yes" : "no"} (pid: ${status.pid || "n/a"})`,
     `Health Check: ${health.ok ? "healthy" : "unhealthy"}${health.statusCode ? ` (${health.statusCode})` : ""}`,
+    `Foundry Reachability: ${
+      foundryHealth.ok
+        ? `reachable (${foundryHealth.statusCode || "n/a"})`
+        : `unreachable${foundryHealth.error ? ` (${foundryHealth.error})` : ""}`
+    }`,
     `Auth Username: ${config.AUTH_USERNAME || "unset"}`,
     `Require TOTP: ${config.REQUIRE_TOTP || "false"}`,
     `Password Store Mode: ${config.PASSWORD_STORE_MODE || "unset"}`,
     `Config Store Mode: ${config.CONFIG_STORE_MODE || "unset"}`,
     `Database Backend: ${backend}`,
     `Postgres URL: ${config.POSTGRES_URL || "n/a"}`,
+    `Login Theme: ${loginAppearance.activeThemeName || "n/a"} (${loginAppearance.activeThemeId || "n/a"})`,
+    `Login Assets: logo=${loginAppearance.assets?.logo?.status || "n/a"}, closed=${loginAppearance.assets?.closedBackground?.status || "n/a"}, open=${loginAppearance.assets?.openBackground?.status || "n/a"}`,
     ...pluginLines,
     `Debug Mode: ${config.DEBUG_MODE || "false"} (log: ${config.DEBUG_LOG_FILE || "unset"})`,
     `Manager UI: http://${env.managerHost || DEFAULT_MANAGER_HOST}:${env.managerPort || DEFAULT_MANAGER_PORT}/manager/`,
@@ -655,6 +852,76 @@ function createDiagnosticsSummary(report) {
   ];
 
   return lines.join("\n");
+}
+
+function normalizeThemeAssetRelativePath(value) {
+  const normalized = normalizeString(value, "").replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!normalized || normalized.includes("..")) {
+    return "";
+  }
+  return normalized;
+}
+
+function resolveThemeAssetAbsolutePath(graphicsDir, relativePath) {
+  const normalized = normalizeThemeAssetRelativePath(relativePath);
+  if (!normalized) {
+    return "";
+  }
+
+  const baseDir = path.resolve(graphicsDir);
+  const absolutePath = path.resolve(baseDir, normalized);
+  if (absolutePath === baseDir || !absolutePath.startsWith(`${baseDir}${path.sep}`)) {
+    return "";
+  }
+
+  return absolutePath;
+}
+
+function normalizeLoginAppearanceTheme(theme) {
+  const normalized = theme && typeof theme === "object" ? theme : {};
+  return {
+    id: normalizeString(normalized.id, ""),
+    name: normalizeString(normalized.name, ""),
+    logoPath: normalizeThemeAssetRelativePath(normalized.logoPath),
+    logoUrl: normalizeString(normalized.logoUrl, ""),
+    closedBackgroundPath: normalizeThemeAssetRelativePath(normalized.closedBackgroundPath),
+    closedBackgroundUrl: normalizeString(normalized.closedBackgroundUrl, ""),
+    openBackgroundPath: normalizeThemeAssetRelativePath(normalized.openBackgroundPath),
+    openBackgroundUrl: normalizeString(normalized.openBackgroundUrl, ""),
+    loginBoxMode: normalizeString(normalized.loginBoxMode, "dark"),
+    loginBoxWidthPercent: Number.parseInt(String(normalized.loginBoxWidthPercent || 100), 10) || 100,
+    loginBoxHeightPercent: Number.parseInt(String(normalized.loginBoxHeightPercent || 100), 10) || 100,
+    loginBoxOpacityPercent: Number.parseInt(String(normalized.loginBoxOpacityPercent || 100), 10) || 100,
+    loginBoxHoverOpacityPercent: Number.parseInt(String(normalized.loginBoxHoverOpacityPercent || 100), 10) || 100,
+    loginBoxPosXPercent: Number.parseInt(String(normalized.loginBoxPosXPercent || 50), 10) || 50,
+    loginBoxPosYPercent: Number.parseInt(String(normalized.loginBoxPosYPercent || 50), 10) || 50,
+    logoSizePercent: Number.parseInt(String(normalized.logoSizePercent || 30), 10) || 30,
+    logoOffsetXPercent: Number.parseInt(String(normalized.logoOffsetXPercent || 2), 10) || 2,
+    logoOffsetYPercent: Number.parseInt(String(normalized.logoOffsetYPercent || 2), 10) || 2,
+    backgroundZoomPercent: Number.parseInt(String(normalized.backgroundZoomPercent || 100), 10) || 100,
+  };
+}
+
+function formatLoginAppearanceCopyPasteText(details) {
+  return [
+    `activeThemeId: ${details.activeThemeId || ""}`,
+    `theme.id: ${details.activeTheme.id || ""}`,
+    `theme.name: ${details.activeTheme.name || ""}`,
+    `theme.logoPath: ${details.activeTheme.logoPath || ""}`,
+    `theme.closedBackgroundPath: ${details.activeTheme.closedBackgroundPath || ""}`,
+    `theme.openBackgroundPath: ${details.activeTheme.openBackgroundPath || ""}`,
+    `theme.loginBoxMode: ${details.activeTheme.loginBoxMode || "dark"}`,
+    `theme.loginBoxWidthPercent: ${details.activeTheme.loginBoxWidthPercent}`,
+    `theme.loginBoxHeightPercent: ${details.activeTheme.loginBoxHeightPercent}`,
+    `theme.loginBoxOpacityPercent: ${details.activeTheme.loginBoxOpacityPercent}`,
+    `theme.loginBoxHoverOpacityPercent: ${details.activeTheme.loginBoxHoverOpacityPercent}`,
+    `theme.loginBoxPosXPercent: ${details.activeTheme.loginBoxPosXPercent}`,
+    `theme.loginBoxPosYPercent: ${details.activeTheme.loginBoxPosYPercent}`,
+    `theme.logoSizePercent: ${details.activeTheme.logoSizePercent}`,
+    `theme.logoOffsetXPercent: ${details.activeTheme.logoOffsetXPercent}`,
+    `theme.logoOffsetYPercent: ${details.activeTheme.logoOffsetYPercent}`,
+    `theme.backgroundZoomPercent: ${details.activeTheme.backgroundZoomPercent}`,
+  ].join("\n");
 }
 
 async function readEnvConfig(envPath) {
@@ -703,6 +970,156 @@ async function tailFile(filePath, lineLimit = 200) {
   }
 }
 
+function parseCookies(headerValue) {
+  const cookies = {};
+  const raw = String(headerValue || "");
+  if (!raw) {
+    return cookies;
+  }
+
+  for (const chunk of raw.split(";")) {
+    const [namePart, ...valueParts] = chunk.split("=");
+    const name = String(namePart || "").trim();
+    if (!name) {
+      continue;
+    }
+    const value = valueParts.join("=").trim();
+    try {
+      cookies[name] = decodeURIComponent(value);
+    } catch {
+      cookies[name] = value;
+    }
+  }
+
+  return cookies;
+}
+
+function createCookieHeader(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(String(value || ""))}`];
+  parts.push(`Path=${options.path || "/"}`);
+  if (Number.isInteger(options.maxAge)) {
+    parts.push(`Max-Age=${options.maxAge}`);
+  }
+  if (options.httpOnly !== false) {
+    parts.push("HttpOnly");
+  }
+  if (options.sameSite) {
+    parts.push(`SameSite=${options.sameSite}`);
+  }
+  if (options.secure) {
+    parts.push("Secure");
+  }
+  return parts.join("; ");
+}
+
+function normalizeManagerNextPath(value, fallback = "/manager/") {
+  const candidate = String(value || "").trim();
+  if (!candidate || !candidate.startsWith("/") || candidate.startsWith("//")) {
+    return fallback;
+  }
+  if (candidate.includes("..") || candidate.includes("\\")) {
+    return fallback;
+  }
+  if (!candidate.startsWith("/manager")) {
+    return "/manager/";
+  }
+  return candidate;
+}
+
+function renderManagerLoginPage({ error = "", nextPath = "/manager/" } = {}) {
+  const safeNext = normalizeManagerNextPath(nextPath, "/manager/");
+  const safeError = normalizeString(error, "");
+  const errorBlock = safeError
+    ? `<p class="manager-login-error">${safeError.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`
+    : "";
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blastdoor Manager Login</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 15% 15%, rgba(155, 224, 255, 0.14), transparent 32%),
+          radial-gradient(circle at 88% 18%, rgba(182, 255, 172, 0.1), transparent 30%),
+          linear-gradient(180deg, #131926, #090b10);
+        color: #e7edf6;
+      }
+      main {
+        width: min(420px, 92vw);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 14px;
+        padding: 1.1rem 1.1rem 1.2rem;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(10, 14, 24, 0.92));
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.28rem;
+      }
+      p {
+        margin: 0 0 0.8rem;
+        color: #9ca8bd;
+        font-size: 0.92rem;
+      }
+      label {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 0.85rem;
+      }
+      input {
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(10, 14, 24, 0.95);
+        color: #e7edf6;
+        padding: 0.55rem 0.6rem;
+        font-size: 0.95rem;
+      }
+      button {
+        margin-top: 0.8rem;
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: linear-gradient(180deg, #263557, #1b2741);
+        color: #e7edf6;
+        padding: 0.55rem 0.7rem;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }
+      .manager-login-error {
+        margin: 0 0 0.8rem;
+        color: #ff9a9a;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Blastdoor Manager Login</h1>
+      <p>Manager access is password protected.</p>
+      ${errorBlock}
+      <form method="post" action="/api/manager-auth/login-form">
+        <input type="hidden" name="next" value="${safeNext.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}" />
+        <label>
+          Password
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">Unlock Manager</button>
+      </form>
+    </main>
+  </body>
+</html>`;
+}
+
 function createProcessState({ workspaceDir, processFactory }) {
   const state = {
     child: null,
@@ -738,6 +1155,17 @@ function createProcessState({ workspaceDir, processFactory }) {
     };
   }
 
+  function renderEarlyExitHint() {
+    const recent = state.runtimeLogLines.slice(-80).join("\n");
+    if (recent.includes("EADDRNOTAVAIL")) {
+      return "Bind address is unavailable. Verify HOST in .env and prefer HOST=0.0.0.0 unless you must bind a specific local interface.";
+    }
+    if (recent.includes("EADDRINUSE")) {
+      return "Port is already in use. Stop the conflicting service or change PORT in .env.";
+    }
+    return "";
+  }
+
   async function start() {
     if (state.child) {
       return getStatus();
@@ -766,6 +1194,40 @@ function createProcessState({ workspaceDir, processFactory }) {
       state.child = null;
       state.startedAt = null;
     });
+
+    const earlyExitWindowMs = 900;
+    const earlyExit = await new Promise((resolve) => {
+      let settled = false;
+      const settle = (payload) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(payload);
+      };
+
+      const timer = setTimeout(() => {
+        child.off("exit", onExit);
+        settle(null);
+      }, earlyExitWindowMs);
+
+      const onExit = (code, signal) => {
+        clearTimeout(timer);
+        settle({
+          code: typeof code === "number" ? code : null,
+          signal: signal || null,
+        });
+      };
+
+      child.once("exit", onExit);
+    });
+
+    if (earlyExit) {
+      const hint = renderEarlyExitHint();
+      throw new Error(
+        `Blastdoor failed to start (exit code: ${earlyExit.code ?? "n/a"}, signal: ${earlyExit.signal || "n/a"}).${hint ? ` ${hint}` : ""}`,
+      );
+    }
 
     return getStatus();
   }
@@ -842,6 +1304,96 @@ async function checkBlastdoorHealth(config) {
   }
 }
 
+function defaultPortForProtocol(protocol) {
+  if (protocol === "https:") {
+    return 443;
+  }
+  if (protocol === "http:") {
+    return 80;
+  }
+  return null;
+}
+
+function isLoopbackHost(hostname) {
+  const normalized = normalizeString(hostname, "").toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+async function probeTcpConnectivity(host, port, timeoutMs = 1500) {
+  return await new Promise((resolve) => {
+    const startedAt = Date.now();
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve({
+        ...result,
+        durationMs: Date.now() - startedAt,
+      });
+    };
+
+    const socket = net.createConnection({ host, port });
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => {
+      socket.destroy();
+      finish({ ok: true, error: null });
+    });
+    socket.on("timeout", () => {
+      socket.destroy();
+      finish({ ok: false, error: `timeout after ${timeoutMs}ms` });
+    });
+    socket.on("error", (error) => {
+      finish({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    });
+  });
+}
+
+async function resolveDnsAddresses(hostname) {
+  const host = normalizeString(hostname, "");
+  if (!host) {
+    return {
+      ok: false,
+      addresses: [],
+      error: "missing host",
+    };
+  }
+
+  if (net.isIP(host)) {
+    return {
+      ok: true,
+      addresses: [host],
+      error: null,
+    };
+  }
+
+  if (host === "localhost") {
+    return {
+      ok: true,
+      addresses: ["127.0.0.1", "::1"],
+      error: null,
+    };
+  }
+
+  try {
+    const results = await dns.lookup(host, { all: true });
+    const addresses = results.map((entry) => normalizeString(entry?.address, "")).filter(Boolean);
+    return {
+      ok: addresses.length > 0,
+      addresses,
+      error: addresses.length > 0 ? null : "No DNS addresses returned.",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      addresses: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function checkFoundryTargetHealth(config) {
   const rawTarget = normalizeString(config.FOUNDRY_TARGET, "");
   if (!rawTarget) {
@@ -850,6 +1402,13 @@ async function checkFoundryTargetHealth(config) {
       statusCode: null,
       url: "",
       error: "FOUNDRY_TARGET is not configured.",
+      targetHost: "",
+      targetPort: null,
+      targetProtocol: "",
+      targetIsLoopback: false,
+      dns: { ok: false, addresses: [], error: "FOUNDRY_TARGET is not configured." },
+      tcp: { ok: false, error: "FOUNDRY_TARGET is not configured.", durationMs: 0 },
+      runtimeHint: "",
     };
   }
 
@@ -862,8 +1421,30 @@ async function checkFoundryTargetHealth(config) {
       statusCode: null,
       url: rawTarget,
       error: `Invalid FOUNDRY_TARGET URL: ${error instanceof Error ? error.message : String(error)}`,
+      targetHost: "",
+      targetPort: null,
+      targetProtocol: "",
+      targetIsLoopback: false,
+      dns: { ok: false, addresses: [], error: "Invalid target URL." },
+      tcp: { ok: false, error: "Invalid target URL.", durationMs: 0 },
+      runtimeHint: "",
     };
   }
+
+  const targetHost = normalizeString(targetUrl.hostname, "");
+  const targetPort = Number.parseInt(targetUrl.port || String(defaultPortForProtocol(targetUrl.protocol) || ""), 10);
+  const targetProtocol = normalizeString(targetUrl.protocol, "");
+  const targetIsLoopback = isLoopbackHost(targetHost);
+  const dnsDetails = await resolveDnsAddresses(targetHost);
+  const tcpDetails =
+    Number.isInteger(targetPort) && targetPort > 0
+      ? await probeTcpConnectivity(targetHost, targetPort, 1500)
+      : { ok: false, error: "Unable to determine target port.", durationMs: 0 };
+
+  const runtimeHint =
+    targetIsLoopback && (Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) || RUNTIME_IS_CONTAINER)
+      ? "FOUNDRY_TARGET is loopback/localhost while Blastdoor runs in WSL or container. localhost resolves inside that runtime, not the host OS."
+      : "";
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2000);
@@ -877,6 +1458,387 @@ async function checkFoundryTargetHealth(config) {
       ok: true,
       statusCode: response.status,
       url: targetUrl.toString(),
+      targetHost,
+      targetPort: Number.isInteger(targetPort) ? targetPort : null,
+      targetProtocol,
+      targetIsLoopback,
+      dns: dnsDetails,
+      tcp: tcpDetails,
+      runtimeHint,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      url: targetUrl.toString(),
+      error: error instanceof Error ? error.message : String(error),
+      targetHost,
+      targetPort: Number.isInteger(targetPort) ? targetPort : null,
+      targetProtocol,
+      targetIsLoopback,
+      dns: dnsDetails,
+      tcp: tcpDetails,
+      runtimeHint,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function summarizeFoundryApiResponseBody(bodyText) {
+  const raw = normalizeString(bodyText, "");
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      const status =
+        normalizeString(parsed.status, "") ||
+        normalizeString(parsed.serverStatus, "") ||
+        normalizeString(parsed.message, "");
+      if (status) {
+        return status.slice(0, 120);
+      }
+    }
+    return String(typeof parsed === "string" ? parsed : JSON.stringify(parsed)).replace(/\s+/g, " ").slice(0, 120);
+  } catch {
+    return raw.replace(/\s+/g, " ").slice(0, 120);
+  }
+}
+
+async function probeFoundryApiStatus(config, timeoutMs = 1500) {
+  const rawTarget = normalizeString(config.FOUNDRY_TARGET, "");
+  if (!rawTarget) {
+    return {
+      ok: false,
+      reachable: false,
+      statusCode: null,
+      url: "",
+      endpointPath: "/api/status",
+      responseSummary: "",
+      error: "FOUNDRY_TARGET is not configured.",
+    };
+  }
+
+  let targetUrl;
+  try {
+    targetUrl = new URL(rawTarget);
+  } catch (error) {
+    return {
+      ok: false,
+      reachable: false,
+      statusCode: null,
+      url: rawTarget,
+      endpointPath: "/api/status",
+      responseSummary: "",
+      error: `Invalid FOUNDRY_TARGET URL: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const candidatePaths = ["/api/status", "/API/Status"];
+  let fallbackResult = null;
+
+  for (const endpointPath of candidatePaths) {
+    const endpointUrl = new URL(targetUrl.toString());
+    endpointUrl.pathname = endpointPath;
+    endpointUrl.search = "";
+    endpointUrl.hash = "";
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(endpointUrl, {
+        method: "GET",
+        headers: {
+          accept: "application/json,text/plain,*/*",
+        },
+        signal: controller.signal,
+      });
+      const rawBody = await response.text();
+      const responseSummary = summarizeFoundryApiResponseBody(rawBody);
+      const result = {
+        ok: response.ok,
+        reachable: true,
+        statusCode: response.status,
+        url: endpointUrl.toString(),
+        endpointPath,
+        responseSummary,
+        error: response.ok ? null : responseSummary || `HTTP ${response.status}`,
+      };
+
+      if (response.status !== 404) {
+        return result;
+      }
+      fallbackResult = result;
+    } catch (error) {
+      return {
+        ok: false,
+        reachable: false,
+        statusCode: null,
+        url: endpointUrl.toString(),
+        endpointPath,
+        responseSummary: "",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return (
+    fallbackResult || {
+      ok: false,
+      reachable: false,
+      statusCode: null,
+      url: rawTarget,
+      endpointPath: "/api/status",
+      responseSummary: "",
+      error: "No Foundry API status endpoint response.",
+    }
+  );
+}
+
+function elapsedSeconds(startedAt) {
+  const startedMs = new Date(startedAt).getTime();
+  if (!Number.isFinite(startedMs)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+}
+
+function formatPluginName(pluginId) {
+  const normalized = normalizeString(pluginId, "");
+  if (!normalized) {
+    return "Plugin";
+  }
+  return `${normalized
+    .split(/[-_]+/)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ")} Module`;
+}
+
+function parseComposePsOutput(raw) {
+  const text = String(raw || "").trim();
+  if (!text) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry) => entry && typeof entry === "object");
+    }
+    if (parsed && typeof parsed === "object") {
+      return [parsed];
+    }
+  } catch {
+    // Fall through to line-delimited parsing.
+  }
+
+  const entries = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object") {
+        entries.push(parsed);
+      }
+    } catch {
+      // Ignore unparseable line.
+    }
+  }
+  return entries;
+}
+
+function collectLocalIpAddresses() {
+  const addresses = new Set(["127.0.0.1", "::1"]);
+  const interfaces = os.networkInterfaces();
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries || []) {
+      const address = normalizeString(entry?.address, "");
+      if (!address) {
+        continue;
+      }
+      addresses.add(address);
+    }
+  }
+  return addresses;
+}
+
+function evaluateGatewayBindHost({ host, environment }) {
+  const normalizedHost = normalizeString(host, CONFIG_DEFAULTS.HOST);
+  if (!normalizedHost || ["0.0.0.0", "::", "127.0.0.1", "::1", "localhost"].includes(normalizedHost.toLowerCase())) {
+    return {
+      ok: true,
+      host: normalizedHost || CONFIG_DEFAULTS.HOST,
+      reason: null,
+      recommendation: null,
+    };
+  }
+
+  const ipVersion = net.isIP(normalizedHost);
+  if (ipVersion > 0) {
+    const localIps = collectLocalIpAddresses();
+    if (localIps.has(normalizedHost)) {
+      return {
+        ok: true,
+        host: normalizedHost,
+        reason: null,
+        recommendation: null,
+      };
+    }
+
+    const recommendation = environment?.isWsl
+      ? "In WSL, set HOST=0.0.0.0 and use Windows portproxy/firewall rules for LAN access."
+      : "Set HOST=0.0.0.0 for LAN access, or HOST=127.0.0.1 for local-only access.";
+
+    return {
+      ok: false,
+      host: normalizedHost,
+      reason: "ip-not-bound-on-host",
+      recommendation,
+    };
+  }
+
+  return {
+    ok: true,
+    host: normalizedHost,
+    reason: null,
+    recommendation: null,
+  };
+}
+
+function toServiceHealthFromDocker({ running = false, healthStatus = "", state = "" } = {}) {
+  const normalizedHealth = String(healthStatus || "").trim().toLowerCase();
+  const normalizedState = String(state || "").trim().toLowerCase();
+  if (!running) {
+    return {
+      ok: false,
+      statusCode: null,
+      error: normalizedState || "stopped",
+    };
+  }
+
+  if (normalizedHealth === "healthy") {
+    return { ok: true, statusCode: 200 };
+  }
+  if (normalizedHealth === "starting") {
+    return { ok: false, statusCode: null, error: "starting" };
+  }
+  if (normalizedHealth && normalizedHealth !== "none") {
+    return { ok: false, statusCode: null, error: normalizedHealth };
+  }
+
+  return { ok: true, statusCode: 200 };
+}
+
+async function inspectDockerContainerState({ commandRunner, workspaceDir, containerId }) {
+  const result = await commandRunner({
+    command: "docker",
+    args: ["inspect", "--format", "{{json .State}}", containerId],
+    cwd: workspaceDir,
+    timeoutMs: 4500,
+  });
+
+  if (!result.ok) {
+    return {
+      running: false,
+      pid: null,
+      uptimeSeconds: 0,
+      health: {
+        ok: false,
+        statusCode: null,
+        error: normalizeString(result.error || result.stderr || result.stdout, "inspect-failed"),
+      },
+    };
+  }
+
+  const parsedState = (() => {
+    try {
+      return JSON.parse(String(result.stdout || "").trim());
+    } catch {
+      return null;
+    }
+  })();
+
+  const running = Boolean(parsedState?.Running);
+  const healthStatus = normalizeString(parsedState?.Health?.Status, "");
+  const startedAt = normalizeString(parsedState?.StartedAt, "");
+  const pidValue = Number.parseInt(String(parsedState?.Pid || ""), 10);
+
+  return {
+    running,
+    pid: Number.isInteger(pidValue) && pidValue > 0 ? pidValue : null,
+    startedAt: startedAt || null,
+    uptimeSeconds: running ? elapsedSeconds(startedAt) : 0,
+    health: toServiceHealthFromDocker({
+      running,
+      healthStatus,
+      state: parsedState?.Status || "",
+    }),
+  };
+}
+
+async function loadComposeServiceStates({ commandRunner, workspaceDir }) {
+  const composeResult = await commandRunner({
+    command: "docker",
+    args: ["compose", "-f", "docker-compose.yml", "--env-file", "docker/blastdoor.env", "ps", "--format", "json"],
+    cwd: workspaceDir,
+    timeoutMs: 4500,
+  });
+
+  if (!composeResult.ok) {
+    return {
+      ok: false,
+      services: {},
+      error: normalizeString(composeResult.error || composeResult.stderr || composeResult.stdout, "compose-unavailable"),
+    };
+  }
+
+  const composeRows = parseComposePsOutput(composeResult.stdout);
+  const services = {};
+  for (const row of composeRows) {
+    const serviceName = normalizeString(row.Service || row.service || "", "").toLowerCase();
+    const containerId = normalizeString(row.ID || row.Id || row.id || "", "");
+    if (!serviceName || !containerId) {
+      continue;
+    }
+    services[serviceName] = await inspectDockerContainerState({
+      commandRunner,
+      workspaceDir,
+      containerId,
+    });
+  }
+
+  return { ok: true, services };
+}
+
+async function probeHttpHealth(url, timeoutMs = 1500) {
+  let targetUrl;
+  try {
+    targetUrl = new URL(String(url || ""));
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      url: String(url || ""),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(targetUrl, { signal: controller.signal });
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      url: targetUrl.toString(),
     };
   } catch (error) {
     return {
@@ -888,6 +1850,102 @@ async function checkFoundryTargetHealth(config) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function probeTcpPort({ host, port, timeoutMs = 1500 }) {
+  return await new Promise((resolve) => {
+    const socket = net.createConnection({
+      host,
+      port,
+    });
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => {
+      finish({ ok: true });
+    });
+    socket.once("timeout", () => {
+      finish({ ok: false, error: `timeout (${timeoutMs}ms)` });
+    });
+    socket.once("error", (error) => {
+      finish({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    });
+  });
+}
+
+function parsePostgresUrlEndpoint(postgresUrl) {
+  const raw = normalizeString(postgresUrl, "");
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const host = normalizeString(parsed.hostname, "");
+    const port = Number.parseInt(parsed.port || "5432", 10);
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+      return null;
+    }
+
+    return { host, port };
+  } catch {
+    return null;
+  }
+}
+
+async function detectHostProcessState({ commandRunner, workspaceDir, matchers = [] }) {
+  const result = await commandRunner({
+    command: "ps",
+    args: ["-axo", "pid=,etimes=,command="],
+    cwd: workspaceDir,
+    timeoutMs: 3000,
+  });
+
+  if (!result.ok) {
+    return null;
+  }
+
+  const normalizedMatchers = matchers.map((value) => normalizeString(value, "").toLowerCase()).filter(Boolean);
+  if (normalizedMatchers.length === 0) {
+    return null;
+  }
+
+  for (const line of String(result.stdout || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const parts = trimmed.split(/\s+/, 3);
+    if (parts.length < 3) {
+      continue;
+    }
+
+    const pid = Number.parseInt(parts[0], 10);
+    const etimes = Number.parseInt(parts[1], 10);
+    const command = parts[2] || "";
+    const commandLower = command.toLowerCase();
+    if (!normalizedMatchers.some((matcher) => commandLower.includes(matcher))) {
+      continue;
+    }
+
+    return {
+      running: true,
+      pid: Number.isInteger(pid) ? pid : null,
+      uptimeSeconds: Number.isInteger(etimes) && etimes >= 0 ? etimes : 0,
+    };
+  }
+
+  return null;
 }
 
 function parseBooleanLike(value, fallback = false) {
@@ -919,15 +1977,24 @@ function createTroubleshootChecks({ config, health, foundryHealth, environment }
       : null,
   });
 
+  const bindValidation = evaluateGatewayBindHost({
+    host: config.HOST,
+    environment,
+  });
   checks.push({
     id: "network.bind-address",
     title: "Gateway bind address",
-    status: config.HOST === "0.0.0.0" ? "ok" : "warn",
-    detail:
-      config.HOST === "0.0.0.0"
+    status: bindValidation.ok ? (config.HOST === "0.0.0.0" ? "ok" : "warn") : "error",
+    detail: bindValidation.ok
+      ? config.HOST === "0.0.0.0"
         ? "Gateway is listening on all interfaces."
-        : `Gateway is bound to ${config.HOST}. LAN access may fail unless HOST=0.0.0.0.`,
-    recommendation: config.HOST === "0.0.0.0" ? null : "Set HOST=0.0.0.0 and restart Blastdoor.",
+        : `Gateway is bound to ${config.HOST}. LAN access may fail unless HOST=0.0.0.0.`
+      : `Configured HOST=${bindValidation.host} is not available on this runtime host and startup will fail with EADDRNOTAVAIL.`,
+    recommendation: bindValidation.ok
+      ? config.HOST === "0.0.0.0"
+        ? null
+        : "Set HOST=0.0.0.0 and restart Blastdoor."
+      : bindValidation.recommendation || "Set HOST=0.0.0.0 and restart Blastdoor.",
   });
 
   checks.push({
@@ -963,6 +2030,73 @@ function createTroubleshootChecks({ config, health, foundryHealth, environment }
           ? "When running in WSL, ensure FOUNDRY_TARGET points to an address reachable from Linux and that Foundry is running."
           : "Verify Foundry is running and FOUNDRY_TARGET points to the correct service address and port.",
     });
+  }
+
+  if (foundryHealth.targetHost) {
+    checks.push({
+      id: "proxy.foundry-dns",
+      title: "Foundry target DNS resolution",
+      status: foundryHealth.dns?.ok ? "ok" : "error",
+      detail: foundryHealth.dns?.ok
+        ? `Resolved ${foundryHealth.targetHost} to: ${(foundryHealth.dns?.addresses || []).join(", ")}.`
+        : `DNS resolution failed for ${foundryHealth.targetHost}${foundryHealth.dns?.error ? ` (${foundryHealth.dns.error})` : ""}.`,
+      recommendation: foundryHealth.dns?.ok
+        ? null
+        : "Verify FOUNDRY_TARGET hostname spelling and DNS availability from this runtime.",
+    });
+  }
+
+  if (foundryHealth.targetHost && foundryHealth.targetPort) {
+    checks.push({
+      id: "proxy.foundry-tcp",
+      title: "Foundry target TCP connect",
+      status: foundryHealth.tcp?.ok ? "ok" : "error",
+      detail: foundryHealth.tcp?.ok
+        ? `TCP connect to ${foundryHealth.targetHost}:${foundryHealth.targetPort} succeeded in ${foundryHealth.tcp.durationMs}ms.`
+        : `TCP connect to ${foundryHealth.targetHost}:${foundryHealth.targetPort} failed${foundryHealth.tcp?.error ? ` (${foundryHealth.tcp.error})` : ""}.`,
+      recommendation: foundryHealth.tcp?.ok
+        ? null
+        : "Check Foundry listener bind address, firewall rules, and whether the target host:port is reachable from Blastdoor runtime.",
+    });
+  }
+
+  if (foundryHealth.targetIsLoopback && (environment.isWsl || environment.isContainer)) {
+    checks.push({
+      id: "proxy.foundry-loopback-runtime",
+      title: "Foundry loopback target in isolated runtime",
+      status: "warn",
+      detail: foundryHealth.runtimeHint || "Foundry target uses localhost/loopback from an isolated runtime.",
+      recommendation:
+        "Set FOUNDRY_TARGET to a host-reachable address (for Docker often host.docker.internal, otherwise host/LAN IP) and restart Blastdoor.",
+    });
+  }
+
+  const assistantEnabled = parseBooleanLike(config.ASSISTANT_ENABLED, false);
+  const assistantProvider = normalizeString(config.ASSISTANT_PROVIDER, "ollama").toLowerCase();
+  const assistantOllamaUrl = normalizeString(config.ASSISTANT_OLLAMA_URL, "");
+  if (assistantEnabled && assistantProvider === "ollama" && assistantOllamaUrl) {
+    try {
+      const parsedAssistantUrl = new URL(assistantOllamaUrl);
+      if (isLoopbackHost(parsedAssistantUrl.hostname) && (environment.isWsl || environment.isContainer)) {
+        checks.push({
+          id: "assistant.ollama-loopback-runtime",
+          title: "Ollama loopback URL in isolated runtime",
+          status: "warn",
+          detail:
+            "ASSISTANT_OLLAMA_URL uses localhost/loopback while Blastdoor runs in WSL/container, which usually cannot reach host Ollama.",
+          recommendation:
+            "Set ASSISTANT_OLLAMA_URL to a host-reachable address (for WSL use the Windows host gateway IP; for Docker often host.docker.internal), then restart Blastdoor.",
+        });
+      }
+    } catch {
+      checks.push({
+        id: "assistant.ollama-url-invalid",
+        title: "Ollama URL format",
+        status: "error",
+        detail: `ASSISTANT_OLLAMA_URL is invalid (${assistantOllamaUrl}).`,
+        recommendation: "Set ASSISTANT_OLLAMA_URL to a valid http(s) URL such as http://127.0.0.1:11434.",
+      });
+    }
   }
 
   const cookieSecure = parseBooleanLike(config.COOKIE_SECURE, false);
@@ -1011,6 +2145,36 @@ function buildWslPortproxyScript({ environment, config }) {
   ].join("\n");
 }
 
+function buildWslManagerPortproxyEnableScript({ environment, managerPort, wslIp }) {
+  const distro = environment.wslDistro || "Ubuntu";
+  const displayName = `Blastdoor Manager ${managerPort}`;
+  return [
+    "# Run in Windows PowerShell as Administrator",
+    "# WARNING: this modifies Windows portproxy and firewall configuration.",
+    "# Review before running. Execute at your own risk.",
+    "Set-Service iphlpsvc -StartupType Automatic",
+    "Start-Service iphlpsvc",
+    `# WSL distro hint: ${distro}`,
+    `# WSL interface IP detected: ${wslIp}`,
+    `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${managerPort}`,
+    `netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=${managerPort} connectaddress=${wslIp} connectport=${managerPort}`,
+    `if (-not (Get-NetFirewallRule -DisplayName '${displayName}' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName '${displayName}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${managerPort} }`,
+    "netsh interface portproxy show all",
+  ].join("\n");
+}
+
+function buildWslManagerPortproxyDisableScript({ managerPort }) {
+  const displayName = `Blastdoor Manager ${managerPort}`;
+  return [
+    "# Run in Windows PowerShell as Administrator",
+    "# WARNING: this modifies Windows portproxy and firewall configuration.",
+    "# Review before running. Execute at your own risk.",
+    `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${managerPort}`,
+    `Get-NetFirewallRule -DisplayName '${displayName}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue`,
+    "netsh interface portproxy show all",
+  ].join("\n");
+}
+
 function buildGuidedActions({ environment, config }) {
   if (!environment.isWsl) {
     return [];
@@ -1053,6 +2217,12 @@ function buildSafeActions(environment) {
       title: "Detect Windows portproxy",
       destructive: false,
       description: "Runs read-only checks for Windows portproxy and firewall rule visibility from WSL.",
+    });
+    actions.push({
+      id: "fix.wsl-foundry-target",
+      title: "Auto-fix WSL Foundry target",
+      destructive: false,
+      description: "Detects Windows host gateway IP and updates FOUNDRY_TARGET in .env for WSL reachability.",
     });
   }
 
@@ -1206,7 +2376,258 @@ async function runGatewayLocalChecks(config) {
   return checks;
 }
 
-async function runTroubleshootAction({ actionId, config, environment, workspaceDir, commandRunner }) {
+function parseDefaultGatewayIpFromRouteOutput(raw) {
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const match = trimmed.match(/\bdefault\s+via\s+((?:\d{1,3}\.){3}\d{1,3})\b/i);
+    if (!match) {
+      continue;
+    }
+    const ip = normalizeString(match[1], "");
+    if (net.isIP(ip) === 4) {
+      return ip;
+    }
+  }
+  return "";
+}
+
+function buildWslFoundryTarget(config, gatewayIp) {
+  const rawTarget = normalizeString(config.FOUNDRY_TARGET, CONFIG_DEFAULTS.FOUNDRY_TARGET);
+  let protocol = "http:";
+  let port = "30000";
+  let pathname = "";
+
+  try {
+    const parsed = new URL(rawTarget);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      protocol = parsed.protocol;
+    }
+    port = normalizeString(parsed.port, "") || port;
+    pathname = normalizeString(parsed.pathname, "");
+  } catch {
+    // Keep defaults.
+  }
+
+  const safePathname = pathname && pathname !== "/" ? pathname : "";
+  return `${protocol}//${gatewayIp}:${port}${safePathname}`;
+}
+
+function buildWslOllamaUrl(config, gatewayIp) {
+  const rawUrl = normalizeString(config.ASSISTANT_OLLAMA_URL, "http://127.0.0.1:11434");
+  let protocol = "http:";
+  let port = "11434";
+  let pathname = "";
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      protocol = parsed.protocol;
+    }
+    port = normalizeString(parsed.port, "") || port;
+    pathname = normalizeString(parsed.pathname, "");
+  } catch {
+    // Keep defaults.
+  }
+
+  const safePathname = pathname && pathname !== "/" ? pathname : "";
+  return `${protocol}//${gatewayIp}:${port}${safePathname}`;
+}
+
+async function detectWslDefaultGatewayIp({ workspaceDir, commandRunner }) {
+  const routeResult = await commandRunner({
+    command: "ip",
+    args: ["route", "show", "default"],
+    cwd: workspaceDir,
+    timeoutMs: 4000,
+  });
+  if (!routeResult.ok) {
+    throw new Error(
+      `Unable to detect WSL default gateway via 'ip route show default' (${routeResult.error || "command failed"}).`,
+    );
+  }
+
+  const gatewayIp = parseDefaultGatewayIpFromRouteOutput(routeResult.stdout);
+  if (!gatewayIp) {
+    throw new Error("Unable to parse a default gateway IPv4 address from 'ip route show default' output.");
+  }
+
+  return {
+    gatewayIp,
+    commandResult: routeResult,
+  };
+}
+
+async function detectWslInterfaceIp({ workspaceDir, commandRunner }) {
+  const ifaceResult = await commandRunner({
+    command: "ip",
+    args: ["-4", "-o", "addr", "show", "eth0"],
+    cwd: workspaceDir,
+    timeoutMs: 4000,
+  });
+  if (!ifaceResult.ok) {
+    throw new Error(
+      `Unable to detect WSL interface IP via 'ip -4 -o addr show eth0' (${ifaceResult.error || "command failed"}).`,
+    );
+  }
+
+  const match = String(ifaceResult.stdout || "").match(/\binet\s+((?:\d{1,3}\.){3}\d{1,3})\//);
+  const ip = normalizeString(match?.[1], "");
+  if (net.isIP(ip) !== 4) {
+    throw new Error("Unable to parse WSL IPv4 address from 'ip -4 -o addr show eth0' output.");
+  }
+
+  return {
+    wslIp: ip,
+    commandResult: ifaceResult,
+  };
+}
+
+async function syncRemoteSupportWslExposure({
+  enabled,
+  environment,
+  workspaceDir,
+  commandRunner,
+}) {
+  const managerPort = Number.parseInt(environment.managerPort || String(DEFAULT_MANAGER_PORT), 10) || DEFAULT_MANAGER_PORT;
+  const managerHost = normalizeString(environment.managerHost, DEFAULT_MANAGER_HOST);
+  const base = {
+    attempted: false,
+    applied: false,
+    enabledRequested: enabled === true,
+    managerHost,
+    managerPort,
+    status: "skipped",
+    message: "WSL exposure sync not required.",
+    remediation: [],
+    commands: [],
+  };
+
+  if (!environment.isWsl) {
+    return {
+      ...base,
+      status: "skipped-not-wsl",
+      message: "Runtime is not WSL; automatic Windows portproxy sync skipped.",
+    };
+  }
+
+  if (isLoopbackHost(managerHost)) {
+    const actionHint = enabled
+      ? "Enable"
+      : "Disable";
+    return {
+      ...base,
+      status: "blocked-manager-loopback",
+      message:
+        "Manager is bound to loopback (127.0.0.1). Restart manager with MANAGER_HOST=0.0.0.0 before automatic WSL exposure sync can apply.",
+      remediation: [
+        `Restart manager with: MANAGER_HOST=0.0.0.0 MANAGER_PORT=${managerPort} make manager-launch`,
+        `${actionHint} remote support API again after manager restart to trigger automatic exposure sync.`,
+      ],
+      script: enabled
+        ? buildWslManagerPortproxyEnableScript({
+            environment,
+            managerPort,
+            wslIp: "<WSL_IP>",
+          })
+        : buildWslManagerPortproxyDisableScript({ managerPort }),
+    };
+  }
+
+  let wslIp;
+  try {
+    const detected = await detectWslInterfaceIp({ workspaceDir, commandRunner });
+    wslIp = detected.wslIp;
+  } catch (error) {
+    return {
+      ...base,
+      status: "failed-detect-wsl-ip",
+      message: error instanceof Error ? error.message : String(error),
+      remediation: [
+        "Verify WSL network interface is available and 'ip' command returns eth0 IPv4.",
+        "Run diagnostics: Troubleshooting -> Gather Snapshot.",
+      ],
+    };
+  }
+
+  const powershellCommand = enabled
+    ? [
+        "$ErrorActionPreference='Stop'",
+        "Set-Service iphlpsvc -StartupType Automatic",
+        "Start-Service iphlpsvc",
+        `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${managerPort} | Out-Null`,
+        `netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=${managerPort} connectaddress=${wslIp} connectport=${managerPort}`,
+        `if (-not (Get-NetFirewallRule -DisplayName 'Blastdoor Manager ${managerPort}' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName 'Blastdoor Manager ${managerPort}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${managerPort} | Out-Null }`,
+        "netsh interface portproxy show all",
+      ].join("; ")
+    : [
+        "$ErrorActionPreference='Continue'",
+        `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${managerPort} | Out-Null`,
+        `Get-NetFirewallRule -DisplayName 'Blastdoor Manager ${managerPort}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue`,
+        "netsh interface portproxy show all",
+      ].join("; ");
+
+  const result = await commandRunner({
+    command: "powershell.exe",
+    args: ["-NoProfile", "-Command", powershellCommand],
+    cwd: workspaceDir,
+    timeoutMs: 12000,
+  });
+
+  const script = enabled
+    ? buildWslManagerPortproxyEnableScript({ environment, managerPort, wslIp })
+    : buildWslManagerPortproxyDisableScript({ managerPort });
+
+  if (!result.ok) {
+    return {
+      ...base,
+      attempted: true,
+      status: "failed-apply",
+      message: `Automatic WSL exposure sync failed (${result.error || "command failed"}).`,
+      remediation: [
+        "Run Blastdoor manager with elevated permissions or execute the generated PowerShell script as Administrator.",
+        "Verify Windows service 'iphlpsvc' is available and running.",
+      ],
+      wslIp,
+      script,
+      commands: [
+        {
+          command: `powershell.exe -NoProfile -Command "<automation script>"`,
+          ok: false,
+          exitCode: result.exitCode,
+          error: result.error || "",
+          stdout: result.stdout || "",
+          stderr: result.stderr || "",
+        },
+      ],
+    };
+  }
+
+  return {
+    ...base,
+    attempted: true,
+    applied: true,
+    status: enabled ? "enabled" : "disabled",
+    message: enabled
+      ? `Automatic WSL exposure sync applied for manager port ${managerPort}.`
+      : `Automatic WSL exposure sync removed for manager port ${managerPort}.`,
+    wslIp,
+    script,
+    commands: [
+      {
+        command: `powershell.exe -NoProfile -Command "<automation script>"`,
+        ok: true,
+        exitCode: result.exitCode,
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
+      },
+    ],
+  };
+}
+
+async function runTroubleshootAction({ actionId, config, environment, workspaceDir, commandRunner, envPath }) {
   if (actionId === "snapshot.network") {
     const outputs = await runCommandBatch(
       commandRunner,
@@ -1276,15 +2697,140 @@ async function runTroubleshootAction({ actionId, config, environment, workspaceD
     };
   }
 
+  if (actionId === "fix.wsl-foundry-target") {
+    if (!environment.isWsl) {
+      throw new Error("fix.wsl-foundry-target is only available when running inside WSL.");
+    }
+    if (!envPath) {
+      throw new Error("envPath is required for fix.wsl-foundry-target.");
+    }
+
+    const { gatewayIp, commandResult: routeResult } = await detectWslDefaultGatewayIp({
+      workspaceDir,
+      commandRunner,
+    });
+
+    const previousFoundryTarget = normalizeString(config.FOUNDRY_TARGET, CONFIG_DEFAULTS.FOUNDRY_TARGET);
+    const newFoundryTarget = buildWslFoundryTarget(config, gatewayIp);
+    const changedConfig = previousFoundryTarget !== newFoundryTarget;
+    if (changedConfig) {
+      const nextConfig = {
+        ...config,
+        FOUNDRY_TARGET: newFoundryTarget,
+      };
+      validateConfig(loadConfigFromEnv(nextConfig));
+      await writeEnvConfig(envPath, nextConfig);
+    }
+
+    return {
+      actionId,
+      title: "WSL Foundry target auto-fix",
+      destructive: false,
+      generatedAt: new Date().toISOString(),
+      changedConfig,
+      requiresRestart: changedConfig,
+      previousFoundryTarget,
+      newFoundryTarget,
+      outputs: [
+        {
+          label: "WSL default gateway detection",
+          command: "ip route show default",
+          ok: true,
+          stdout: String(routeResult.stdout || "").trim(),
+          stderr: String(routeResult.stderr || "").trim(),
+        },
+        {
+          label: "FOUNDRY_TARGET update",
+          ok: true,
+          stdout: changedConfig
+            ? `Updated FOUNDRY_TARGET\nfrom: ${previousFoundryTarget}\nto:   ${newFoundryTarget}\nRestart required: yes`
+            : `No change needed. FOUNDRY_TARGET already set to ${newFoundryTarget}`,
+        },
+      ],
+    };
+  }
+
   throw new Error(`Unknown or unsupported troubleshooting action '${actionId}'.`);
 }
 
-function createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus }) {
+function createLoginAppearanceChecks(loginAppearance) {
+  if (!loginAppearance || typeof loginAppearance !== "object") {
+    return [];
+  }
+
+  if (loginAppearance.error) {
+    return [
+      {
+        id: "login-theme.diagnostics-error",
+        title: "Login appearance diagnostics",
+        status: "warn",
+        detail: `Unable to evaluate login appearance settings (${loginAppearance.error}).`,
+        recommendation: "Verify theme store configuration and graphics directory permissions.",
+      },
+    ];
+  }
+
+  const checks = [];
+  const themeName = loginAppearance.activeThemeName || loginAppearance.activeThemeId || "unknown";
+  const logo = loginAppearance.assets?.logo;
+  const closedBackground = loginAppearance.assets?.closedBackground;
+  const openBackground = loginAppearance.assets?.openBackground;
+
+  if (logo?.exists === false) {
+    checks.push({
+      id: "login-theme.logo-missing",
+      title: "Login logo asset",
+      status: "warn",
+      detail: `Active theme '${themeName}' references missing logo asset '${logo.path || "unset"}'.`,
+      recommendation: "Select a valid logo in Login Screen Management, or clear the logo path.",
+    });
+  }
+
+  if (closedBackground?.exists === false) {
+    checks.push({
+      id: "login-theme.closed-background-missing",
+      title: "Login closed background asset",
+      status: "error",
+      detail: `Active theme '${themeName}' references missing closed background '${closedBackground.path || "unset"}'.`,
+      recommendation: "Set a valid closed background image in Login Screen Management.",
+    });
+  }
+
+  if (openBackground?.exists === false) {
+    checks.push({
+      id: "login-theme.open-background-missing",
+      title: "Login open background asset",
+      status: "warn",
+      detail: `Active theme '${themeName}' references missing open background '${openBackground.path || "unset"}'.`,
+      recommendation: "Set a valid open background image, or leave it empty to keep closed background during transition.",
+    });
+  }
+
+  if (checks.length === 0) {
+    checks.push({
+      id: "login-theme.assets",
+      title: "Login theme assets",
+      status: "ok",
+      detail: `Active theme '${themeName}' asset paths are valid.`,
+      recommendation: null,
+    });
+  }
+
+  return checks;
+}
+
+function createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus, loginAppearance }) {
+  const checks = [
+    ...createTroubleshootChecks({ config, health, foundryHealth, environment }),
+    ...createLoginAppearanceChecks(loginAppearance),
+  ];
+
   return {
     generatedAt: new Date().toISOString(),
     serviceStatus,
     environment,
-    checks: createTroubleshootChecks({ config, health, foundryHealth, environment }),
+    loginAppearance,
+    checks,
     safeActions: buildSafeActions(environment),
     guidedActions: buildGuidedActions({ environment, config }),
   };
@@ -1296,20 +2842,47 @@ export function createManagerApp(options = {}) {
   const runtimeStatePath = options.runtimeStatePath || path.join(workspaceDir, "data", "runtime-state.json");
   const installationConfigPath =
     options.installationConfigPath || path.join(workspaceDir, "data", "installation_config.json");
+  const dockerEnvPath = options.dockerEnvPath || path.join(workspaceDir, "docker", "blastdoor.env");
+  const configBackupDir = options.configBackupDir || path.join(workspaceDir, "data", "config-backups");
   const managerDir = options.managerDir || path.join(workspaceDir, "public", "manager");
   const graphicsDir = options.graphicsDir || path.join(workspaceDir, "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
   const userProfileStorePath = options.userProfileStorePath || path.join(workspaceDir, "data", "user-profiles.json");
+  const intelligenceAgentStorePath =
+    options.intelligenceAgentStorePath || path.join(workspaceDir, "data", "intelligence-agents.json");
+  const failureStorePath = options.failureStorePath || path.join(workspaceDir, "data", "launch-failures.json");
+  const managerConsoleSettingsPath =
+    options.managerConsoleSettingsPath || path.join(workspaceDir, "data", "manager-console-settings.json");
   const processFactory = options.processFactory || spawn;
   const commandRunner = options.commandRunner || runDiagnosticCommand;
   const postgresPoolFactory = options.postgresPoolFactory;
   const processState = createProcessState({ workspaceDir, processFactory });
+  const managerStartedAtMs = Date.now();
+  const managerAuthSessions = new Map();
+  let managerConsoleSettingsCache = null;
+  const controlPlaneCache = {
+    payload: null,
+    updatedAtMs: 0,
+    inflight: null,
+  };
   const managerWriteRateLimitWindowMs = Number.isInteger(options.managerWriteRateLimitWindowMs)
     ? options.managerWriteRateLimitWindowMs
     : 15 * 60 * 1000;
   const managerWriteRateLimitMax = Number.isInteger(options.managerWriteRateLimitMax)
     ? options.managerWriteRateLimitMax
     : 120;
+  const managerOperationTimeoutMs = Number.isInteger(options.managerOperationTimeoutMs)
+    ? options.managerOperationTimeoutMs
+    : 20_000;
+  const managedConfigFiles = [
+    { id: "gateway_env", relativePath: ".env", absolutePath: envPath },
+    { id: "docker_env", relativePath: "docker/blastdoor.env", absolutePath: dockerEnvPath },
+    {
+      id: "installation_profile",
+      relativePath: path.relative(workspaceDir, installationConfigPath).replaceAll(path.sep, "/"),
+      absolutePath: installationConfigPath,
+    },
+  ];
 
   async function withBlastdoorApi(handler) {
     const configFromEnv = await readEnvConfig(envPath);
@@ -1332,6 +2905,588 @@ export function createManagerApp(options = {}) {
       if (typeof blastdoorApi?.close === "function") {
         await blastdoorApi.close();
       }
+    }
+  }
+
+  async function resolveThemeAssetState(relativePath, url) {
+    const normalizedPath = normalizeThemeAssetRelativePath(relativePath);
+    const normalizedUrl = normalizeString(url, "");
+    if (!normalizedPath) {
+      return {
+        path: "",
+        url: normalizedUrl,
+        exists: null,
+        status: "unset",
+      };
+    }
+
+    const absolutePath = resolveThemeAssetAbsolutePath(graphicsDir, normalizedPath);
+    if (!absolutePath) {
+      return {
+        path: normalizedPath,
+        url: normalizedUrl,
+        exists: false,
+        status: "invalid-path",
+      };
+    }
+
+    try {
+      await fs.access(absolutePath);
+      return {
+        path: normalizedPath,
+        url: normalizedUrl,
+        exists: true,
+        status: "ok",
+      };
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        return {
+          path: normalizedPath,
+          url: normalizedUrl,
+          exists: false,
+          status: "missing",
+        };
+      }
+      return {
+        path: normalizedPath,
+        url: normalizedUrl,
+        exists: false,
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async function resolveLoginAppearanceDetails() {
+    try {
+      return await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
+        const themes = Array.isArray(store?.themes) ? store.themes : [];
+        const activeThemeId = normalizeString(store?.activeThemeId, DEFAULT_THEME_ID);
+        const activeThemeRaw = themes.find((theme) => normalizeString(theme?.id, "") === activeThemeId) || themes[0] || null;
+        const activeTheme = normalizeLoginAppearanceTheme(activeThemeRaw ? mapThemeForClient(activeThemeRaw) : {});
+
+        const [logoState, closedBackgroundState, openBackgroundState] = await Promise.all([
+          resolveThemeAssetState(activeTheme.logoPath, activeTheme.logoUrl),
+          resolveThemeAssetState(activeTheme.closedBackgroundPath, activeTheme.closedBackgroundUrl),
+          resolveThemeAssetState(activeTheme.openBackgroundPath, activeTheme.openBackgroundUrl),
+        ]);
+
+        const details = {
+          activeThemeId,
+          activeThemeName: activeTheme.name || activeTheme.id || "",
+          themesAvailable: themes.length,
+          themeCatalog: themes.map((theme) => ({
+            id: normalizeString(theme?.id, ""),
+            name: normalizeString(theme?.name, ""),
+          })),
+          assetCounts: {
+            logos: Array.isArray(assets?.logos) ? assets.logos.length : 0,
+            backgrounds: Array.isArray(assets?.backgrounds) ? assets.backgrounds.length : 0,
+          },
+          assets: {
+            logo: logoState,
+            closedBackground: closedBackgroundState,
+            openBackground: openBackgroundState,
+          },
+          activeTheme: {
+            id: activeTheme.id,
+            name: activeTheme.name,
+            logoPath: activeTheme.logoPath,
+            logoUrl: activeTheme.logoUrl,
+            closedBackgroundPath: activeTheme.closedBackgroundPath,
+            closedBackgroundUrl: activeTheme.closedBackgroundUrl,
+            openBackgroundPath: activeTheme.openBackgroundPath,
+            openBackgroundUrl: activeTheme.openBackgroundUrl,
+            loginBoxMode: activeTheme.loginBoxMode,
+            loginBoxWidthPercent: activeTheme.loginBoxWidthPercent,
+            loginBoxHeightPercent: activeTheme.loginBoxHeightPercent,
+            loginBoxOpacityPercent: activeTheme.loginBoxOpacityPercent,
+            loginBoxHoverOpacityPercent: activeTheme.loginBoxHoverOpacityPercent,
+            loginBoxPosXPercent: activeTheme.loginBoxPosXPercent,
+            loginBoxPosYPercent: activeTheme.loginBoxPosYPercent,
+            logoSizePercent: activeTheme.logoSizePercent,
+            logoOffsetXPercent: activeTheme.logoOffsetXPercent,
+            logoOffsetYPercent: activeTheme.logoOffsetYPercent,
+            backgroundZoomPercent: activeTheme.backgroundZoomPercent,
+          },
+        };
+
+        details.copyPasteText = formatLoginAppearanceCopyPasteText(details);
+        return details;
+      });
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : String(error),
+        activeThemeId: "",
+        activeThemeName: "",
+        themesAvailable: 0,
+        themeCatalog: [],
+        assetCounts: { logos: 0, backgrounds: 0 },
+        assets: {
+          logo: { path: "", url: "", exists: null, status: "unknown" },
+          closedBackground: { path: "", url: "", exists: null, status: "unknown" },
+          openBackground: { path: "", url: "", exists: null, status: "unknown" },
+        },
+        activeTheme: {
+          id: "",
+          name: "",
+          logoPath: "",
+          logoUrl: "",
+          closedBackgroundPath: "",
+          closedBackgroundUrl: "",
+          openBackgroundPath: "",
+          openBackgroundUrl: "",
+          loginBoxMode: "dark",
+          loginBoxWidthPercent: 100,
+          loginBoxHeightPercent: 100,
+          loginBoxOpacityPercent: 100,
+          loginBoxHoverOpacityPercent: 100,
+          loginBoxPosXPercent: 50,
+          loginBoxPosYPercent: 50,
+          logoSizePercent: 30,
+          logoOffsetXPercent: 2,
+          logoOffsetYPercent: 2,
+          backgroundZoomPercent: 100,
+        },
+        copyPasteText: "",
+      };
+    }
+  }
+
+  async function recordFailureEntry(entry = {}) {
+    try {
+      await appendFailureRecord(failureStorePath, {
+        source: "manager",
+        ...entry,
+      });
+    } catch {
+      // Failure recording should never crash manager operations.
+    }
+  }
+
+  async function readConsoleSettings() {
+    if (managerConsoleSettingsCache) {
+      return managerConsoleSettingsCache;
+    }
+    managerConsoleSettingsCache = await readManagerConsoleSettings(managerConsoleSettingsPath);
+    return managerConsoleSettingsCache;
+  }
+
+  async function writeConsoleSettings(nextSettings) {
+    const normalized = normalizeManagerConsoleSettings(nextSettings);
+    const saved = await writeManagerConsoleSettings(managerConsoleSettingsPath, normalized);
+    managerConsoleSettingsCache = saved;
+    return saved;
+  }
+
+  function buildRemoteSupportApiBasePath(req) {
+    const host = normalizeString(req.get("host"), "");
+    if (!host) {
+      return "/api/remote-support/v1";
+    }
+    const forwardedProto = normalizeString(req.get("x-forwarded-proto"), "");
+    const protocol = forwardedProto || req.protocol || "http";
+    return `${protocol}://${host}/api/remote-support/v1`;
+  }
+
+  function buildCallHomeApiBasePath(req) {
+    return `${buildRemoteSupportApiBasePath(req).replace(/\/+$/, "")}/call-home`;
+  }
+
+  function buildRemoteSupportCurlExamples({ req, token }) {
+    const base = buildRemoteSupportApiBasePath(req).replace(/\/+$/, "");
+    const quotedToken = String(token || "").replace(/'/g, "'\\''");
+    return [
+      `curl -sS -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/diagnostics'`,
+      `curl -sS -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/troubleshoot'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/troubleshoot/run' -d '{"actionId":"snapshot.network"}'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/intelligence/workflow/chat' -d '{"workflowId":"troubleshoot-recommendation","input":"Analyze the latest diagnostics report."}'`,
+    ];
+  }
+
+  function buildCallHomeCurlExamples({ req, token }) {
+    const base = buildCallHomeApiBasePath(req).replace(/\/+$/, "");
+    const quotedToken = String(token || "").replace(/'/g, "'\\''");
+    return [
+      `curl -sS -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/healthz'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/register' -d '{"satelliteId":"diag-sat-01","status":"starting","message":"boot"}'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/report' -d '{"satelliteId":"diag-sat-01","status":"ok","message":"path-check-complete","payload":{"probe":"ok"}}'`,
+    ];
+  }
+
+  function buildRemoteSupportCommandHints({ req, config, environment }) {
+    const base = buildRemoteSupportApiBasePath(req).replace(/\/+$/, "");
+    const tokenPlaceholder = "<REMOTE_SUPPORT_TOKEN>";
+    const gatewayPort = Number.parseInt(normalizeString(config?.PORT, CONFIG_DEFAULTS.PORT), 10) || 8080;
+    const gatewayHost = normalizeString(config?.HOST, CONFIG_DEFAULTS.HOST) || "127.0.0.1";
+    const foundryTarget = normalizeString(config?.FOUNDRY_TARGET, CONFIG_DEFAULTS.FOUNDRY_TARGET);
+    const hints = [
+      `curl -sS -H 'x-blastdoor-support-token: ${tokenPlaceholder}' '${base}/diagnostics'`,
+      `curl -sS -H 'x-blastdoor-support-token: ${tokenPlaceholder}' '${base}/troubleshoot'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${tokenPlaceholder}' '${base}/troubleshoot/run' -d '{"actionId":"snapshot.network"}'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${tokenPlaceholder}' '${base}/intelligence/workflow/chat' -d '{"workflowId":"troubleshoot-recommendation","input":"Analyze diagnostics and suggest next checks."}'`,
+      `curl -i 'http://${gatewayHost}:${gatewayPort}/healthz'`,
+      `curl -i '${foundryTarget.replace(/\/+$/, "")}/api/status'`,
+    ];
+    if (environment?.isWsl) {
+      hints.push("ip route show default");
+      hints.push("hostname -I");
+    }
+    return hints;
+  }
+
+  function buildCallHomePodBundle({ req, token, tokenMeta, ttlMinutes = 30, generatedAt = new Date().toISOString() }) {
+    const base = buildCallHomeApiBasePath(req).replace(/\/+$/, "");
+    const baseEscaped = escapeDoubleQuotedLiteral(base);
+    const tokenEscaped = escapeDoubleQuotedLiteral(String(token || ""));
+    const satelliteId = `diag-${randomUUID().slice(0, 8)}`;
+    const dockerImage = "alpine:3.20";
+    const entrypointScript = `#!/bin/sh
+set -eu
+
+SATELLITE_ID="\${SATELLITE_ID:-${satelliteId}}"
+CALL_HOME_TOKEN="\${CALL_HOME_TOKEN:-${tokenEscaped}}"
+CALL_HOME_BASE_URL="\${CALL_HOME_BASE_URL:-${baseEscaped}}"
+CALL_HOME_CANDIDATES="\${CALL_HOME_CANDIDATES:-$CALL_HOME_BASE_URL,http://host.docker.internal:8090/api/remote-support/v1/call-home}"
+
+if ! command -v curl >/dev/null 2>&1; then
+  apk add --no-cache curl >/dev/null
+fi
+
+ACTIVE_BASE=""
+IFS=','; for candidate in $CALL_HOME_CANDIDATES; do
+  candidate_trim="$(echo "$candidate" | sed 's/[[:space:]]*$//')"
+  [ -n "$candidate_trim" ] || continue
+  if curl -fsS -m 3 -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" "$candidate_trim/healthz" >/tmp/callhome-healthz.json 2>/tmp/callhome-healthz.err; then
+    ACTIVE_BASE="$candidate_trim"
+    break
+  fi
+done
+unset IFS
+
+if [ -z "$ACTIVE_BASE" ]; then
+  echo "call-home: failed to reach API using candidates: $CALL_HOME_CANDIDATES"
+  cat /tmp/callhome-healthz.err 2>/dev/null || true
+  exit 12
+fi
+
+HOSTNAME_VALUE="$(hostname 2>/dev/null || echo unknown)"
+REGISTER_BODY="$(printf '{"satelliteId":"%s","status":"starting","message":"diag pod connected","payload":{"hostname":"%s"}}' "$SATELLITE_ID" "$HOSTNAME_VALUE")"
+
+curl -fsS -m 6 -X POST \
+  -H "content-type: application/json" \
+  -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" \
+  "$ACTIVE_BASE/register" \
+  -d "$REGISTER_BODY" >/tmp/callhome-register.json
+
+curl -fsS -m 8 -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" "$ACTIVE_BASE/../diagnostics" >/tmp/callhome-diagnostics.json || true
+curl -fsS -m 8 -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" "$ACTIVE_BASE/../troubleshoot" >/tmp/callhome-troubleshoot.json || true
+
+REPORT_BODY="$(printf '{"satelliteId":"%s","status":"ok","message":"diag pod completed connectivity workflow","payload":{"activeBase":"%s","hostname":"%s"}}' "$SATELLITE_ID" "$ACTIVE_BASE" "$HOSTNAME_VALUE")"
+
+curl -fsS -m 8 -X POST \
+  -H "content-type: application/json" \
+  -H "x-blastdoor-support-token: $CALL_HOME_TOKEN" \
+  "$ACTIVE_BASE/report" \
+  -d "$REPORT_BODY" >/tmp/callhome-report.json
+
+echo "call-home: success ($ACTIVE_BASE)"
+`;
+
+    const launchScript = `#!/usr/bin/env bash
+set -euo pipefail
+export CALL_HOME_TOKEN='${String(token || "").replace(/'/g, "'\\''")}'
+export CALL_HOME_BASE_URL='${base.replace(/'/g, "'\\''")}'
+export SATELLITE_ID='${satelliteId}'
+docker run --rm --name blastdoor-diag-${satelliteId} -e CALL_HOME_TOKEN -e CALL_HOME_BASE_URL -e SATELLITE_ID ${dockerImage} sh -lc "$(cat <<'EOS'
+${entrypointScript}
+EOS
+)"
+`;
+
+    const composeYaml = `services:
+  blastdoor-diag:
+    image: ${dockerImage}
+    container_name: blastdoor-diag-${satelliteId}
+    restart: "no"
+    environment:
+      CALL_HOME_TOKEN: "${escapeDoubleQuotedLiteral(String(token || ""))}"
+      CALL_HOME_BASE_URL: "${baseEscaped}"
+      SATELLITE_ID: "${satelliteId}"
+    command:
+      - sh
+      - -lc
+      - |
+${entrypointScript
+  .split("\n")
+  .map((line) => `        ${line}`)
+  .join("\n")}
+`;
+
+    return {
+      generatedAt,
+      satelliteId,
+      token,
+      tokenMeta,
+      ttlMinutes,
+      callHomeBaseUrl: base,
+      dockerImage,
+      launchScript,
+      composeYaml,
+      entrypointScript,
+      curlExamples: buildCallHomeCurlExamples({ req, token }),
+    };
+  }
+
+  async function writeRemoteSupportTokenLastUsed({ settings, tokenId }) {
+    const normalizedTokenId = normalizeString(tokenId, "");
+    if (!normalizedTokenId) {
+      return settings;
+    }
+    const current = settings || (await readConsoleSettings());
+    const remoteSupport = current.remoteSupport || {};
+    const tokens = Array.isArray(remoteSupport.tokens) ? remoteSupport.tokens : [];
+    let changed = false;
+    const nextTokens = tokens.map((entry) => {
+      if (normalizeString(entry?.tokenId, "") !== normalizedTokenId) {
+        return entry;
+      }
+      changed = true;
+      return {
+        ...entry,
+        lastUsedAt: new Date().toISOString(),
+      };
+    });
+    if (!changed) {
+      return current;
+    }
+    return await writeConsoleSettings({
+      ...current,
+      remoteSupport: {
+        ...remoteSupport,
+        tokens: nextTokens,
+      },
+    });
+  }
+
+  async function appendCallHomeEvent({ settings, type, satelliteId, status, message, payload }) {
+    const current = settings || (await readConsoleSettings());
+    const remoteSupport = current.remoteSupport || {};
+    const existing = Array.isArray(remoteSupport.callHomeEvents) ? remoteSupport.callHomeEvents : [];
+    const event = summarizeCallHomeEvent({
+      eventId: randomUUID(),
+      type: normalizeString(type, "report"),
+      createdAt: new Date().toISOString(),
+      satelliteId: normalizeString(satelliteId, ""),
+      status: normalizeString(status, "unknown"),
+      message: normalizeString(message, ""),
+      payload: sanitizeCallHomePayload(payload),
+    });
+    const nextEvents = trimCallHomeEvents([...existing, event], CALL_HOME_EVENTS_MAX);
+    return await writeConsoleSettings({
+      ...current,
+      remoteSupport: {
+        ...remoteSupport,
+        callHomeEvents: nextEvents,
+      },
+    });
+  }
+
+  async function authenticateRemoteSupportToken(req) {
+    const settings = await readConsoleSettings();
+    const remoteSupport = settings.remoteSupport || {};
+    if (!remoteSupport.enabled) {
+      return {
+        ok: false,
+        status: 404,
+        error: "Remote support API is disabled.",
+        settings,
+      };
+    }
+
+    const token = normalizeRemoteSupportTokenValue(req);
+    if (!token) {
+      return {
+        ok: false,
+        status: 401,
+        error: "Missing remote support token.",
+        settings,
+      };
+    }
+
+    const tokens = Array.isArray(remoteSupport.tokens) ? remoteSupport.tokens : [];
+    for (const entry of tokens) {
+      if (!isRemoteSupportTokenActive(entry)) {
+        continue;
+      }
+      if (!verifyPassword(token, normalizeString(entry.tokenHash, ""))) {
+        continue;
+      }
+
+      const updated = await writeRemoteSupportTokenLastUsed({
+        settings,
+        tokenId: normalizeString(entry.tokenId, ""),
+      });
+
+      return {
+        ok: true,
+        settings: updated,
+        token: summarizeRemoteSupportToken(entry),
+        rawToken: token,
+      };
+    }
+
+    return {
+      ok: false,
+      status: 401,
+      error: "Unauthorized remote support API request.",
+      settings,
+    };
+  }
+
+  async function buildDiagnosticsPayload() {
+    const config = await readEnvConfig(envPath);
+    const serviceStatus = processState.getStatus();
+    const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
+    const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+    const diagnosticsConfig = sanitizeConfigForDiagnostics(config);
+    const loginAppearance = await resolveLoginAppearanceDetails();
+
+    const report = {
+      generatedAt: new Date().toISOString(),
+      serviceStatus,
+      health,
+      foundryHealth,
+      environment,
+      config: diagnosticsConfig,
+      loginAppearance,
+    };
+
+    return {
+      ok: true,
+      report,
+      summary: createDiagnosticsSummary(report),
+    };
+  }
+
+  async function buildTroubleshootPayload() {
+    const config = await readEnvConfig(envPath);
+    const serviceStatus = processState.getStatus();
+    const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
+    const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+    const loginAppearance = await resolveLoginAppearanceDetails();
+    const report = createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus, loginAppearance });
+    return {
+      ok: true,
+      report,
+    };
+  }
+
+  function purgeExpiredManagerAuthSessions(nowMs = Date.now()) {
+    for (const [token, session] of managerAuthSessions.entries()) {
+      const expiresAtMs = new Date(session?.expiresAt || "").getTime();
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
+        managerAuthSessions.delete(token);
+      }
+    }
+  }
+
+  function getManagerAuthSession(req) {
+    const cookies = parseCookies(req.headers?.cookie || "");
+    const token = String(cookies[MANAGER_AUTH_COOKIE_NAME] || "");
+    if (!token) {
+      return null;
+    }
+    purgeExpiredManagerAuthSessions();
+    const session = managerAuthSessions.get(token);
+    if (!session) {
+      return null;
+    }
+    return {
+      token,
+      ...session,
+    };
+  }
+
+  function createManagerAuthSession({ ttlHours = 12 } = {}) {
+    purgeExpiredManagerAuthSessions();
+    const token = randomBytes(32).toString("base64url");
+    const nowMs = Date.now();
+    const expiresAtMs = nowMs + Math.max(1, Number.parseInt(String(ttlHours || "12"), 10)) * 60 * 60 * 1000;
+    managerAuthSessions.set(token, {
+      createdAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    });
+    return token;
+  }
+
+  function clearManagerAuthSession(req) {
+    const existing = getManagerAuthSession(req);
+    if (existing?.token) {
+      managerAuthSessions.delete(existing.token);
+    }
+  }
+
+  function isManagerAuthBypassPath(pathname = "") {
+    if (
+      pathname.startsWith("/api/remote-support/v1/") ||
+      pathname === "/api/remote-support/v1" ||
+      pathname.startsWith("/manager/api/remote-support/v1/") ||
+      pathname === "/manager/api/remote-support/v1"
+    ) {
+      return true;
+    }
+
+    return (
+      pathname === "/manager/login" ||
+      pathname === "/api/manager-auth/login" ||
+      pathname === "/api/manager-auth/login-form" ||
+      pathname === "/api/manager-auth/logout" ||
+      pathname === "/api/manager-auth/state" ||
+      pathname === "/manager/api/manager-auth/login" ||
+      pathname === "/manager/api/manager-auth/login-form" ||
+      pathname === "/manager/api/manager-auth/logout" ||
+      pathname === "/manager/api/manager-auth/state"
+    );
+  }
+
+  async function enforceManagerAccess(req, res, next) {
+    try {
+      const settings = await readConsoleSettings();
+      if (!settings.access.requirePassword) {
+        next();
+        return;
+      }
+
+      if (isManagerAuthBypassPath(req.path)) {
+        next();
+        return;
+      }
+
+      const session = getManagerAuthSession(req);
+      if (session) {
+        next();
+        return;
+      }
+
+      if (req.path.startsWith("/api/") || req.path.startsWith("/manager/api/")) {
+        res.status(401).json({
+          error: "Manager authentication required.",
+          managerAuthRequired: true,
+        });
+        return;
+      }
+
+      if (req.path.startsWith("/manager")) {
+        const nextPath = normalizeManagerNextPath(`${req.path}${req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""}`);
+        res.redirect(`/manager/login?next=${encodeURIComponent(nextPath)}`);
+        return;
+      }
+
+      next();
+    } catch (error) {
+      next(error);
     }
   }
 
@@ -1421,6 +3576,266 @@ export function createManagerApp(options = {}) {
     });
   }
 
+  function getConfigFileSpecs() {
+    return managedConfigFiles.map((entry) => {
+      const relativePath = normalizeString(entry.relativePath, "").replaceAll("\\", "/");
+      if (!relativePath || relativePath.startsWith("..")) {
+        throw new Error(`Invalid managed config file path '${entry.relativePath}'.`);
+      }
+      return {
+        ...entry,
+        relativePath,
+      };
+    });
+  }
+
+  function resolveBackupPath(backupId) {
+    const validatedId = validateConfigBackupId(backupId);
+    const resolvedRoot = path.resolve(configBackupDir);
+    const resolvedPath = path.resolve(resolvedRoot, validatedId);
+    if (!(resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`))) {
+      throw new Error("Invalid backup path.");
+    }
+    return resolvedPath;
+  }
+
+  async function readBackupManifest(backupId) {
+    const backupPath = resolveBackupPath(backupId);
+    const manifestPath = path.join(backupPath, "manifest.json");
+    const raw = await fs.readFile(manifestPath, "utf8");
+    const manifest = JSON.parse(raw);
+    return {
+      backupPath,
+      manifest,
+    };
+  }
+
+  async function listConfigBackups() {
+    try {
+      const entries = await fs.readdir(configBackupDir, { withFileTypes: true });
+      const backups = [];
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        if (!CONFIG_BACKUP_ID_PATTERN.test(entry.name)) {
+          continue;
+        }
+
+        const backupPath = path.join(configBackupDir, entry.name);
+        const manifestPath = path.join(backupPath, "manifest.json");
+        let manifest = null;
+        try {
+          manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+        } catch {
+          const stat = await fs.stat(backupPath);
+          manifest = {
+            backupId: entry.name,
+            name: entry.name,
+            createdAt: stat.mtime.toISOString(),
+            files: [],
+          };
+        }
+
+        backups.push({
+          backupId: String(manifest.backupId || entry.name),
+          name: String(manifest.name || entry.name),
+          createdAt: String(manifest.createdAt || ""),
+          fileCount: Array.isArray(manifest.files) ? manifest.files.length : 0,
+          files: Array.isArray(manifest.files) ? manifest.files : [],
+        });
+      }
+
+      backups.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      return backups;
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  async function createConfigBackup(backupName = "") {
+    const normalizedName = normalizeConfigBackupName(backupName, "config");
+    const backupId = createConfigBackupId(normalizedName);
+    const backupPath = resolveBackupPath(backupId);
+    const files = [];
+    const fileSpecs = getConfigFileSpecs();
+
+    await fs.mkdir(backupPath, { recursive: true });
+    for (const spec of fileSpecs) {
+      const destination = path.join(backupPath, spec.relativePath);
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      try {
+        const stat = await fs.stat(spec.absolutePath);
+        await fs.copyFile(spec.absolutePath, destination);
+        files.push({
+          id: spec.id,
+          relativePath: spec.relativePath,
+          exists: true,
+          sizeBytes: stat.size,
+        });
+      } catch (error) {
+        if (error && error.code === "ENOENT") {
+          files.push({
+            id: spec.id,
+            relativePath: spec.relativePath,
+            exists: false,
+            sizeBytes: 0,
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    const manifest = {
+      backupId,
+      name: normalizedName,
+      createdAt: new Date().toISOString(),
+      files,
+    };
+    await fs.writeFile(path.join(backupPath, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    return manifest;
+  }
+
+  async function viewConfigBackup(backupId) {
+    const { backupPath, manifest } = await readBackupManifest(backupId);
+    const files = [];
+    const manifestFiles = Array.isArray(manifest.files) ? manifest.files : [];
+    for (const file of manifestFiles) {
+      const relativePath = normalizeString(file.relativePath, "").replaceAll("\\", "/");
+      if (!relativePath || relativePath.startsWith("..")) {
+        continue;
+      }
+      const source = path.join(backupPath, relativePath);
+      try {
+        const stat = await fs.stat(source);
+        if (stat.size > CONFIG_BACKUP_VIEW_MAX_BYTES) {
+          files.push({
+            relativePath,
+            exists: true,
+            sizeBytes: stat.size,
+            content: "[file too large to render in browser view]",
+          });
+          continue;
+        }
+        files.push({
+          relativePath,
+          exists: true,
+          sizeBytes: stat.size,
+          content: await fs.readFile(source, "utf8"),
+        });
+      } catch (error) {
+        if (error && error.code === "ENOENT") {
+          files.push({
+            relativePath,
+            exists: false,
+            sizeBytes: 0,
+            content: "",
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return {
+      backup: {
+        backupId: String(manifest.backupId || backupId),
+        name: String(manifest.name || backupId),
+        createdAt: String(manifest.createdAt || ""),
+        files: manifestFiles,
+      },
+      files,
+    };
+  }
+
+  async function restoreConfigBackup(backupId) {
+    const { backupPath, manifest } = await readBackupManifest(backupId);
+    const fileSpecs = getConfigFileSpecs();
+    const restored = [];
+    const skipped = [];
+    for (const spec of fileSpecs) {
+      const source = path.join(backupPath, spec.relativePath);
+      try {
+        await fs.access(source);
+      } catch (error) {
+        if (error && error.code === "ENOENT") {
+          skipped.push(spec.relativePath);
+          continue;
+        }
+        throw error;
+      }
+
+      await fs.mkdir(path.dirname(spec.absolutePath), { recursive: true });
+      await fs.copyFile(source, spec.absolutePath);
+      restored.push(spec.relativePath);
+    }
+
+    const restoredConfig = await readEnvConfig(envPath);
+    const blastDoorsClosed = parseBooleanLike(restoredConfig.BLAST_DOORS_CLOSED, false);
+    await writeBlastDoorsState(runtimeStatePath, blastDoorsClosed);
+
+    let serviceRestarted = false;
+    if (processState.getStatus().running) {
+      await processState.stop();
+      await processState.start();
+      serviceRestarted = true;
+    }
+
+    return {
+      backupId: String(manifest.backupId || backupId),
+      restored,
+      skipped,
+      serviceRestarted,
+    };
+  }
+
+  async function deleteConfigBackup(backupId) {
+    const backupPath = resolveBackupPath(backupId);
+    await fs.rm(backupPath, { recursive: true, force: true });
+    return { backupId };
+  }
+
+  async function cleanInstallConfiguration() {
+    const baseInstallation = normalizeInstallationConfig(
+      defaultInstallationConfig({
+        platform: detectPlatformType(),
+        installType: "local",
+      }),
+      null,
+    );
+
+    await fs.rm(envPath, { force: true });
+    await fs.rm(dockerEnvPath, { force: true });
+    await writeInstallationConfig(installationConfigPath, baseInstallation);
+    await syncRuntimeEnvFromInstallation({
+      installationConfig: baseInstallation,
+      envPath,
+      dockerEnvPath,
+    });
+
+    await writeBlastDoorsState(runtimeStatePath, false);
+    let serviceRestarted = false;
+    if (processState.getStatus().running) {
+      await processState.stop();
+      await processState.start();
+      serviceRestarted = true;
+    }
+
+    return {
+      installationConfigPath,
+      envPath,
+      dockerEnvPath,
+      serviceRestarted,
+      config: scrubConfigForClient(await readEnvConfig(envPath)),
+      installationConfig: baseInstallation,
+    };
+  }
+
   async function detectTlsEnvironment(configFromEnv) {
     const checks = await Promise.all([
       commandRunner({ command: "certbot", args: ["--version"], cwd: workspaceDir, timeoutMs: 4000 }),
@@ -1491,9 +3906,422 @@ export function createManagerApp(options = {}) {
     };
   }
 
+  async function validateGatewayStartConfiguration() {
+    const [config, environment] = await Promise.all([
+      readEnvConfig(envPath),
+      Promise.resolve(detectEnvironmentInfo({ workspaceDir, envPath })),
+    ]);
+
+    const bindValidation = evaluateGatewayBindHost({
+      host: config.HOST,
+      environment,
+    });
+    if (!bindValidation.ok) {
+      const recommendationText = bindValidation.recommendation ? ` ${bindValidation.recommendation}` : "";
+      throw new Error(
+        `Configured HOST=${bindValidation.host} is not available on this runtime host and will fail with EADDRNOTAVAIL.${recommendationText}`,
+      );
+    }
+  }
+
+  async function buildObjectStoreStatus(config, installationConfig) {
+    const fromEnv = normalizeString(config.OBJECT_STORAGE_MODE, "").toLowerCase();
+    const fromInstall = normalizeString(installationConfig?.objectStorage, "").toLowerCase();
+    const type = fromEnv || fromInstall || "local";
+    if (type === "local") {
+      try {
+        await fs.access(graphicsDir);
+        return { type, reachable: true };
+      } catch (error) {
+        return {
+          type,
+          reachable: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+
+    return {
+      type,
+      reachable: false,
+      error: "not-implemented",
+    };
+  }
+
+  async function resolveControlPlaneStatus() {
+    const [config, installationConfigRaw] = await Promise.all([
+      readEnvConfig(envPath),
+      readInstallationConfig(installationConfigPath),
+    ]);
+
+    const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+    const installationConfig = installationConfigRaw || null;
+    const installType = normalizeString(installationConfig?.installType, "local").toLowerCase();
+    const portal = processState.getStatus();
+    const [portalHealth, foundryHealth, foundryApiStatus] = await Promise.all([
+      checkBlastdoorHealth(config),
+      checkFoundryTargetHealth(config),
+      probeFoundryApiStatus(config, 1500),
+    ]);
+    const adminUptimeSeconds = Math.max(0, Math.floor((Date.now() - managerStartedAtMs) / 1000));
+    const objectStore = await buildObjectStoreStatus(config, installationConfig);
+    const [failureStore, enabledPlugins] = await Promise.all([
+      readFailureStore(failureStorePath),
+      Promise.resolve(pluginManager.getEnabledPlugins()),
+    ]);
+    const failureSummary = summarizeFailureStore(failureStore);
+
+    const response = {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      installation: {
+        profile: installType === "container" ? "container" : "local",
+      },
+      environment: {
+        isWsl: Boolean(environment.isWsl),
+        wslDistro: normalizeString(environment.wslDistro, ""),
+        isContainer: Boolean(environment.isContainer),
+      },
+      admin: {
+        running: true,
+        pid: process.pid,
+        uptimeSeconds: adminUptimeSeconds,
+        health: { ok: true, statusCode: 200 },
+      },
+      portal: {
+        running: portal.running,
+        pid: portal.pid,
+        uptimeSeconds: portal.uptimeSeconds || 0,
+        health: portalHealth,
+      },
+      foundry: {
+        target: normalizeString(config.FOUNDRY_TARGET, ""),
+        reachable: Boolean(foundryApiStatus.reachable || foundryHealth.ok || foundryHealth.tcp?.ok),
+        health: foundryHealth,
+        apiStatus: foundryApiStatus,
+      },
+      api: {
+        running: false,
+        pid: null,
+        uptimeSeconds: 0,
+        health: { ok: false, statusCode: null, error: "unknown" },
+      },
+      postgres: {
+        running: false,
+        pid: null,
+        uptimeSeconds: 0,
+        health: { ok: false, statusCode: null, error: "not-configured" },
+      },
+      failures: failureSummary,
+      objectStore,
+      plugins: [],
+    };
+
+    if (installType === "container") {
+      const composeState = await loadComposeServiceStates({
+        commandRunner,
+        workspaceDir,
+      });
+      const services = composeState.services || {};
+
+      const portalContainer = services.blastdoor || null;
+      if (portalContainer) {
+        response.portal = {
+          running: Boolean(portalContainer.running),
+          pid: portalContainer.pid || null,
+          uptimeSeconds: portalContainer.uptimeSeconds || 0,
+          health: portalContainer.health || portalHealth,
+        };
+      }
+
+      const apiContainer = services["blastdoor-api"] || null;
+      response.api = apiContainer
+        ? {
+            running: Boolean(apiContainer.running),
+            pid: apiContainer.pid || null,
+            uptimeSeconds: apiContainer.uptimeSeconds || 0,
+            health: apiContainer.health || { ok: false, statusCode: null, error: "unknown" },
+          }
+        : {
+            running: false,
+            pid: null,
+            uptimeSeconds: 0,
+            health: composeState.ok
+              ? { ok: false, statusCode: null, error: "not-running" }
+              : { ok: false, statusCode: null, error: composeState.error || "compose-unavailable" },
+          };
+
+      const postgresContainer = services.postgres || null;
+      response.postgres = postgresContainer
+        ? {
+            running: Boolean(postgresContainer.running),
+            pid: postgresContainer.pid || null,
+            uptimeSeconds: postgresContainer.uptimeSeconds || 0,
+            health: postgresContainer.health || { ok: false, statusCode: null, error: "unknown" },
+          }
+        : {
+            running: false,
+            pid: null,
+            uptimeSeconds: 0,
+            health: composeState.ok
+              ? { ok: false, statusCode: null, error: "not-running" }
+              : { ok: false, statusCode: null, error: composeState.error || "compose-unavailable" },
+          };
+
+      response.plugins = enabledPlugins.map((plugin) => {
+        const id = normalizeString(plugin?.id, "");
+        const assistantContainer = id === "intelligence" ? services["blastdoor-assistant"] || null : null;
+        if (assistantContainer) {
+          return {
+            id,
+            name: formatPluginName(id),
+            running: Boolean(assistantContainer.running),
+            pid: assistantContainer.pid || null,
+            uptimeSeconds: assistantContainer.uptimeSeconds || 0,
+            health: assistantContainer.health || { ok: false, statusCode: null, error: "unknown" },
+          };
+        }
+        return {
+          id,
+          name: formatPluginName(id),
+          running: true,
+          pid: null,
+          uptimeSeconds: adminUptimeSeconds,
+          health: { ok: true, statusCode: 200 },
+        };
+      });
+
+      return response;
+    }
+
+    const apiUrl = normalizeString(config.BLASTDOOR_API_URL, "");
+    if (apiUrl) {
+      const healthUrl = (() => {
+        try {
+          const parsed = new URL(apiUrl);
+          parsed.pathname = "/healthz";
+          parsed.search = "";
+          parsed.hash = "";
+          return parsed.toString();
+        } catch {
+          return apiUrl;
+        }
+      })();
+
+      const apiHealth = await probeHttpHealth(healthUrl, 1500);
+      const apiProcess = await detectHostProcessState({
+        commandRunner,
+        workspaceDir,
+        matchers: ["blastdoor-api", "src/api-server.js"],
+      });
+      response.api = {
+        running: apiProcess?.running || apiHealth.ok,
+        pid: apiProcess?.pid || null,
+        uptimeSeconds: apiProcess?.uptimeSeconds || 0,
+        health: apiHealth,
+      };
+    } else {
+      const apiProcess = await detectHostProcessState({
+        commandRunner,
+        workspaceDir,
+        matchers: ["blastdoor-api", "src/api-server.js"],
+      });
+      response.api = apiProcess
+        ? {
+            running: true,
+            pid: apiProcess.pid || null,
+            uptimeSeconds: apiProcess.uptimeSeconds || 0,
+            health: { ok: true, statusCode: 200 },
+          }
+        : {
+            running: response.portal.running,
+            pid: response.portal.pid,
+            uptimeSeconds: response.portal.uptimeSeconds,
+            health: response.portal.health,
+          };
+    }
+
+    const postgresMode =
+      normalizeString(config.PASSWORD_STORE_MODE, "").toLowerCase() === "postgres" ||
+      normalizeString(config.CONFIG_STORE_MODE, "").toLowerCase() === "postgres";
+    if (postgresMode) {
+      const endpoint = parsePostgresUrlEndpoint(config.POSTGRES_URL);
+      if (!endpoint) {
+        response.postgres = {
+          running: false,
+          pid: null,
+          uptimeSeconds: 0,
+          health: {
+            ok: false,
+            statusCode: null,
+            error: "invalid-postgres-url",
+          },
+        };
+      } else {
+        const [tcpHealth, processHealth] = await Promise.all([
+          probeTcpPort({
+            host: endpoint.host,
+            port: endpoint.port,
+            timeoutMs: 1500,
+          }),
+          detectHostProcessState({
+            commandRunner,
+            workspaceDir,
+            matchers: ["postgres"],
+          }),
+        ]);
+
+        response.postgres = {
+          running: processHealth?.running || tcpHealth.ok,
+          pid: processHealth?.pid || null,
+          uptimeSeconds: processHealth?.uptimeSeconds || 0,
+          health: tcpHealth.ok
+            ? {
+                ok: true,
+                statusCode: 200,
+                detail: `${endpoint.host}:${endpoint.port}`,
+              }
+            : {
+                ok: false,
+                statusCode: null,
+                error: tcpHealth.error || "unreachable",
+                detail: `${endpoint.host}:${endpoint.port}`,
+              },
+        };
+      }
+    }
+
+    response.plugins = await Promise.all(
+      enabledPlugins.map(async (plugin) => {
+        const id = normalizeString(plugin?.id, "");
+        if (id === "intelligence") {
+          const enabled = parseBooleanLike(config.ASSISTANT_ENABLED, true);
+          if (!enabled) {
+            return {
+              id,
+              name: formatPluginName(id),
+              running: false,
+              pid: null,
+              uptimeSeconds: 0,
+              health: { ok: false, statusCode: null, error: "disabled" },
+            };
+          }
+
+          const assistantUrl = normalizeString(config.ASSISTANT_URL, "");
+          if (assistantUrl) {
+            const healthUrl = (() => {
+              try {
+                const parsed = new URL(assistantUrl);
+                parsed.pathname = "/healthz";
+                parsed.search = "";
+                parsed.hash = "";
+                return parsed.toString();
+              } catch {
+                return assistantUrl;
+              }
+            })();
+
+            const assistantHealth = await probeHttpHealth(healthUrl, 1500);
+            return {
+              id,
+              name: formatPluginName(id),
+              running: assistantHealth.ok,
+              pid: null,
+              uptimeSeconds: 0,
+              health: assistantHealth,
+            };
+          }
+
+          return {
+            id,
+            name: formatPluginName(id),
+            running: true,
+            pid: null,
+            uptimeSeconds: adminUptimeSeconds,
+            health: { ok: true, statusCode: 200 },
+          };
+        }
+
+        return {
+          id,
+          name: formatPluginName(id),
+          running: true,
+          pid: null,
+          uptimeSeconds: adminUptimeSeconds,
+          health: { ok: true, statusCode: 200 },
+        };
+      }),
+    );
+
+    return response;
+  }
+
+  async function getControlPlaneStatusCached() {
+    const now = Date.now();
+    if (controlPlaneCache.payload && now - controlPlaneCache.updatedAtMs < 2000) {
+      return controlPlaneCache.payload;
+    }
+
+    if (controlPlaneCache.inflight) {
+      return await controlPlaneCache.inflight;
+    }
+
+    controlPlaneCache.inflight = resolveControlPlaneStatus()
+      .then((payload) => {
+        controlPlaneCache.payload = payload;
+        controlPlaneCache.updatedAtMs = Date.now();
+        return payload;
+      })
+      .finally(() => {
+        controlPlaneCache.inflight = null;
+      });
+
+    return await controlPlaneCache.inflight;
+  }
+
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
+  app.use(express.urlencoded({ extended: false, limit: "16kb" }));
+  app.use(
+    "/graphics",
+    express.static(graphicsDir, {
+      etag: true,
+      maxAge: "1h",
+    }),
+  );
+  const managerAccessReadLimiter = rateLimit({
+    windowMs: managerWriteRateLimitWindowMs,
+    max: Math.max(120, Math.min(1200, managerWriteRateLimitMax * 4)),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many manager requests. Try again shortly.",
+  });
+  app.use(managerAccessReadLimiter);
+  app.use((req, res, next) => {
+    void enforceManagerAccess(req, res, next);
+  });
+  app.get("/manager/login", async (req, res, next) => {
+    try {
+      const settings = await readConsoleSettings();
+      if (!settings.access.requirePassword) {
+        res.redirect("/manager/");
+        return;
+      }
+      if (getManagerAuthSession(req)) {
+        const nextPath = normalizeManagerNextPath(req.query?.next, "/manager/");
+        res.redirect(nextPath);
+        return;
+      }
+      const nextPath = normalizeManagerNextPath(req.query?.next, "/manager/");
+      res
+        .status(200)
+        .set("cache-control", "no-store")
+        .send(renderManagerLoginPage({ nextPath }));
+    } catch (error) {
+      next(error);
+    }
+  });
   app.use(
     "/manager",
     express.static(managerDir, {
@@ -1502,13 +4330,6 @@ export function createManagerApp(options = {}) {
       setHeaders(res) {
         res.setHeader("Cache-Control", "no-store");
       },
-    }),
-  );
-  app.use(
-    "/graphics",
-    express.static(graphicsDir, {
-      etag: true,
-      maxAge: "1h",
     }),
   );
 
@@ -1530,901 +4351,234 @@ export function createManagerApp(options = {}) {
     app.post(`/manager/api${routePath}`, managerWriteLimiter, handler);
   };
 
+  const remoteSupportReadLimiter = rateLimit({
+    windowMs: managerWriteRateLimitWindowMs,
+    max: Math.max(30, Math.min(300, managerWriteRateLimitMax * 2)),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many remote support requests. Try again shortly.",
+  });
+
+  const remoteSupportWriteLimiter = rateLimit({
+    windowMs: managerWriteRateLimitWindowMs,
+    max: Math.max(10, Math.min(120, Math.floor(managerWriteRateLimitMax / 2))),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many remote support write requests. Try again shortly.",
+  });
+
+  function registerRemoteSupportGet(routePath, handler) {
+    app.get(`/api/remote-support/v1${routePath}`, remoteSupportReadLimiter, async (req, res) => {
+      const auth = await authenticateRemoteSupportToken(req);
+      if (!auth.ok) {
+        res.status(auth.status).json({ error: auth.error });
+        return;
+      }
+      req.remoteSupportToken = auth.token;
+      req.remoteSupportSettings = auth.settings;
+      await handler(req, res);
+    });
+  }
+
+  function registerRemoteSupportPost(routePath, handler) {
+    app.post(`/api/remote-support/v1${routePath}`, remoteSupportWriteLimiter, async (req, res) => {
+      const auth = await authenticateRemoteSupportToken(req);
+      if (!auth.ok) {
+        res.status(auth.status).json({ error: auth.error });
+        return;
+      }
+      req.remoteSupportToken = auth.token;
+      req.remoteSupportSettings = auth.settings;
+      await handler(req, res);
+    });
+  }
+
   app.get("/", (_req, res) => {
     res.redirect("/manager/");
   });
 
-  registerApiGet("/config", async (_req, res) => {
-    try {
-      const config = await readEnvConfig(envPath);
-      res.json({
-        envPath,
-        config: scrubConfigForClient(config),
-      });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  registerManagerAuthRoutes({
+    registerApiGet,
+    registerApiPost,
+    readConsoleSettings,
+    getManagerAuthSession,
+    normalizeManagerNextPath,
+    normalizeString,
+    verifyPassword,
+    createManagerAuthSession,
+    createCookieHeader,
+    managerAuthCookieName: MANAGER_AUTH_COOKIE_NAME,
+    clearManagerAuthSession,
+    renderManagerLoginPage,
   });
 
-  registerApiPost("/config", async (req, res) => {
-    try {
-      const existing = await readEnvConfig(envPath);
-      const incoming = parseBodyConfig(req.body || {}, existing);
-
-      const passwordInput = normalizeString(req.body?.AUTH_PASSWORD || "");
-      if (passwordInput.length > 0) {
-        incoming.AUTH_PASSWORD_HASH = createPasswordHash(passwordInput);
-      } else {
-        incoming.AUTH_PASSWORD_HASH = existing.AUTH_PASSWORD_HASH || "";
-      }
-
-      for (const key of SENSITIVE_CONFIG_KEYS) {
-        if (incoming[key] === "********") {
-          incoming[key] = existing[key] || "";
-        }
-      }
-
-      const wasBlastDoorsClosed = parseBooleanLike(existing.BLAST_DOORS_CLOSED, false);
-      const willBlastDoorsClose = parseBooleanLike(incoming.BLAST_DOORS_CLOSED, false);
-      let sessionSecretRotated = false;
-      if (!wasBlastDoorsClosed && willBlastDoorsClose) {
-        incoming.SESSION_SECRET = createSessionSecret();
-        sessionSecretRotated = true;
-      }
-
-      validateConfig(loadConfigFromEnv({ ...incoming }));
-      await writeEnvConfig(envPath, incoming);
-      await writeBlastDoorsState(runtimeStatePath, parseBooleanLike(incoming.BLAST_DOORS_CLOSED, false));
-
-      const blastDoorsChanged =
-        normalizeString(existing.BLAST_DOORS_CLOSED, CONFIG_DEFAULTS.BLAST_DOORS_CLOSED) !==
-        normalizeString(incoming.BLAST_DOORS_CLOSED, CONFIG_DEFAULTS.BLAST_DOORS_CLOSED);
-
-      let serviceRestarted = false;
-      if (blastDoorsChanged && processState.getStatus().running) {
-        await processState.stop();
-        await processState.start();
-        serviceRestarted = true;
-      }
-
-      res.json({
-        ok: true,
-        config: scrubConfigForClient({ ...existing, ...incoming }),
-        runtime: {
-          blastDoorsChanged,
-          serviceRestarted,
-          sessionSecretRotated,
-        },
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  registerManagerConfigRoutes({
+    registerApiGet,
+    registerApiPost,
+    readConsoleSettings,
+    writeConsoleSettings,
+    sanitizeManagerConsoleSettingsForClient,
+    normalizeManagerConsoleSettings,
+    parseBooleanLikeBody,
+    normalizeString,
+    createPasswordHash,
+    readEnvConfig,
+    envPath,
+    scrubConfigForClient,
+    detectEnvironmentInfo,
+    workspaceDir,
+    detectWslDefaultGatewayIp,
+    commandRunner,
+    buildWslFoundryTarget,
+    checkFoundryTargetHealth,
+    probeFoundryApiStatus,
+    buildWslOllamaUrl,
+    probeHttpHealth,
+    parseBodyConfig,
+    sensitiveConfigKeys: SENSITIVE_CONFIG_KEYS,
+    parseBooleanLike,
+    createSessionSecret,
+    validateConfig,
+    loadConfigFromEnv,
+    writeEnvConfig,
+    writeBlastDoorsState,
+    runtimeStatePath,
+    configDefaults: CONFIG_DEFAULTS,
+    processState,
+    listConfigBackups,
+    configBackupDir,
+    validateConfigBackupId,
+    viewConfigBackup,
+    createConfigBackup,
+    restoreConfigBackup,
+    deleteConfigBackup,
+    cleanInstallConfiguration,
+    detectTlsEnvironment,
+    normalizeTlsChallengeMethod,
+    normalizeTlsConfigBody,
+    buildLetsEncryptPlan,
+    accessFile: fs.access,
+    resolvePath: path.resolve,
   });
 
-  registerApiGet("/tls", async (_req, res) => {
-    try {
-      const config = await readEnvConfig(envPath);
-      const detection = await detectTlsEnvironment(config);
-      const tlsConfig = {
-        tlsEnabled: parseBooleanLike(config.TLS_ENABLED, false),
-        tlsDomain: normalizeString(config.TLS_DOMAIN, ""),
-        tlsEmail: normalizeString(config.TLS_EMAIL, ""),
-        tlsChallengeMethod: normalizeTlsChallengeMethod(config.TLS_CHALLENGE_METHOD, "webroot"),
-        tlsWebrootPath: normalizeString(config.TLS_WEBROOT_PATH, "/var/www/html"),
-        tlsCertFile: normalizeString(config.TLS_CERT_FILE, ""),
-        tlsKeyFile: normalizeString(config.TLS_KEY_FILE, ""),
-        tlsCaFile: normalizeString(config.TLS_CA_FILE, ""),
-        tlsPassphraseSet: Boolean(normalizeString(config.TLS_PASSPHRASE, "")),
-      };
-      res.json({
-        ok: true,
-        tls: tlsConfig,
-        detection,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  registerManagerServiceRoutes({
+    registerApiGet,
+    registerApiPost,
+    validateGatewayStartConfiguration,
+    processState,
+    recordFailureEntry,
+    readEnvConfig,
+    envPath,
+    createSessionSecret,
+    writeEnvConfig,
+    withBlastdoorApi,
+    createSessionKey,
+    validateManagedUsernameForActions,
+    safeEqual,
   });
 
-  registerApiPost("/tls/save", async (req, res) => {
-    try {
-      const config = await readEnvConfig(envPath);
-      const tlsConfig = normalizeTlsConfigBody(req.body || {}, config);
-
-      if (tlsConfig.TLS_ENABLED === "true") {
-        try {
-          await fs.access(path.resolve(tlsConfig.TLS_CERT_FILE));
-          await fs.access(path.resolve(tlsConfig.TLS_KEY_FILE));
-        } catch (error) {
-          throw new Error(
-            `TLS is enabled but certificate/key files are not accessible: ${error instanceof Error ? error.message : String(error)}`,
-            { cause: error },
-          );
-        }
-      }
-
-      const merged = {
-        ...config,
-        ...tlsConfig,
-      };
-      validateConfig(loadConfigFromEnv(merged));
-      await writeEnvConfig(envPath, merged);
-
-      res.json({
-        ok: true,
-        tls: {
-          tlsEnabled: parseBooleanLike(merged.TLS_ENABLED, false),
-          tlsDomain: merged.TLS_DOMAIN || "",
-          tlsEmail: merged.TLS_EMAIL || "",
-          tlsChallengeMethod: normalizeTlsChallengeMethod(merged.TLS_CHALLENGE_METHOD, "webroot"),
-          tlsWebrootPath: merged.TLS_WEBROOT_PATH || "",
-          tlsCertFile: merged.TLS_CERT_FILE || "",
-          tlsKeyFile: merged.TLS_KEY_FILE || "",
-          tlsCaFile: merged.TLS_CA_FILE || "",
-          tlsPassphraseSet: Boolean(merged.TLS_PASSPHRASE),
-        },
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  registerManagerUserRoutes({
+    registerApiGet,
+    registerApiPost,
+    normalizeUserFilter,
+    buildManagedUserList,
+    validateManagedUsername,
+    validateManagedUsernameForActions,
+    normalizeString,
+    normalizeUserStatus,
+    sanitizeLongText,
+    sanitizeEmail,
+    withBlastdoorApi,
+    createPasswordHash,
+    createEmailService,
+    loadEmailConfigFromEnv,
+    resolveGatewayBaseUrl,
   });
 
-  registerApiPost("/tls/letsencrypt-plan", async (req, res) => {
-    try {
-      const config = await readEnvConfig(envPath);
-      const tlsInput = normalizeTlsConfigBody(
-        {
-          ...config,
-          ...(req.body || {}),
-          tlsEnabled: false,
-        },
-        config,
-      );
-      const detection = await detectTlsEnvironment({
-        ...config,
-        ...tlsInput,
-      });
-      const plan = buildLetsEncryptPlan({
-        domain: tlsInput.TLS_DOMAIN,
-        email: tlsInput.TLS_EMAIL,
-        challengeMethod: tlsInput.TLS_CHALLENGE_METHOD,
-        webrootPath: tlsInput.TLS_WEBROOT_PATH || "/var/www/html",
-        certFile: tlsInput.TLS_CERT_FILE,
-        keyFile: tlsInput.TLS_KEY_FILE,
-        certbotAvailable: detection.certbotAvailable,
-        dockerAvailable: detection.dockerAvailable,
-      });
-      res.json({
-        ok: true,
-        plan,
-        detection,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  registerManagerOperationsRoutes({
+    registerApiGet,
+    registerApiPost,
+    getControlPlaneStatusCached,
+    readFailureStore,
+    summarizeFailureStore,
+    clearFailureStore,
+    failureStorePath,
+    processState,
+    readEnvConfig,
+    envPath,
+    checkBlastdoorHealth,
+    workspaceDir,
+    configDefaults: CONFIG_DEFAULTS,
+    tailFile,
   });
 
-  registerApiPost("/start", async (_req, res) => {
-    try {
-      const status = await processState.start();
-      res.json({ ok: true, status });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  registerManagerThemeRoutes({
+    registerApiGet,
+    registerApiPost,
+    withBlastdoorApi,
+    mapThemeForClient,
+    validateThemeAssetSelection,
+    parseBooleanLikeBody,
+    createThemeId,
+    normalizeString,
+    normalizeThemeName,
+    defaultThemeId: DEFAULT_THEME_ID,
   });
 
-  registerApiPost("/stop", async (_req, res) => {
-    try {
-      const status = await processState.stop();
-      res.json({ ok: true, status });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  registerDiagnosticsRoutes({
+    registerApiGet,
+    registerApiPost,
+    buildDiagnosticsPayload,
+    buildTroubleshootPayload,
+    normalizeString,
+    readEnvConfig,
+    detectEnvironmentInfo,
+    envPath,
+    workspaceDir,
+    runTroubleshootAction,
+    commandRunner,
+    controlPlaneCache,
+    operationTimeoutMs: managerOperationTimeoutMs,
   });
 
-  registerApiPost("/restart", async (_req, res) => {
-    try {
-      await processState.stop();
-      const status = await processState.start();
-      res.json({ ok: true, status });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/sessions/revoke-all", async (_req, res) => {
-    try {
-      const config = await readEnvConfig(envPath);
-      const nextSecret = createSessionSecret();
-      const nextConfig = {
-        ...config,
-        SESSION_SECRET: nextSecret,
-      };
-
-      await writeEnvConfig(envPath, nextConfig);
-
-      let serviceRestarted = false;
-      if (processState.getStatus().running) {
-        await processState.stop();
-        await processState.start();
-        serviceRestarted = true;
-      }
-
-      res.json({
-        ok: true,
-        serviceRestarted,
-        rotatedAt: new Date().toISOString(),
-        forceReauthUrl: "/login?reauth=1",
-      });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiGet("/users", async (req, res) => {
-    try {
-      const view = normalizeUserFilter(req.query?.view, "active");
-      const payload = await buildManagedUserList({ filter: view });
-      res.json({
-        ok: true,
-        ...payload,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/users/create", async (req, res) => {
-    try {
-      const username = validateManagedUsername(req.body?.username);
-      const password = normalizeString(req.body?.password, "");
-      if (password.length < 12) {
-        throw new Error("Password must be at least 12 characters.");
-      }
-      const status = normalizeUserStatus(req.body?.status, "active");
-      const friendlyName = sanitizeLongText(req.body?.friendlyName, 160);
-      const email = sanitizeEmail(req.body?.email);
-      const displayInfo = sanitizeLongText(req.body?.displayInfo, 2048);
-      const notes = sanitizeLongText(req.body?.notes, 4096);
-
-      await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const users = await blastdoorApi.listCredentialUsers();
-        if (users.some((entry) => entry.username === username)) {
-          throw new Error("User already exists.");
-        }
-
-        await blastdoorApi.upsertCredentialUser({
-          username,
-          passwordHash: createPasswordHash(password),
-          totpSecret: null,
-          disabled: status !== "active",
-        });
-        await blastdoorApi.upsertUserProfile({
-          username,
-          friendlyName,
-          email,
-          status,
-          displayInfo,
-          notes,
-        });
-      });
-
-      const listPayload = await buildManagedUserList({ filter: "all" });
-      const createdUser = listPayload.users.find((entry) => entry.username === username) || null;
-      res.json({
-        ok: true,
-        user: createdUser,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/users/update", async (req, res) => {
-    try {
-      const username = validateManagedUsername(req.body?.username);
-      const password = normalizeString(req.body?.password, "");
-      const status = normalizeUserStatus(req.body?.status, "active");
-      const friendlyName = sanitizeLongText(req.body?.friendlyName, 160);
-      const email = sanitizeEmail(req.body?.email);
-      const displayInfo = sanitizeLongText(req.body?.displayInfo, 2048);
-      const notes = sanitizeLongText(req.body?.notes, 4096);
-
-      await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const users = await blastdoorApi.listCredentialUsers();
-        const existingUser = users.find((entry) => entry.username === username);
-        if (!existingUser) {
-          throw new Error("User not found.");
-        }
-
-        await blastdoorApi.upsertCredentialUser({
-          username,
-          passwordHash: password ? createPasswordHash(password) : existingUser.passwordHash,
-          totpSecret: existingUser.totpSecret || null,
-          disabled: status !== "active",
-        });
-        await blastdoorApi.upsertUserProfile({
-          username,
-          friendlyName,
-          email,
-          status,
-          displayInfo,
-          notes,
-        });
-      });
-
-      const listPayload = await buildManagedUserList({ filter: "all" });
-      const updatedUser = listPayload.users.find((entry) => entry.username === username) || null;
-      res.json({
-        ok: true,
-        user: updatedUser,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/users/set-status", async (req, res) => {
-    try {
-      const username = validateManagedUsername(req.body?.username);
-      const status = normalizeUserStatus(req.body?.status, "active");
-
-      await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const users = await blastdoorApi.listCredentialUsers();
-        const existingUser = users.find((entry) => entry.username === username);
-        if (!existingUser) {
-          throw new Error("User not found.");
-        }
-
-        await blastdoorApi.upsertCredentialUser({
-          username,
-          passwordHash: existingUser.passwordHash,
-          totpSecret: existingUser.totpSecret || null,
-          disabled: status !== "active",
-        });
-        await blastdoorApi.upsertUserProfile({
-          username,
-          status,
-        });
-      });
-
-      const listPayload = await buildManagedUserList({ filter: "all" });
-      const updatedUser = listPayload.users.find((entry) => entry.username === username) || null;
-      res.json({
-        ok: true,
-        user: updatedUser,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/users/reset-login-code", async (req, res) => {
-    try {
-      const username = validateManagedUsername(req.body?.username);
-      const delivery = normalizeString(req.body?.delivery, "manual") || "manual";
-      const ttlMinutes = Number.parseInt(normalizeString(req.body?.ttlMinutes, "30"), 10);
-
-      let issuedCode = null;
-      let profileEmail = "";
-      let emailSent = false;
-      let emailWarning = "";
-
-      await withBlastdoorApi(async ({ configFromEnv, blastdoorApi }) => {
-        const users = await blastdoorApi.listCredentialUsers();
-        const existingUser = users.find((entry) => entry.username === username);
-        if (!existingUser) {
-          throw new Error("User not found.");
-        }
-
-        issuedCode = await blastdoorApi.issueTemporaryLoginCode(username, { ttlMinutes, delivery });
-        const profile = await blastdoorApi.getUserProfile(username);
-        profileEmail = normalizeString(profile?.email, "");
-
-        if (delivery !== "email") {
-          return;
-        }
-
-        if (!profileEmail) {
-          emailWarning = "User has no email set in profile. Copy this temporary code and deliver it securely.";
-          return;
-        }
-
-        const emailService = createEmailService(loadEmailConfigFromEnv(configFromEnv));
-        try {
-          const baseUrl = resolveGatewayBaseUrl(configFromEnv);
-          const result = await emailService.sendTemporaryLoginCode({
-            to: profileEmail,
-            username,
-            code: issuedCode?.code || "",
-            expiresAt: issuedCode?.expiresAt || "",
-            loginUrlPath: `${baseUrl}/login?next=%2F`,
-          });
-          emailSent = Boolean(result?.ok);
-          if (!result?.ok) {
-            emailWarning = `Email dispatch unavailable: ${result?.reason || "provider not configured"}.`;
-          }
-        } finally {
-          await emailService.close();
-        }
-      });
-
-      res.json({
-        ok: true,
-        username,
-        delivery,
-        code: issuedCode?.code || "",
-        expiresAt: issuedCode?.expiresAt || "",
-        emailSent,
-        emailTo: profileEmail,
-        warning: delivery === "email" ? emailWarning : "",
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/users/invalidate-token", async (req, res) => {
-    try {
-      const username = validateManagedUsername(req.body?.username);
-      let profile = null;
-      await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const users = await blastdoorApi.listCredentialUsers();
-        const existingUser = users.find((entry) => entry.username === username);
-        if (!existingUser) {
-          throw new Error("User not found.");
-        }
-
-        profile = await blastdoorApi.invalidateUserSessions(username);
-      });
-
-      res.json({
-        ok: true,
-        username,
-        sessionVersion: profile?.sessionVersion || 1,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiGet("/monitor", async (_req, res) => {
-    try {
-      const status = processState.getStatus();
-      const config = await readEnvConfig(envPath);
-      const health = await checkBlastdoorHealth(config);
-      const logPath = path.resolve(workspaceDir, config.DEBUG_LOG_FILE || CONFIG_DEFAULTS.DEBUG_LOG_FILE);
-      const debugLogLines = await tailFile(logPath, 200);
-      const runtimeLogLines = processState.recentRuntimeLogs(200);
-
-      res.json({
-        ok: true,
-        status,
-        health,
-        debugLogLines,
-        runtimeLogLines,
-      });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiGet("/themes", async (_req, res) => {
-    try {
-      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
-        return { store, assets };
-      });
-      res.json({
-        ok: true,
-        activeThemeId: payload.store.activeThemeId || "",
-        themes: (payload.store.themes || []).map(mapThemeForClient),
-        assets: payload.assets,
-      });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/themes/create", async (req, res) => {
-    try {
-      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const assets = await blastdoorApi.listThemeAssets();
-        const validated = validateThemeAssetSelection(
-          {
-            themeName: req.body?.name,
-            logoPath: req.body?.logoPath,
-            closedBackgroundPath: req.body?.closedBackgroundPath,
-            openBackgroundPath: req.body?.openBackgroundPath,
-            loginBoxWidthPercent: req.body?.loginBoxWidthPercent,
-            loginBoxHeightPercent: req.body?.loginBoxHeightPercent,
-            loginBoxPosXPercent: req.body?.loginBoxPosXPercent,
-            loginBoxPosYPercent: req.body?.loginBoxPosYPercent,
-            loginBoxOpacityPercent: req.body?.loginBoxOpacityPercent,
-            loginBoxHoverOpacityPercent: req.body?.loginBoxHoverOpacityPercent,
-            logoSizePercent: req.body?.logoSizePercent,
-            logoOffsetXPercent: req.body?.logoOffsetXPercent,
-            logoOffsetYPercent: req.body?.logoOffsetYPercent,
-            backgroundZoomPercent: req.body?.backgroundZoomPercent,
-            loginBoxMode: req.body?.loginBoxMode,
-          },
-          assets,
-        );
-        const makeActive = parseBooleanLikeBody(req.body?.makeActive);
-
-        const store = await blastdoorApi.readThemeStore();
-        const existingIds = new Set((store.themes || []).map((theme) => theme.id));
-        const id = createThemeId(validated.name, existingIds);
-        const now = new Date().toISOString();
-        const createdTheme = {
-          id,
-          name: validated.name,
-          logoPath: validated.logoPath,
-          closedBackgroundPath: validated.closedBackgroundPath,
-          openBackgroundPath: validated.openBackgroundPath,
-          loginBoxWidthPercent: validated.loginBoxWidthPercent,
-          loginBoxHeightPercent: validated.loginBoxHeightPercent,
-          loginBoxPosXPercent: validated.loginBoxPosXPercent,
-          loginBoxPosYPercent: validated.loginBoxPosYPercent,
-          loginBoxOpacityPercent: validated.loginBoxOpacityPercent,
-          loginBoxHoverOpacityPercent: validated.loginBoxHoverOpacityPercent,
-          logoSizePercent: validated.logoSizePercent,
-          logoOffsetXPercent: validated.logoOffsetXPercent,
-          logoOffsetYPercent: validated.logoOffsetYPercent,
-          backgroundZoomPercent: validated.backgroundZoomPercent,
-          loginBoxMode: validated.loginBoxMode,
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        const nextThemes = [...(store.themes || []), createdTheme];
-        const nextActiveThemeId = makeActive || !store.activeThemeId ? createdTheme.id : store.activeThemeId;
-        const updatedStore = await blastdoorApi.writeThemeStore({
-          activeThemeId: nextActiveThemeId,
-          themes: nextThemes,
-        });
-        return { assets, createdTheme, updatedStore };
-      });
-
-      res.json({
-        ok: true,
-        activeThemeId: payload.updatedStore.activeThemeId || "",
-        createdTheme: mapThemeForClient(payload.createdTheme),
-        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
-        assets: payload.assets,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/themes/update", async (req, res) => {
-    try {
-      const themeId = normalizeString(req.body?.themeId, "");
-      if (!themeId) {
-        throw new Error("themeId is required.");
-      }
-
-      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const assets = await blastdoorApi.listThemeAssets();
-        const validated = validateThemeAssetSelection(
-          {
-            themeName: req.body?.name,
-            logoPath: req.body?.logoPath,
-            closedBackgroundPath: req.body?.closedBackgroundPath,
-            openBackgroundPath: req.body?.openBackgroundPath,
-            loginBoxWidthPercent: req.body?.loginBoxWidthPercent,
-            loginBoxHeightPercent: req.body?.loginBoxHeightPercent,
-            loginBoxPosXPercent: req.body?.loginBoxPosXPercent,
-            loginBoxPosYPercent: req.body?.loginBoxPosYPercent,
-            loginBoxOpacityPercent: req.body?.loginBoxOpacityPercent,
-            loginBoxHoverOpacityPercent: req.body?.loginBoxHoverOpacityPercent,
-            logoSizePercent: req.body?.logoSizePercent,
-            logoOffsetXPercent: req.body?.logoOffsetXPercent,
-            logoOffsetYPercent: req.body?.logoOffsetYPercent,
-            backgroundZoomPercent: req.body?.backgroundZoomPercent,
-            loginBoxMode: req.body?.loginBoxMode,
-          },
-          assets,
-          { requireClosedBackground: false },
-        );
-        const makeActive = parseBooleanLikeBody(req.body?.makeActive);
-
-        const store = await blastdoorApi.readThemeStore();
-        const themeIndex = (store.themes || []).findIndex((theme) => theme.id === themeId);
-        if (themeIndex < 0) {
-          throw new Error("Requested theme was not found.");
-        }
-
-        const existingTheme = store.themes[themeIndex];
-        const now = new Date().toISOString();
-        const updatedTheme = {
-          ...existingTheme,
-          name: validated.name,
-          logoPath: validated.logoPath,
-          closedBackgroundPath: validated.closedBackgroundPath,
-          openBackgroundPath: validated.openBackgroundPath,
-          loginBoxWidthPercent: validated.loginBoxWidthPercent,
-          loginBoxHeightPercent: validated.loginBoxHeightPercent,
-          loginBoxPosXPercent: validated.loginBoxPosXPercent,
-          loginBoxPosYPercent: validated.loginBoxPosYPercent,
-          loginBoxOpacityPercent: validated.loginBoxOpacityPercent,
-          loginBoxHoverOpacityPercent: validated.loginBoxHoverOpacityPercent,
-          logoSizePercent: validated.logoSizePercent,
-          logoOffsetXPercent: validated.logoOffsetXPercent,
-          logoOffsetYPercent: validated.logoOffsetYPercent,
-          backgroundZoomPercent: validated.backgroundZoomPercent,
-          loginBoxMode: validated.loginBoxMode,
-          updatedAt: now,
-        };
-
-        const nextThemes = [...(store.themes || [])];
-        nextThemes[themeIndex] = updatedTheme;
-        const nextActiveThemeId = makeActive ? themeId : store.activeThemeId;
-        const updatedStore = await blastdoorApi.writeThemeStore({
-          activeThemeId: nextActiveThemeId,
-          themes: nextThemes,
-        });
-        return { assets, updatedTheme, updatedStore };
-      });
-
-      res.json({
-        ok: true,
-        activeThemeId: payload.updatedStore.activeThemeId || "",
-        updatedTheme: mapThemeForClient(payload.updatedTheme),
-        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
-        assets: payload.assets,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/themes/rename", async (req, res) => {
-    try {
-      const themeId = normalizeString(req.body?.themeId, "");
-      if (!themeId) {
-        throw new Error("themeId is required.");
-      }
-
-      const name = normalizeThemeName(req.body?.name);
-      if (!name) {
-        throw new Error("Theme name is required.");
-      }
-
-      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
-        const themeIndex = (store.themes || []).findIndex((theme) => theme.id === themeId);
-        if (themeIndex < 0) {
-          throw new Error("Requested theme was not found.");
-        }
-
-        const existingTheme = store.themes[themeIndex];
-        const updatedTheme = {
-          ...existingTheme,
-          name,
-          updatedAt: new Date().toISOString(),
-        };
-
-        const nextThemes = [...(store.themes || [])];
-        nextThemes[themeIndex] = updatedTheme;
-        const updatedStore = await blastdoorApi.writeThemeStore({
-          activeThemeId: store.activeThemeId,
-          themes: nextThemes,
-        });
-        return { assets, updatedTheme, updatedStore };
-      });
-
-      res.json({
-        ok: true,
-        activeThemeId: payload.updatedStore.activeThemeId || "",
-        updatedTheme: mapThemeForClient(payload.updatedTheme),
-        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
-        assets: payload.assets,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/themes/delete", async (req, res) => {
-    try {
-      const themeId = normalizeString(req.body?.themeId, "");
-      if (!themeId) {
-        throw new Error("themeId is required.");
-      }
-      if (themeId === DEFAULT_THEME_ID) {
-        throw new Error("Default theme cannot be deleted.");
-      }
-
-      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
-        const existingTheme = (store.themes || []).find((theme) => theme.id === themeId);
-        if (!existingTheme) {
-          throw new Error("Requested theme was not found.");
-        }
-
-        const nextThemes = (store.themes || []).filter((theme) => theme.id !== themeId);
-        const nextActiveThemeId =
-          store.activeThemeId === themeId
-            ? nextThemes[0]?.id || DEFAULT_THEME_ID
-            : store.activeThemeId;
-
-        const updatedStore = await blastdoorApi.writeThemeStore({
-          activeThemeId: nextActiveThemeId,
-          themes: nextThemes,
-        });
-        return { assets, updatedStore };
-      });
-
-      res.json({
-        ok: true,
-        deletedThemeId: themeId,
-        activeThemeId: payload.updatedStore.activeThemeId || "",
-        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
-        assets: payload.assets,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/themes/apply", async (req, res) => {
-    try {
-      const themeId = normalizeString(req.body?.themeId, "");
-      if (!themeId) {
-        throw new Error("themeId is required.");
-      }
-
-      const payload = await withBlastdoorApi(async ({ blastdoorApi }) => {
-        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
-        const selectedTheme = (store.themes || []).find((theme) => theme.id === themeId);
-        if (!selectedTheme) {
-          throw new Error("Requested theme was not found.");
-        }
-
-        const updatedStore = await blastdoorApi.writeThemeStore({
-          activeThemeId: themeId,
-          themes: store.themes || [],
-        });
-        return { assets, selectedTheme, updatedStore };
-      });
-
-      res.json({
-        ok: true,
-        activeThemeId: payload.updatedStore.activeThemeId || "",
-        activeTheme: mapThemeForClient(payload.selectedTheme),
-        themes: (payload.updatedStore.themes || []).map(mapThemeForClient),
-        assets: payload.assets,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiGet("/diagnostics", async (_req, res) => {
-    try {
-      const config = await readEnvConfig(envPath);
-      const serviceStatus = processState.getStatus();
-      const health = await checkBlastdoorHealth(config);
-      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
-      const diagnosticsConfig = sanitizeConfigForDiagnostics(config);
-
-      const report = {
-        generatedAt: new Date().toISOString(),
-        serviceStatus,
-        health,
-        environment,
-        config: diagnosticsConfig,
-      };
-
-      res.json({
-        ok: true,
-        report,
-        summary: createDiagnosticsSummary(report),
-      });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiGet("/troubleshoot", async (_req, res) => {
-    try {
-      const config = await readEnvConfig(envPath);
-      const serviceStatus = processState.getStatus();
-      const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
-      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
-      const report = createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus });
-
-      res.json({
-        ok: true,
-        report,
-      });
-    } catch (error) {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-
-  registerApiPost("/troubleshoot/run", async (req, res) => {
-    try {
-      const actionId = normalizeString(req.body?.actionId, "");
-      if (!actionId) {
-        throw new Error("actionId is required.");
-      }
-
-      if (actionId.startsWith("guide.")) {
-        throw new Error(
-          "Requested action is potentially destructive and must be reviewed manually. Use diagnostics guidance instead.",
-        );
-      }
-
-      const config = await readEnvConfig(envPath);
-      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
-      const result = await runTroubleshootAction({
-        actionId,
-        config,
-        environment,
-        workspaceDir,
-        commandRunner,
-      });
-
-      res.json({
-        ok: true,
-        result,
-      });
-    } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  registerRemoteSupportRoutes({
+    registerApiGet,
+    registerApiPost,
+    registerRemoteSupportGet,
+    registerRemoteSupportPost,
+    normalizeString,
+    parseBooleanLike,
+    readConsoleSettings,
+    writeConsoleSettings,
+    clampRemoteSupportTokenTtlMinutes,
+    remoteSupportTokenMinTtlMinutes: REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+    remoteSupportTokenMaxTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
+    remoteSupportDefaultTokenLabel: REMOTE_SUPPORT_DEFAULT_TOKEN_LABEL,
+    trimCallHomeEvents,
+    summarizeRemoteSupportToken,
+    callHomeEventsMax: CALL_HOME_EVENTS_MAX,
+    syncRemoteSupportWslExposure,
+    detectEnvironmentInfo,
+    workspaceDir,
+    envPath,
+    commandRunner,
+    randomBytes,
+    randomUUID,
+    createPasswordHash,
+    buildRemoteSupportCurlExamples,
+    buildCallHomePodBundle,
+    buildRemoteSupportApiBasePath,
+    appendCallHomeEvent,
+    buildDiagnosticsPayload,
+    buildRemoteSupportCommandHints,
+    buildTroubleshootPayload,
+    remoteSupportSafeActionAllowlist: REMOTE_SUPPORT_SAFE_ACTION_ALLOWLIST,
+    readEnvConfig,
+    runTroubleshootAction,
+    withBlastdoorApi,
+    readIntelligenceAgentStore,
+    intelligenceAgentStorePath,
+    operationTimeoutMs: managerOperationTimeoutMs,
   });
 
   registerApiGet("/plugins/ui", async (_req, res) => {
@@ -2452,6 +4606,8 @@ export function createManagerApp(options = {}) {
     parseBooleanLikeBody,
     normalizeString,
     applyThreatLockdown,
+    runTroubleshootAction,
+    commandRunner,
     CONFIG_DEFAULTS,
     installationConfigPath,
   });

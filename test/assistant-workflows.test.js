@@ -32,6 +32,27 @@ test("inferEnvironmentConfigurationRecommendations suggests host + container ass
   assert.equal(result.suggestedDefaults.ASSISTANT_URL, "http://blastdoor-assistant:8060");
 });
 
+test("inferEnvironmentConfigurationRecommendations suggests WSL host gateway for Ollama loopback URL", () => {
+  const result = inferEnvironmentConfigurationRecommendations({
+    diagnosticsReport: {
+      config: {
+        HOST: "0.0.0.0",
+        ASSISTANT_OLLAMA_URL: "http://127.0.0.1:11434",
+        FOUNDRY_TARGET: "http://172.30.240.1:30000",
+      },
+      environment: {
+        isWsl: true,
+      },
+    },
+    installationConfig: {
+      installType: "local",
+    },
+  });
+
+  assert.equal(result.recommendations.some((entry) => entry.id === "assistant.ollama-wsl-host"), true);
+  assert.equal(result.suggestedDefaults.ASSISTANT_OLLAMA_URL, "http://172.30.240.1:11434");
+});
+
 test("generateTroubleshootingRecommendation identifies csrf/origin issues", async () => {
   const result = await generateTroubleshootingRecommendation({
     errorText: "Invalid CSRF token and auth.login.origin_rejected invalid-origin-header",

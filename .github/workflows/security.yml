@@ -63,7 +63,7 @@ jobs:
           sarif_file: trivy-results.sarif
 
   trivy-image:
-    name: Trivy Image Scan (Advisory)
+    name: Trivy Image Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -80,9 +80,9 @@ jobs:
           image-ref: blastdoor-gateway:security-scan
           format: sarif
           output: trivy-image-results.sarif
-          severity: CRITICAL
+          severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "0"
+          exit-code: "1"
 
       - name: Upload Trivy image scan results to GitHub Security
         if: always()

@@ -53,23 +53,29 @@ test("walks through installer wizard and persists expected outputs", async ({ pa
   await page.goto(baseUrl);
 
   await expect(page.getByRole("heading", { name: "Blastdoor First-Time Installer" })).toBeVisible();
+  await expect(page.locator("#status")).toContainText(/configuration/i);
 
   await page.locator("#installType").selectOption("container");
   await page.locator("#nextBtn").click();
+  await expect(page.getByRole("heading", { name: "2. Platform" })).toBeVisible();
 
   await page.locator("#platform").selectOption("linux");
   await page.locator("#nextBtn").click();
+  await expect(page.getByRole("heading", { name: "3. Database" })).toBeVisible();
 
   await page.locator("#database").selectOption("postgres");
   await page.locator("#nextBtn").click();
+  await expect(page.getByRole("heading", { name: "4. Object Storage" })).toBeVisible();
 
   await page.locator("#objectStorage").selectOption("s3");
   await page.locator("#nextBtn").click();
+  await expect(page.getByRole("heading", { name: "5. Foundry Endpoint" })).toBeVisible();
 
   await page.locator("#foundryMode").selectOption("external");
   await page.locator("#foundryExternalIp").fill("203.0.113.99");
   await page.locator("#foundryExternalPort").fill("30400");
   await page.locator("#nextBtn").click();
+  await expect(page.getByRole("heading", { name: "6. Service Topology + API" })).toBeVisible();
 
   await page.locator("#gatewayHost").fill("0.0.0.0");
   await page.locator("#gatewayPort").fill("8181");
@@ -80,7 +86,10 @@ test("walks through installer wizard and persists expected outputs", async ({ pa
   await page.locator("#useExternalBlastdoorApi").check();
   await page.locator("#blastdoorApiUrl").fill("https://api.example.test");
   await page.locator("#blastdoorApiToken").fill("token-123");
+  await page.locator("#publicDomain").fill("blastdoor.example.test");
+  await page.locator("#letsEncryptEmail").fill("ops@example.test");
   await page.locator("#nextBtn").click();
+  await expect(page.getByRole("heading", { name: "7. Review + Save" })).toBeVisible();
 
   await expect(page.locator("#review")).toContainText("\"installType\": \"container\"");
 
@@ -111,6 +120,8 @@ test("walks through installer wizard and persists expected outputs", async ({ pa
   expect(dockerEnv.INSTALL_PROFILE).toBe("container");
   expect(dockerEnv.PASSWORD_STORE_MODE).toBe("postgres");
   expect(dockerEnv.CONFIG_STORE_MODE).toBe("postgres");
+  expect(dockerEnv.BLASTDOOR_DOMAIN).toBe("blastdoor.example.test");
+  expect(dockerEnv.LETSENCRYPT_EMAIL).toBe("ops@example.test");
 
   const configResponse = await apiRequest.get(`${baseUrl}/api/config`);
   expect(configResponse.ok()).toBeTruthy();

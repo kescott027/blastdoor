@@ -15,8 +15,9 @@ DEBUG_FORCED_USERNAME ?= gm
 DEBUG_FORCED_PASSWORD ?= R@ndomPa55w0rd!
 ALLOW_NULL_ORIGIN ?= false
 INSTALL_CONFIG_PATH ?= data/installation_config.json
+INSTALLER_AUTO_OPEN ?= true
 
-.PHONY: help install configure deps-install ensure-install-config ensure-deps ensure-dev-deps lint test coverage integration-test precommit-install setup-env launch launch-local launch-container launch-env manager-launch api-launch assistant-launch monitor monitor-local monitor-container debug debug-local debug-container troubleshoot troubleshoot-local troubleshoot-container mock-vtt test-launch debug-launch ensure-docker-env docker-build docker-up docker-down docker-logs basic-install basic-configure basic-launch basic-launch-env basic-monitor basic-troubleshoot resilient-install resilient-configure resilient-up resilient-down resilient-monitor resilient-troubleshoot
+.PHONY: help install configure deps-install ensure-install-config ensure-deps ensure-dev-deps lint test coverage integration-test call-home-gate ci-gate precommit-install setup-env launch launch-local launch-container launch-env manager-launch api-launch assistant-launch monitor monitor-local monitor-container debug debug-local debug-container troubleshoot troubleshoot-local troubleshoot-container mock-vtt test-launch debug-launch ensure-docker-env docker-build docker-up docker-down docker-logs basic-install basic-configure basic-launch basic-launch-env basic-monitor basic-troubleshoot resilient-install resilient-configure resilient-up resilient-down resilient-monitor resilient-troubleshoot
 
 help:
 	@echo "Targets:"
@@ -35,6 +36,8 @@ help:
 	@echo "  make test          Run unit/integration tests"
 	@echo "  make coverage      Run test coverage with minimum thresholds"
 	@echo "  make integration-test Run Playwright installer workflow integration tests"
+	@echo "  make call-home-gate Run call-home module integration + e2e tests"
+	@echo "  make ci-gate       Run blocking local CI gate (lint + coverage + Playwright integration)"
 	@echo "  make precommit-install  Install local git hooks (husky)"
 	@echo "  make setup-env     Interactive .env setup wizard"
 	@echo ""
@@ -65,10 +68,10 @@ deps-install:
 	npm install
 
 install: ensure-deps
-	node scripts/install-gui.js
+	INSTALLER_AUTO_OPEN=$(INSTALLER_AUTO_OPEN) node scripts/install-gui.js
 
 configure: ensure-deps
-	node scripts/install-gui.js
+	INSTALLER_AUTO_OPEN=$(INSTALLER_AUTO_OPEN) node scripts/install-gui.js
 
 ensure-install-config:
 	@if [ ! -f $(INSTALL_CONFIG_PATH) ]; then \
@@ -78,13 +81,13 @@ ensure-install-config:
 	fi
 
 ensure-deps:
-	@if [ ! -d node_modules ] || [ ! -f node_modules/otplib/package.json ] || [ ! -f node_modules/pg/package.json ]; then \
+	@if ! node scripts/check-deps.js >/dev/null 2>&1; then \
 		echo "Installing Node dependencies..."; \
 		npm install; \
 	fi
 
 ensure-dev-deps: ensure-deps
-	@if [ ! -f node_modules/eslint/package.json ] || [ ! -f node_modules/husky/package.json ]; then \
+	@if ! node scripts/check-deps.js --dev >/dev/null 2>&1; then \
 		echo "Installing development dependencies..."; \
 		npm install; \
 	fi
@@ -101,6 +104,17 @@ coverage: ensure-dev-deps
 integration-test: ensure-dev-deps
 	npx playwright install chromium
 	npm run test:integration
+
+call-home-gate: ensure-dev-deps
+	npm run test:call-home
+	npx playwright install chromium
+	npm run test:integration:call-home
+
+ci-gate: ensure-dev-deps
+	npm run lint
+	npm run test:coverage
+	npx playwright install chromium
+	npm run test:integration:ci
 
 precommit-install: ensure-dev-deps
 	npm run prepare

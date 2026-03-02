@@ -82,10 +82,24 @@ test("syncRuntimeEnvFromInstallation writes profile-aligned local and docker env
         managerPort: 8090,
         apiHost: "0.0.0.0",
         apiPort: 8070,
+        publicDomain: "blastdoor.example.test",
+        letsEncryptEmail: "admin@blastdoor.example.test",
       },
       null,
     );
 
+    await fs.mkdir(path.dirname(dockerEnvPath), { recursive: true });
+    await fs.writeFile(
+      dockerEnvPath,
+      "AUTH_PASSWORD_HASH=$2b$10$ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi1234567890\n",
+      "utf8",
+    );
+
+    await syncRuntimeEnvFromInstallation({
+      installationConfig,
+      envPath,
+      dockerEnvPath,
+    });
     await syncRuntimeEnvFromInstallation({
       installationConfig,
       envPath,
@@ -106,8 +120,15 @@ test("syncRuntimeEnvFromInstallation writes profile-aligned local and docker env
     assert.equal(dockerEnv.PASSWORD_STORE_MODE, "postgres");
     assert.equal(dockerEnv.CONFIG_STORE_MODE, "postgres");
     assert.equal(dockerEnv.FOUNDRY_TARGET, "http://host.docker.internal:30000");
+    assert.equal(dockerEnv.BLASTDOOR_DOMAIN, "blastdoor.example.test");
+    assert.equal(dockerEnv.LETSENCRYPT_EMAIL, "admin@blastdoor.example.test");
+    assert.equal(dockerEnv.PUBLIC_BASE_URL, "https://blastdoor.example.test");
 
     assert.ok(localEnv.SESSION_SECRET);
     assert.ok(dockerEnv.SESSION_SECRET);
+
+    const dockerEnvRaw = await fs.readFile(dockerEnvPath, "utf8");
+    assert.match(dockerEnvRaw, /AUTH_PASSWORD_HASH='?\$\$2b\$\$10\$/);
+    assert.doesNotMatch(dockerEnvRaw, /\$\$\$\$2b/);
   });
 });
