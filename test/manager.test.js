@@ -3636,6 +3636,7 @@ test("manager remote support API supports token-gated diagnostics and intelligen
       assert.equal(configSaved.body.ok, true);
       assert.equal(configSaved.body.config.enabled, true);
       assert.equal(configSaved.body.config.defaultTokenTtlMinutes, 30);
+      assert.equal(configSaved.body.networkExposure?.status, "skipped-not-wsl");
 
       const tokenCreated = await request(port, {
         method: "POST",
@@ -3780,6 +3781,62 @@ test("manager remote support API supports token-gated diagnostics and intelligen
       assert.equal(revokedAccess.status, 401);
     } finally {
       await closeServer(server);
+    }
+  });
+});
+
+test("manager remote support config reports WSL loopback bind remediation when manager host is local-only", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const previousWslDistro = process.env.WSL_DISTRO_NAME;
+    process.env.WSL_DISTRO_NAME = "Ubuntu-24.04";
+    try {
+      const { app } = createManagerApp({ workspaceDir, envPath });
+      const server = app.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const port = server.address().port;
+
+      try {
+        const configSaved = await request(port, {
+          method: "POST",
+          pathname: "/api/remote-support/config",
+          body: {
+            enabled: true,
+            defaultTokenTtlMinutes: 30,
+          },
+        });
+        assert.equal(configSaved.status, 200);
+        assert.equal(configSaved.body.ok, true);
+        assert.equal(configSaved.body.config.enabled, true);
+        assert.equal(configSaved.body.networkExposure?.status, "blocked-manager-loopback");
+        assert.match(String(configSaved.body.networkExposure?.message || ""), /loopback/i);
+        assert.equal(Array.isArray(configSaved.body.networkExposure?.remediation), true);
+        assert.equal(configSaved.body.networkExposure?.remediation?.length > 0, true);
+      } finally {
+        await closeServer(server);
+      }
+    } finally {
+      if (previousWslDistro === undefined) {
+        delete process.env.WSL_DISTRO_NAME;
+      } else {
+        process.env.WSL_DISTRO_NAME = previousWslDistro;
+      }
     }
   });
 });

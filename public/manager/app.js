@@ -3280,11 +3280,44 @@ bindClick("remoteSupportSaveConfigBtn", async () => {
       defaultTokenTtlMinutes,
     });
     renderRemoteSupportConfig(payload);
-    setRemoteSupportMessage(
-      enabled
-        ? "Remote support API enabled. Generate a token next."
-        : "Remote support API disabled.",
-    );
+    const exposure = payload?.networkExposure || null;
+    if (exposure) {
+      const lines = [
+        `WSL exposure sync status: ${String(exposure.status || "unknown")}`,
+        `Message: ${String(exposure.message || "")}`,
+      ];
+      if (exposure.wslIp) {
+        lines.push(`WSL IP: ${String(exposure.wslIp)}`);
+      }
+      if (Array.isArray(exposure.remediation) && exposure.remediation.length > 0) {
+        lines.push("", "Remediation:");
+        for (const item of exposure.remediation) {
+          lines.push(`- ${String(item)}`);
+        }
+      }
+      if (exposure.script) {
+        lines.push("", "PowerShell script (manual fallback):", String(exposure.script));
+      }
+      latestRemoteSupportOutputText = lines.join("\n");
+      if (remoteSupportOutput) {
+        remoteSupportOutput.textContent = latestRemoteSupportOutputText;
+      }
+      if (exposure.applied === true) {
+        setRemoteSupportMessage(enabled ? "Remote support API enabled and WSL exposure sync applied." : "Remote support API disabled and WSL exposure sync removed.");
+      } else if (String(exposure.status || "").startsWith("blocked")) {
+        setRemoteSupportMessage(`Remote support API ${enabled ? "enabled" : "disabled"}, but network exposure is blocked. See output for remediation.`, true);
+      } else if (String(exposure.status || "").startsWith("failed")) {
+        setRemoteSupportMessage(`Remote support API ${enabled ? "enabled" : "disabled"}, but automatic WSL exposure sync failed. See output for remediation.`, true);
+      } else {
+        setRemoteSupportMessage(enabled ? "Remote support API enabled." : "Remote support API disabled.");
+      }
+    } else {
+      setRemoteSupportMessage(
+        enabled
+          ? "Remote support API enabled. Generate a token next."
+          : "Remote support API disabled.",
+      );
+    }
   } catch (error) {
     setRemoteSupportMessage(error.message || String(error), true);
   }

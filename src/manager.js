@@ -2087,6 +2087,36 @@ function buildWslPortproxyScript({ environment, config }) {
   ].join("\n");
 }
 
+function buildWslManagerPortproxyEnableScript({ environment, managerPort, wslIp }) {
+  const distro = environment.wslDistro || "Ubuntu";
+  const displayName = `Blastdoor Manager ${managerPort}`;
+  return [
+    "# Run in Windows PowerShell as Administrator",
+    "# WARNING: this modifies Windows portproxy and firewall configuration.",
+    "# Review before running. Execute at your own risk.",
+    "Set-Service iphlpsvc -StartupType Automatic",
+    "Start-Service iphlpsvc",
+    `# WSL distro hint: ${distro}`,
+    `# WSL interface IP detected: ${wslIp}`,
+    `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${managerPort}`,
+    `netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=${managerPort} connectaddress=${wslIp} connectport=${managerPort}`,
+    `if (-not (Get-NetFirewallRule -DisplayName '${displayName}' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName '${displayName}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${managerPort} }`,
+    "netsh interface portproxy show all",
+  ].join("\n");
+}
+
+function buildWslManagerPortproxyDisableScript({ managerPort }) {
+  const displayName = `Blastdoor Manager ${managerPort}`;
+  return [
+    "# Run in Windows PowerShell as Administrator",
+    "# WARNING: this modifies Windows portproxy and firewall configuration.",
+    "# Review before running. Execute at your own risk.",
+    `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${managerPort}`,
+    `Get-NetFirewallRule -DisplayName '${displayName}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue`,
+    "netsh interface portproxy show all",
+  ].join("\n");
+}
+
 function buildGuidedActions({ environment, config }) {
   if (!environment.isWsl) {
     return [];
@@ -2369,6 +2399,173 @@ async function detectWslDefaultGatewayIp({ workspaceDir, commandRunner }) {
   return {
     gatewayIp,
     commandResult: routeResult,
+  };
+}
+
+async function detectWslInterfaceIp({ workspaceDir, commandRunner }) {
+  const ifaceResult = await commandRunner({
+    command: "ip",
+    args: ["-4", "-o", "addr", "show", "eth0"],
+    cwd: workspaceDir,
+    timeoutMs: 4000,
+  });
+  if (!ifaceResult.ok) {
+    throw new Error(
+      `Unable to detect WSL interface IP via 'ip -4 -o addr show eth0' (${ifaceResult.error || "command failed"}).`,
+    );
+  }
+
+  const match = String(ifaceResult.stdout || "").match(/\binet\s+((?:\d{1,3}\.){3}\d{1,3})\//);
+  const ip = normalizeString(match?.[1], "");
+  if (net.isIP(ip) !== 4) {
+    throw new Error("Unable to parse WSL IPv4 address from 'ip -4 -o addr show eth0' output.");
+  }
+
+  return {
+    wslIp: ip,
+    commandResult: ifaceResult,
+  };
+}
+
+async function syncRemoteSupportWslExposure({
+  enabled,
+  environment,
+  workspaceDir,
+  commandRunner,
+}) {
+  const managerPort = Number.parseInt(environment.managerPort || String(DEFAULT_MANAGER_PORT), 10) || DEFAULT_MANAGER_PORT;
+  const managerHost = normalizeString(environment.managerHost, DEFAULT_MANAGER_HOST);
+  const base = {
+    attempted: false,
+    applied: false,
+    enabledRequested: enabled === true,
+    managerHost,
+    managerPort,
+    status: "skipped",
+    message: "WSL exposure sync not required.",
+    remediation: [],
+    commands: [],
+  };
+
+  if (!environment.isWsl) {
+    return {
+      ...base,
+      status: "skipped-not-wsl",
+      message: "Runtime is not WSL; automatic Windows portproxy sync skipped.",
+    };
+  }
+
+  if (isLoopbackHost(managerHost)) {
+    const actionHint = enabled
+      ? "Enable"
+      : "Disable";
+    return {
+      ...base,
+      status: "blocked-manager-loopback",
+      message:
+        "Manager is bound to loopback (127.0.0.1). Restart manager with MANAGER_HOST=0.0.0.0 before automatic WSL exposure sync can apply.",
+      remediation: [
+        `Restart manager with: MANAGER_HOST=0.0.0.0 MANAGER_PORT=${managerPort} make manager-launch`,
+        `${actionHint} remote support API again after manager restart to trigger automatic exposure sync.`,
+      ],
+      script: enabled
+        ? buildWslManagerPortproxyEnableScript({
+            environment,
+            managerPort,
+            wslIp: "<WSL_IP>",
+          })
+        : buildWslManagerPortproxyDisableScript({ managerPort }),
+    };
+  }
+
+  let wslIp;
+  try {
+    const detected = await detectWslInterfaceIp({ workspaceDir, commandRunner });
+    wslIp = detected.wslIp;
+  } catch (error) {
+    return {
+      ...base,
+      status: "failed-detect-wsl-ip",
+      message: error instanceof Error ? error.message : String(error),
+      remediation: [
+        "Verify WSL network interface is available and 'ip' command returns eth0 IPv4.",
+        "Run diagnostics: Troubleshooting -> Gather Snapshot.",
+      ],
+    };
+  }
+
+  const powershellCommand = enabled
+    ? [
+        "$ErrorActionPreference='Stop'",
+        "Set-Service iphlpsvc -StartupType Automatic",
+        "Start-Service iphlpsvc",
+        `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${managerPort} | Out-Null`,
+        `netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=${managerPort} connectaddress=${wslIp} connectport=${managerPort}`,
+        `if (-not (Get-NetFirewallRule -DisplayName 'Blastdoor Manager ${managerPort}' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName 'Blastdoor Manager ${managerPort}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${managerPort} | Out-Null }`,
+        "netsh interface portproxy show all",
+      ].join("; ")
+    : [
+        "$ErrorActionPreference='Continue'",
+        `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=${managerPort} | Out-Null`,
+        `Get-NetFirewallRule -DisplayName 'Blastdoor Manager ${managerPort}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue`,
+        "netsh interface portproxy show all",
+      ].join("; ");
+
+  const result = await commandRunner({
+    command: "powershell.exe",
+    args: ["-NoProfile", "-Command", powershellCommand],
+    cwd: workspaceDir,
+    timeoutMs: 12000,
+  });
+
+  const script = enabled
+    ? buildWslManagerPortproxyEnableScript({ environment, managerPort, wslIp })
+    : buildWslManagerPortproxyDisableScript({ managerPort });
+
+  if (!result.ok) {
+    return {
+      ...base,
+      attempted: true,
+      status: "failed-apply",
+      message: `Automatic WSL exposure sync failed (${result.error || "command failed"}).`,
+      remediation: [
+        "Run Blastdoor manager with elevated permissions or execute the generated PowerShell script as Administrator.",
+        "Verify Windows service 'iphlpsvc' is available and running.",
+      ],
+      wslIp,
+      script,
+      commands: [
+        {
+          command: `powershell.exe -NoProfile -Command "<automation script>"`,
+          ok: false,
+          exitCode: result.exitCode,
+          error: result.error || "",
+          stdout: result.stdout || "",
+          stderr: result.stderr || "",
+        },
+      ],
+    };
+  }
+
+  return {
+    ...base,
+    attempted: true,
+    applied: true,
+    status: enabled ? "enabled" : "disabled",
+    message: enabled
+      ? `Automatic WSL exposure sync applied for manager port ${managerPort}.`
+      : `Automatic WSL exposure sync removed for manager port ${managerPort}.`,
+    wslIp,
+    script,
+    commands: [
+      {
+        command: `powershell.exe -NoProfile -Command "<automation script>"`,
+        ok: true,
+        exitCode: result.exitCode,
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
+      },
+    ],
   };
 }
 
@@ -5448,6 +5645,7 @@ export function createManagerApp(options = {}) {
     try {
       const current = await readConsoleSettings();
       const currentRemoteSupport = current.remoteSupport || {};
+      const previousEnabled = currentRemoteSupport.enabled === true;
       const enabled = parseBooleanLike(req.body?.enabled, currentRemoteSupport.enabled === true);
       const defaultTokenTtlMinutes = clampRemoteSupportTokenTtlMinutes(
         req.body?.defaultTokenTtlMinutes,
@@ -5467,6 +5665,17 @@ export function createManagerApp(options = {}) {
         },
       });
 
+      let networkExposure = null;
+      if (enabled !== previousEnabled) {
+        const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+        networkExposure = await syncRemoteSupportWslExposure({
+          enabled,
+          environment,
+          workspaceDir,
+          commandRunner,
+        });
+      }
+
       res.json({
         ok: true,
         config: {
@@ -5476,6 +5685,7 @@ export function createManagerApp(options = {}) {
           maxTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
           tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
         },
+        networkExposure,
       });
     } catch (error) {
       res.status(400).json({
