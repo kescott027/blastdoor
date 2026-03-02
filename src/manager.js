@@ -485,6 +485,10 @@ function sanitizeLongText(value, maxLength = 4096) {
   return normalizeString(value, "").slice(0, maxLength);
 }
 
+function escapeDoubleQuotedLiteral(value) {
+  return normalizeString(value, "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 function createSessionKey({ username, lastLoginAt, sessionVersion }) {
   const payload = `${normalizeUsername(username)}|${normalizeString(lastLoginAt, "")}|${Number.parseInt(String(sessionVersion || 1), 10) || 1}`;
   return createHash("sha256").update(payload).digest("hex").slice(0, 24);
@@ -3123,8 +3127,8 @@ export function createManagerApp(options = {}) {
 
   function buildCallHomePodBundle({ req, token, tokenMeta, ttlMinutes = 30, generatedAt = new Date().toISOString() }) {
     const base = buildCallHomeApiBasePath(req).replace(/\/+$/, "");
-    const baseEscaped = base.replace(/"/g, '\\"');
-    const tokenEscaped = String(token || "").replace(/"/g, '\\"');
+    const baseEscaped = escapeDoubleQuotedLiteral(base);
+    const tokenEscaped = escapeDoubleQuotedLiteral(String(token || ""));
     const satelliteId = `diag-${randomUUID().slice(0, 8)}`;
     const dockerImage = "alpine:3.20";
     const entrypointScript = `#!/bin/sh
@@ -3196,7 +3200,7 @@ EOS
     container_name: blastdoor-diag-${satelliteId}
     restart: "no"
     environment:
-      CALL_HOME_TOKEN: "${String(token || "").replace(/"/g, '\\"')}"
+      CALL_HOME_TOKEN: "${escapeDoubleQuotedLiteral(String(token || ""))}"
       CALL_HOME_BASE_URL: "${baseEscaped}"
       SATELLITE_ID: "${satelliteId}"
     command:
@@ -4275,6 +4279,14 @@ ${entrypointScript
       maxAge: "1h",
     }),
   );
+  const managerAccessReadLimiter = rateLimit({
+    windowMs: managerWriteRateLimitWindowMs,
+    max: Math.max(120, Math.min(1200, managerWriteRateLimitMax * 4)),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many manager requests. Try again shortly.",
+  });
+  app.use(managerAccessReadLimiter);
   app.use((req, res, next) => {
     void enforceManagerAccess(req, res, next);
   });

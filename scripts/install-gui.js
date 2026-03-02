@@ -3,6 +3,7 @@ import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import {
   buildFoundryTarget,
@@ -95,23 +96,84 @@ function detectWslGatewayIp() {
   }
 }
 
+function isPrivateOrLoopbackIpv4(hostname) {
+  const parts = String(hostname || "").split(".").map((value) => Number.parseInt(value, 10));
+  if (parts.length !== 4 || parts.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false;
+  }
+  if (parts[0] === 10) {
+    return true;
+  }
+  if (parts[0] === 127) {
+    return true;
+  }
+  if (parts[0] === 192 && parts[1] === 168) {
+    return true;
+  }
+  return parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31;
+}
+
+function isAllowedProbeHost(hostname) {
+  const host = normalizeString(hostname, "").toLowerCase();
+  if (!host) {
+    return false;
+  }
+  if (["localhost", "host.docker.internal", "::1"].includes(host)) {
+    return true;
+  }
+  const ipVersion = isIP(host);
+  if (ipVersion === 4) {
+    return isPrivateOrLoopbackIpv4(host);
+  }
+  return false;
+}
+
+function normalizeSafeProbeUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl || ""));
+  } catch {
+    return null;
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return null;
+  }
+  if (parsed.username || parsed.password) {
+    return null;
+  }
+  if (!isAllowedProbeHost(parsed.hostname)) {
+    return null;
+  }
+  parsed.hash = "";
+  return parsed.toString();
+}
+
 async function probeUrl(url, timeoutMs = 2500) {
+  const safeUrl = normalizeSafeProbeUrl(url);
+  if (!safeUrl) {
+    return {
+      ok: false,
+      statusCode: null,
+      error: "Probe skipped for non-local or unsupported target URL.",
+      url,
+    };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(safeUrl, { signal: controller.signal });
     return {
       ok: response.ok,
       statusCode: response.status,
       error: "",
-      url,
+      url: safeUrl,
     };
   } catch (error) {
     return {
       ok: false,
       statusCode: null,
       error: error instanceof Error ? error.message : String(error),
-      url,
+      url: safeUrl,
     };
   } finally {
     clearTimeout(timeout);
