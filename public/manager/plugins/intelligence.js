@@ -197,6 +197,7 @@ function createState(root) {
     configureButton: root.querySelector("[data-intel-open-config]"),
     workflowsButton: root.querySelector("[data-intel-open-workflows]"),
     openChatPopoutButton: root.querySelector("[data-intel-open-chat-popout]"),
+    menuWorkflowSelect: root.querySelector("[data-intel-menu-workflow-select]"),
     configSection: root.querySelector("[data-intel-config-section]"),
     workflowsSection: root.querySelector("[data-intel-workflow-section]"),
     closeConfigButton: root.querySelector("[data-intel-close-config]"),
@@ -246,6 +247,7 @@ function validateState(state) {
     "configureButton",
     "workflowsButton",
     "openChatPopoutButton",
+    "menuWorkflowSelect",
     "configSection",
     "workflowsSection",
     "closeConfigButton",
@@ -286,9 +288,16 @@ function validateState(state) {
 function createPanelMarkup() {
   return `
     <section class="intel-menu">
+      <div class="grid">
+        <label>Workflow to Launch
+          <select data-intel-menu-workflow-select></select>
+        </label>
+      </div>
       <div class="button-row">
         <button type="button" data-intel-open-config>Configure Intelligence Module</button>
         <button type="button" data-intel-open-workflows>Create Workflow</button>
+      </div>
+      <div class="button-row">
         <button type="button" data-intel-open-chat-popout>Launch Workflow</button>
       </div>
     </section>
@@ -446,17 +455,25 @@ function createPanelMarkup() {
   `;
 }
 
-function renderWorkflowSelect(state, workflows, selectedId = "") {
+function renderWorkflowSelects(state, workflows, selectedId = "") {
+  state.menuWorkflowSelect.textContent = "";
   state.workflowSelect.textContent = "";
   for (const workflow of workflows) {
+    const menuOption = document.createElement("option");
+    menuOption.value = workflow.id;
+    menuOption.textContent = `${workflow.name} (${workflow.type})`;
+    state.menuWorkflowSelect.append(menuOption);
+
     const option = document.createElement("option");
     option.value = workflow.id;
     option.textContent = `${workflow.name} (${workflow.type})`;
     state.workflowSelect.append(option);
   }
   if (selectedId && workflows.some((workflow) => workflow.id === selectedId)) {
+    state.menuWorkflowSelect.value = selectedId;
     state.workflowSelect.value = selectedId;
   } else if (workflows[0]) {
+    state.menuWorkflowSelect.value = workflows[0].id;
     state.workflowSelect.value = workflows[0].id;
   }
 }
@@ -537,7 +554,7 @@ export async function registerManagerPlugin(context) {
 
   function syncWorkflowSelection(selectedId = "") {
     runtime.workflowMap = new Map(runtime.workflows.map((workflow) => [workflow.id, workflow]));
-    renderWorkflowSelect(state, runtime.workflows, selectedId || runtime.selectedWorkflowId);
+    renderWorkflowSelects(state, runtime.workflows, selectedId || runtime.selectedWorkflowId);
     runtime.selectedWorkflowId = asString(state.workflowSelect.value, "");
     const selected = getWorkflowById(runtime.selectedWorkflowId);
     if (selected) {
@@ -682,7 +699,8 @@ export async function registerManagerPlugin(context) {
   });
   state.openChatPopoutButton.addEventListener("click", () => {
     try {
-      openWorkflowChatPopup();
+      const selected = asString(state.menuWorkflowSelect.value, "") || asString(state.workflowSelect.value, "");
+      openWorkflowChatPopup(selected);
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
@@ -704,8 +722,24 @@ export async function registerManagerPlugin(context) {
     }
   });
 
+  state.menuWorkflowSelect.addEventListener("change", () => {
+    const selected = asString(state.menuWorkflowSelect.value, "");
+    if (!selected) {
+      return;
+    }
+    state.workflowSelect.value = selected;
+    runtime.selectedWorkflowId = selected;
+    const selectedWorkflow = getWorkflowById(selected);
+    if (selectedWorkflow) {
+      populateWorkflowForm(state, selectedWorkflow);
+      hideChatSection();
+      panel.setStatus(`Selected workflow '${selectedWorkflow.name}'. Click Launch Workflow to open chat.`);
+    }
+  });
+
   state.workflowSelect.addEventListener("change", () => {
     runtime.selectedWorkflowId = asString(state.workflowSelect.value, "");
+    state.menuWorkflowSelect.value = runtime.selectedWorkflowId;
     const selected = getWorkflowById(runtime.selectedWorkflowId);
     if (!selected) {
       return;

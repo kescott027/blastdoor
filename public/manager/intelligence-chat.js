@@ -11,7 +11,6 @@ const statusMessage = document.getElementById("statusMessage");
 const chatLog = document.getElementById("chatLog");
 const chatInput = document.getElementById("chatInput");
 const chatSendBtn = document.getElementById("chatSendBtn");
-const outputLog = document.getElementById("outputLog");
 
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
@@ -26,10 +25,6 @@ const runtime = {
 function setStatus(text, isError = false) {
   statusMessage.textContent = String(text || "");
   statusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
-}
-
-function renderOutput(payload) {
-  outputLog.textContent = JSON.stringify(payload || {}, null, 2);
 }
 
 function pushChatMessage(role, text) {
@@ -151,7 +146,6 @@ async function loadWorkflows(preferredWorkflowId = "", autoLaunch = false) {
   runtime.workflows = workflows;
   runtime.workflowMap = new Map(workflows.map((workflow) => [workflow.id, workflow]));
   renderWorkflowSelect(preferredWorkflowId);
-  renderOutput(payload);
   setStatus(`Loaded ${workflows.length} workflow(s).`);
 
   if (autoLaunch && workflowSelect.value) {
@@ -171,7 +165,7 @@ async function sendMessage() {
     throw new Error("Launch a workflow first.");
   }
   if (!runtime.launchedWorkflowId) {
-    throw new Error("Launch workflow first before sending messages.");
+    launchSelectedWorkflow();
   }
 
   pushChatMessage("user", message);
@@ -185,7 +179,6 @@ async function sendMessage() {
       message,
       applyLockdown: true,
     });
-    renderOutput(payload);
     const reply =
       payload?.result?.reply ||
       payload?.result?.summary ||
