@@ -30,6 +30,7 @@ const postgresHealthValue = document.getElementById("postgresHealthValue");
 const objectStoreTypeValue = document.getElementById("objectStoreTypeValue");
 const objectStoreReachableValue = document.getElementById("objectStoreReachableValue");
 const pluginsStatusValue = document.getElementById("pluginsStatusValue");
+const topStatusBar = document.getElementById("topStatusBar");
 const controlsDockOpenBtn = document.getElementById("controlsDockOpenBtn");
 const controlsDockHideBtn = document.getElementById("controlsDockHideBtn");
 const configBackupStatusMessage = document.getElementById("configBackupStatusMessage");
@@ -278,6 +279,7 @@ const managedMainSections = [
   resolveSection("debugLogsSection", ".debug-panel"),
 ].filter(Boolean);
 const mainPanelDefaultVisibleIds = new Set(["serviceControlSection"]);
+let controlsDockPositionRaf = 0;
 
 function bindClick(id, handler) {
   const element = document.getElementById(id);
@@ -312,6 +314,28 @@ function setControlsDockCollapsed(collapsed, persist = true) {
   } catch {
     // Ignore storage errors and continue with in-memory state.
   }
+}
+
+function updateControlsDockPosition() {
+  const minTopPx = 84;
+  let dockTopPx = minTopPx;
+  if (topStatusBar) {
+    const rect = topStatusBar.getBoundingClientRect();
+    dockTopPx = Math.max(minTopPx, Math.round(rect.bottom + 12));
+  }
+
+  document.documentElement.style.setProperty("--controls-dock-top", `${dockTopPx}px`);
+  document.documentElement.style.setProperty("--controls-dock-max-height", `calc(100vh - ${dockTopPx + 12}px)`);
+}
+
+function scheduleControlsDockPositionUpdate() {
+  if (controlsDockPositionRaf) {
+    return;
+  }
+  controlsDockPositionRaf = window.requestAnimationFrame(() => {
+    controlsDockPositionRaf = 0;
+    updateControlsDockPosition();
+  });
 }
 
 function loadControlsDockCollapsedState() {
@@ -2480,6 +2504,7 @@ async function refreshAll() {
     fillLayoutSettings(managerSettingsResult.settings || {});
     await refreshFailures(false);
     await runPluginRefreshHandlers();
+    scheduleControlsDockPositionUpdate();
   } catch (error) {
     setMessage(error.message || String(error), true);
   }
@@ -3704,6 +3729,9 @@ closeLayoutModal();
 selectSession({});
 setMainPanelDefaultVisibility();
 setControlsDockCollapsed(loadControlsDockCollapsedState(), false);
+scheduleControlsDockPositionUpdate();
+window.addEventListener("resize", scheduleControlsDockPositionUpdate, { passive: true });
+window.addEventListener("scroll", scheduleControlsDockPositionUpdate, { passive: true });
 
 loadManagerPlugins()
   .catch((error) => {

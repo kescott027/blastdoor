@@ -13,6 +13,8 @@
   --danger: #ff8a8a;
   --controls-dock-width: 220px;
   --controls-dock-gap: 14px;
+  --controls-dock-top: 152px;
+  --controls-dock-max-height: calc(100vh - 164px);
 }
 
 * {
@@ -144,10 +146,10 @@ body {
 
 .left-dock {
   position: fixed;
-  top: 8.8rem;
-  left: max(0.5rem, calc((100vw - min(1420px, 98vw)) / 2));
+  top: var(--controls-dock-top);
+  left: 0.5rem;
   width: var(--controls-dock-width);
-  max-height: calc(100vh - 9.6rem);
+  max-height: var(--controls-dock-max-height);
   overflow: auto;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
@@ -187,7 +189,7 @@ body.controls-dock-collapsed .left-dock {
 .controls-dock-open {
   position: fixed;
   left: 0.5rem;
-  top: 8.9rem;
+  top: var(--controls-dock-top);
   z-index: 34;
   border-radius: 999px;
   padding: 0.45rem 0.75rem;
