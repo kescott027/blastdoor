@@ -8,6 +8,7 @@ import {
   collectQuickDiagnostics,
   normalizeMissingProfileChoice,
   runLaunchWithInstallCheck,
+  validateDockerLaunchEnv,
 } from "../scripts/launch-with-install-check.js";
 
 test("normalizeMissingProfileChoice maps valid values", () => {
@@ -177,4 +178,34 @@ test("runLaunchWithInstallCheck honors installer close action signal", async () 
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("validateDockerLaunchEnv accepts complete production-like values", () => {
+  const result = validateDockerLaunchEnv({
+    BLASTDOOR_DOMAIN: "games.example.net",
+    LETSENCRYPT_EMAIL: "admin@example.net",
+    POSTGRES_PASSWORD: "Sup3rLongPostgresPassword!",
+    SESSION_SECRET: "blastdoor-session-secret-with-minimum-length",
+    FOUNDRY_TARGET: "http://host.docker.internal:30000",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.issues.length, 0);
+});
+
+test("validateDockerLaunchEnv rejects missing or placeholder settings", () => {
+  const result = validateDockerLaunchEnv({
+    BLASTDOOR_DOMAIN: "blastdoor.example.com",
+    LETSENCRYPT_EMAIL: "admin@example.com",
+    POSTGRES_PASSWORD: "change-this-postgres-password",
+    SESSION_SECRET: "short-secret",
+    FOUNDRY_TARGET: "",
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join("\n"), /BLASTDOOR_DOMAIN/i);
+  assert.match(result.issues.join("\n"), /LETSENCRYPT_EMAIL/i);
+  assert.match(result.issues.join("\n"), /POSTGRES_PASSWORD/i);
+  assert.match(result.issues.join("\n"), /SESSION_SECRET/i);
+  assert.match(result.issues.join("\n"), /FOUNDRY_TARGET/i);
 });

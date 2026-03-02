@@ -44,6 +44,7 @@ const LOCAL_ENV_ORDER = [
   "BLASTDOOR_API_RETRY_MAX_DELAY_MS",
   "BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD",
   "BLASTDOOR_API_CIRCUIT_RESET_MS",
+  "PUBLIC_BASE_URL",
   "BLAST_DOORS_CLOSED",
   "OBJECT_STORAGE_MODE",
   "INSTALL_PROFILE",
@@ -92,6 +93,7 @@ const DOCKER_ENV_ORDER = [
   "BLASTDOOR_API_RETRY_MAX_DELAY_MS",
   "BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD",
   "BLASTDOOR_API_CIRCUIT_RESET_MS",
+  "PUBLIC_BASE_URL",
   "BLAST_DOORS_CLOSED",
   "OBJECT_STORAGE_MODE",
   "INSTALL_PROFILE",
@@ -133,6 +135,22 @@ function normalizePort(value, fallback) {
   return parsed;
 }
 
+function normalizeEmail(value) {
+  return String(value || "").trim();
+}
+
+function normalizeDomain(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) {
+    return "";
+  }
+  let domain = raw;
+  domain = domain.replace(/^https?:\/\//, "");
+  domain = domain.split("/")[0] || "";
+  domain = domain.split(":")[0] || "";
+  return domain.trim();
+}
+
 function formatEnvValue(value) {
   if (value === undefined || value === null) {
     return "";
@@ -145,6 +163,27 @@ function formatEnvValue(value) {
     return stringValue;
   }
   return JSON.stringify(stringValue);
+}
+
+function formatDockerComposeEnvValue(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  const stringValue = String(value);
+  if (stringValue === "") {
+    return "";
+  }
+
+  const escapedDollar = stringValue.replace(/\$/g, "$$$$");
+  if (/^[A-Za-z0-9_./,:@+-]+$/.test(escapedDollar)) {
+    return escapedDollar;
+  }
+
+  if (!escapedDollar.includes("'")) {
+    return `'${escapedDollar}'`;
+  }
+
+  return JSON.stringify(escapedDollar);
 }
 
 export function detectPlatformType(env = process.env) {
@@ -179,6 +218,8 @@ export function defaultInstallationConfig(overrides = {}) {
     useExternalBlastdoorApi: false,
     blastdoorApiUrl: "",
     blastdoorApiToken: "",
+    publicDomain: "",
+    letsEncryptEmail: "",
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -213,6 +254,8 @@ export function normalizeInstallationConfig(input = {}, existing = null) {
     useExternalBlastdoorApi: String(merged.useExternalBlastdoorApi).toLowerCase() === "true" || merged.useExternalBlastdoorApi === true,
     blastdoorApiUrl: String(merged.blastdoorApiUrl || "").trim(),
     blastdoorApiToken: String(merged.blastdoorApiToken || "").trim(),
+    publicDomain: normalizeDomain(merged.publicDomain),
+    letsEncryptEmail: normalizeEmail(merged.letsEncryptEmail),
     createdAt: String(base.createdAt || new Date().toISOString()),
     updatedAt: new Date().toISOString(),
   };
@@ -244,10 +287,19 @@ export function buildFoundryTarget(config) {
   return `http://${host}:${port}`;
 }
 
-async function readEnvFileObject(filePath) {
+async function readEnvFileObject(filePath, { unescapeDockerComposeDollar = false } = {}) {
   try {
     const raw = await fs.readFile(filePath, "utf8");
-    return dotenv.parse(raw);
+    const parsed = dotenv.parse(raw);
+    if (!unescapeDockerComposeDollar) {
+      return parsed;
+    }
+
+    const normalized = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      normalized[key] = String(value || "").replace(/\$\$/g, "$");
+    }
+    return normalized;
   } catch (error) {
     if (error && error.code === "ENOENT") {
       return {};
@@ -288,6 +340,7 @@ function buildCommonEnvValues(config, existing = {}, { forDocker = false } = {})
   const sessionSecret = String(existing.SESSION_SECRET || "").trim() || randomSecret(48);
   const postgresPassword = String(existing.POSTGRES_PASSWORD || "").trim() || "change-this-postgres-password";
   const postgresMode = database === "postgres";
+  const publicDomain = normalizeDomain(config.publicDomain);
   const postgresUrl =
     forDocker
       ? `postgres://blastdoor:${postgresPassword}@postgres:5432/blastdoor`
@@ -325,6 +378,10 @@ function buildCommonEnvValues(config, existing = {}, { forDocker = false } = {})
     BLASTDOOR_API_RETRY_MAX_DELAY_MS: String(existing.BLASTDOOR_API_RETRY_MAX_DELAY_MS || "1200"),
     BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD: String(existing.BLASTDOOR_API_CIRCUIT_FAILURE_THRESHOLD || "5"),
     BLASTDOOR_API_CIRCUIT_RESET_MS: String(existing.BLASTDOOR_API_CIRCUIT_RESET_MS || "10000"),
+    PUBLIC_BASE_URL:
+      publicDomain && (forDocker || normalizeEnum(config.installType, INSTALL_TYPES, "local") === "container")
+        ? `https://${publicDomain}`
+        : String(existing.PUBLIC_BASE_URL || ""),
     BLAST_DOORS_CLOSED: String(existing.BLAST_DOORS_CLOSED || "false"),
     OBJECT_STORAGE_MODE: objectStorage,
     INSTALL_PROFILE: config.installType,
@@ -349,7 +406,7 @@ function buildCommonEnvValues(config, existing = {}, { forDocker = false } = {})
   };
 }
 
-async function writeEnvObject(filePath, values, order) {
+async function writeEnvObject(filePath, values, order, valueFormatter = formatEnvValue) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const preferred = [];
   const seen = new Set();
@@ -361,7 +418,7 @@ async function writeEnvObject(filePath, values, order) {
   }
 
   const extraKeys = Object.keys(values).filter((key) => !seen.has(key)).sort((a, b) => a.localeCompare(b));
-  const lines = [...preferred, ...extraKeys].map((key) => `${key}=${formatEnvValue(values[key])}`);
+  const lines = [...preferred, ...extraKeys].map((key) => `${key}=${valueFormatter(values[key])}`);
   await fs.writeFile(filePath, `${lines.join("\n")}\n`, "utf8");
 }
 
@@ -389,7 +446,7 @@ export async function syncRuntimeEnvFromInstallation({
   dockerEnvPath,
 }) {
   const currentLocal = await readEnvFileObject(envPath);
-  const currentDocker = await readEnvFileObject(dockerEnvPath);
+  const currentDocker = await readEnvFileObject(dockerEnvPath, { unescapeDockerComposeDollar: true });
   const pluginManager = createPluginManager({ env: process.env });
 
   const localValues = buildCommonEnvValues(installationConfig, currentLocal, { forDocker: false });
@@ -407,12 +464,28 @@ export async function syncRuntimeEnvFromInstallation({
 
   dockerValues.BLASTDOOR_DOMAIN = String(dockerValues.BLASTDOOR_DOMAIN || "blastdoor.example.com");
   dockerValues.LETSENCRYPT_EMAIL = String(dockerValues.LETSENCRYPT_EMAIL || "admin@example.com");
+  if (installationConfig.publicDomain) {
+    dockerValues.BLASTDOOR_DOMAIN = normalizeDomain(installationConfig.publicDomain);
+  }
+  if (installationConfig.letsEncryptEmail) {
+    dockerValues.LETSENCRYPT_EMAIL = normalizeEmail(installationConfig.letsEncryptEmail);
+  }
+  if (installationConfig.publicDomain) {
+    dockerValues.PUBLIC_BASE_URL = `https://${normalizeDomain(installationConfig.publicDomain)}`;
+  } else {
+    dockerValues.PUBLIC_BASE_URL = String(dockerValues.PUBLIC_BASE_URL || "");
+  }
   dockerValues.POSTGRES_DB = String(dockerValues.POSTGRES_DB || "blastdoor");
   dockerValues.POSTGRES_USER = String(dockerValues.POSTGRES_USER || "blastdoor");
   dockerValues.POSTGRES_PASSWORD = String(dockerValues.POSTGRES_PASSWORD || "change-this-postgres-password");
 
-  await writeEnvObject(envPath, localValues, [...LOCAL_ENV_ORDER, ...(pluginLocal.order || [])]);
-  await writeEnvObject(dockerEnvPath, dockerValues, [...DOCKER_ENV_ORDER, ...(pluginDocker.order || [])]);
+  await writeEnvObject(envPath, localValues, [...LOCAL_ENV_ORDER, ...(pluginLocal.order || [])], formatEnvValue);
+  await writeEnvObject(
+    dockerEnvPath,
+    dockerValues,
+    [...DOCKER_ENV_ORDER, ...(pluginDocker.order || [])],
+    formatDockerComposeEnvValue,
+  );
 
   return {
     localValues,

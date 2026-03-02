@@ -167,12 +167,15 @@ The installer GUI asks for:
 - object storage (`local`, `gdrive`, `s3`)
 - Foundry location (`local` or `external`, with external host + port)
 - global service topology (portal/admin/api host + port)
+- container TLS identity (`publicDomain`, `letsEncryptEmail`) when `installType=container`
 
 2. Launch with profile-aware command:
 
 ```bash
 make launch
 ```
+
+For `installType=container`, `make launch` now preflights `docker/blastdoor.env` and blocks startup when required TLS/runtime values are placeholder or missing (`BLASTDOOR_DOMAIN`, `LETSENCRYPT_EMAIL`, `POSTGRES_PASSWORD`, `SESSION_SECRET`, `FOUNDRY_TARGET`).
 
 3. Re-open installer for edits:
 
@@ -374,6 +377,8 @@ cp docker/blastdoor.env.example docker/blastdoor.env
 - Set strong `POSTGRES_PASSWORD`.
 - Set strong `SESSION_SECRET`.
 - Set `FOUNDRY_TARGET` to the Foundry endpoint reachable from the container.
+
+If you configured via `make install` / `make configure`, these values are synced automatically from `data/installation_config.json` into `docker/blastdoor.env`.
 
 3. Start the stack:
 

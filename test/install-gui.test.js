@@ -132,6 +132,8 @@ test("installer API saves profile and generates local/docker env files", async (
         useExternalBlastdoorApi: true,
         blastdoorApiUrl: "https://api.example.test",
         blastdoorApiToken: "token-abc",
+        publicDomain: "games.example.test",
+        letsEncryptEmail: "ops@example.test",
       };
 
       const saveResponse = await request(port, {
@@ -151,6 +153,8 @@ test("installer API saves profile and generates local/docker env files", async (
       assert.equal(persistedConfig.installType, "container");
       assert.equal(persistedConfig.gatewayPort, 8181);
       assert.equal(persistedConfig.foundryExternalIp, "203.0.113.77");
+      assert.equal(persistedConfig.publicDomain, "games.example.test");
+      assert.equal(persistedConfig.letsEncryptEmail, "ops@example.test");
 
       const localEnv = dotenv.parse(await fs.readFile(envPath, "utf8"));
       assert.equal(localEnv.INSTALL_PROFILE, "container");
@@ -165,6 +169,9 @@ test("installer API saves profile and generates local/docker env files", async (
       assert.equal(dockerEnv.FOUNDRY_TARGET, "http://203.0.113.77:30400");
       assert.equal(dockerEnv.PASSWORD_STORE_MODE, "postgres");
       assert.equal(dockerEnv.CONFIG_STORE_MODE, "postgres");
+      assert.equal(dockerEnv.BLASTDOOR_DOMAIN, "games.example.test");
+      assert.equal(dockerEnv.LETSENCRYPT_EMAIL, "ops@example.test");
+      assert.equal(dockerEnv.PUBLIC_BASE_URL, "https://games.example.test");
 
       const fetchResponse = await request(port, { pathname: "/api/config" });
       assert.equal(fetchResponse.status, 200);

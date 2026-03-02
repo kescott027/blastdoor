@@ -291,6 +291,17 @@ function renderHtml({ deferLaunch = false } = {}) {
           </div>
           <p class="hint">Token is stored in generated env files. Rotate regularly.</p>
         </div>
+        <div id="tlsContainerGroup" class="hidden">
+          <div class="row">
+            <label for="publicDomain">Public domain (TLS)</label>
+            <input id="publicDomain" placeholder="blastdoor.example.com" />
+          </div>
+          <div class="row">
+            <label for="letsEncryptEmail">Let's Encrypt email</label>
+            <input id="letsEncryptEmail" placeholder="admin@example.com" />
+          </div>
+          <p class="hint">Used by Caddy for external HTTPS certificates (ports 80/443 must be reachable).</p>
+        </div>
       </section>
 
       <section class="step" data-step="6">
@@ -322,10 +333,12 @@ function renderHtml({ deferLaunch = false } = {}) {
       const closeBtn = document.getElementById("closeBtn");
       const launchExitBtn = document.getElementById("launchExitBtn");
       const foundryMode = document.getElementById("foundryMode");
+      const installType = document.getElementById("installType");
       const foundryLocalGroup = document.getElementById("foundryLocalGroup");
       const foundryExternalGroup = document.getElementById("foundryExternalGroup");
       const useExternalBlastdoorApi = document.getElementById("useExternalBlastdoorApi");
       const externalApiGroup = document.getElementById("externalApiGroup");
+      const tlsContainerGroup = document.getElementById("tlsContainerGroup");
       let current = 0;
       let model = null;
 
@@ -348,7 +361,9 @@ function renderHtml({ deferLaunch = false } = {}) {
           apiPort: Number.parseInt(document.getElementById("apiPort").value || "8070", 10),
           useExternalBlastdoorApi: useExternalBlastdoorApi.checked,
           blastdoorApiUrl: document.getElementById("blastdoorApiUrl").value.trim(),
-          blastdoorApiToken: document.getElementById("blastdoorApiToken").value.trim()
+          blastdoorApiToken: document.getElementById("blastdoorApiToken").value.trim(),
+          publicDomain: document.getElementById("publicDomain").value.trim(),
+          letsEncryptEmail: document.getElementById("letsEncryptEmail").value.trim()
         };
       }
 
@@ -369,6 +384,14 @@ function renderHtml({ deferLaunch = false } = {}) {
         }
 
         externalApiGroup.classList.add("hidden");
+      }
+
+      function syncTlsSection() {
+        if (installType.value === "container") {
+          tlsContainerGroup.classList.remove("hidden");
+          return;
+        }
+        tlsContainerGroup.classList.add("hidden");
       }
 
       function renderStep() {
@@ -415,8 +438,11 @@ function renderHtml({ deferLaunch = false } = {}) {
         useExternalBlastdoorApi.checked = Boolean(config.useExternalBlastdoorApi);
         document.getElementById("blastdoorApiUrl").value = config.blastdoorApiUrl || "";
         document.getElementById("blastdoorApiToken").value = config.blastdoorApiToken || "";
+        document.getElementById("publicDomain").value = config.publicDomain || "";
+        document.getElementById("letsEncryptEmail").value = config.letsEncryptEmail || "";
         syncFoundrySections();
         syncApiSection();
+        syncTlsSection();
       }
 
       async function load() {
@@ -439,6 +465,7 @@ function renderHtml({ deferLaunch = false } = {}) {
       });
 
       foundryMode.addEventListener("change", syncFoundrySections);
+      installType.addEventListener("change", syncTlsSection);
       useExternalBlastdoorApi.addEventListener("change", syncApiSection);
 
       saveBtn.addEventListener("click", async () => {
@@ -450,6 +477,11 @@ function renderHtml({ deferLaunch = false } = {}) {
         }
         if (payload.useExternalBlastdoorApi && !payload.blastdoorApiUrl) {
           status.textContent = "External Blastdoor API mode requires External API URL.";
+          status.className = "status warn";
+          return;
+        }
+        if (payload.installType === "container" && (!payload.publicDomain || !payload.letsEncryptEmail)) {
+          status.textContent = "Container mode requires Public domain and Let's Encrypt email for external TLS.";
           status.className = "status warn";
           return;
         }
@@ -513,6 +545,7 @@ function renderHtml({ deferLaunch = false } = {}) {
         status.className = "status warn";
       });
       syncApiSection();
+      syncTlsSection();
       if (${deferLaunch ? "true" : "false"}) {
         launchExitBtn.textContent = "Launch and Exit (Terminal)";
       }

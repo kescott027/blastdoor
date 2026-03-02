@@ -5,8 +5,10 @@ import process from "node:process";
 import readline from "node:readline/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 import { loadInstallationProfile } from "./install-profile-dispatch.js";
 import { appendFailureRecord } from "../src/failure-store.js";
+import { syncRuntimeEnvFromInstallation } from "../src/installation-config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +26,108 @@ function line(message = "") {
 
 function warn(message) {
   process.stderr.write(`[launch] WARN: ${message}\n`);
+}
+
+function normalizeDomain(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) {
+    return "";
+  }
+  return raw.replace(/^https?:\/\//, "").split("/")[0]?.split(":")[0]?.trim() || "";
+}
+
+function isLikelyDomain(value) {
+  const domain = normalizeDomain(value);
+  if (!domain) {
+    return false;
+  }
+  if (domain === "localhost") {
+    return false;
+  }
+  if (!domain.includes(".")) {
+    return false;
+  }
+  if (!/^[a-z0-9.-]+$/i.test(domain)) {
+    return false;
+  }
+  if (domain.includes("..")) {
+    return false;
+  }
+  return true;
+}
+
+function isLikelyEmail(value) {
+  const email = String(value || "").trim();
+  if (!email) {
+    return false;
+  }
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function isLikelyHttpUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return ["http:", "https:"].includes(url.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function isPlaceholderSecret(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized.includes("change-this")) {
+    return true;
+  }
+  if (normalized.includes("example")) {
+    return true;
+  }
+  return false;
+}
+
+export function validateDockerLaunchEnv(envValues = {}) {
+  const issues = [];
+  const domain = normalizeDomain(envValues.BLASTDOOR_DOMAIN || "");
+  const email = String(envValues.LETSENCRYPT_EMAIL || "").trim();
+  const postgresPassword = String(envValues.POSTGRES_PASSWORD || "").trim();
+  const sessionSecret = String(envValues.SESSION_SECRET || "").trim();
+  const foundryTarget = String(envValues.FOUNDRY_TARGET || "").trim();
+
+  if (!domain) {
+    issues.push("BLASTDOOR_DOMAIN is missing.");
+  } else if (!isLikelyDomain(domain) || domain === "blastdoor.example.com" || domain.endsWith(".example.com")) {
+    issues.push("BLASTDOOR_DOMAIN must be your real public DNS name (not example.com).");
+  }
+
+  if (!email) {
+    issues.push("LETSENCRYPT_EMAIL is missing.");
+  } else if (!isLikelyEmail(email) || email.endsWith("@example.com")) {
+    issues.push("LETSENCRYPT_EMAIL must be a valid real email address.");
+  }
+
+  if (isPlaceholderSecret(postgresPassword)) {
+    issues.push("POSTGRES_PASSWORD is missing or still using a placeholder value.");
+  }
+
+  if (isPlaceholderSecret(sessionSecret) || sessionSecret.length < 24) {
+    issues.push("SESSION_SECRET must be set to a strong secret (minimum 24 chars).");
+  }
+
+  if (!isLikelyHttpUrl(foundryTarget)) {
+    issues.push("FOUNDRY_TARGET must be a valid http/https URL reachable from the blastdoor container.");
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
+  };
+}
+
+async function parseDockerEnvFile(filePath) {
+  const raw = await fs.readFile(filePath, "utf8");
+  return dotenv.parse(raw);
 }
 
 export function normalizeMissingProfileChoice(rawValue) {
@@ -259,10 +363,33 @@ async function ensureDockerEnvFile() {
   );
 }
 
+async function ensureContainerLaunchPrerequisites(installationConfig = {}) {
+  await ensureDockerEnvFile();
+  await syncRuntimeEnvFromInstallation({
+    installationConfig,
+    envPath: path.join(workspaceDir, ".env"),
+    dockerEnvPath: DOCKER_ENV_PATH,
+  });
+  const envValues = await parseDockerEnvFile(DOCKER_ENV_PATH);
+  const validation = validateDockerLaunchEnv(envValues);
+  if (validation.ok) {
+    return;
+  }
+
+  const relativeDockerEnvPath = path.relative(workspaceDir, DOCKER_ENV_PATH);
+  throw new Error(
+    [
+      "Container launch blocked: docker TLS/runtime configuration is incomplete.",
+      ...validation.issues.map((issue) => `- ${issue}`),
+      `Update ${relativeDockerEnvPath} or run 'make configure' and save container settings, then rerun make launch.`,
+    ].join("\n"),
+  );
+}
+
 async function launchProfile(payload) {
   if (payload.profile === "container") {
     line("Install profile: container");
-    await ensureDockerEnvFile();
+    await ensureContainerLaunchPrerequisites(payload.config || {});
     await runCommand("docker", ["compose", "up", "-d", "--build"]);
     return;
   }
