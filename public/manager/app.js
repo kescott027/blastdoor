@@ -3090,11 +3090,13 @@ bindClick("navTlsBtn", () => {
 });
 
 bindClick("navLoginBtn", () => {
-  toggleMainPanelSections("loginManagementSection");
+  const trigger = document.getElementById("appearanceBtn");
+  trigger?.click();
 });
 
 bindClick("navUserBtn", () => {
-  toggleMainPanelSections("userManagementSection");
+  const trigger = document.getElementById("userMgmtBtn");
+  trigger?.click();
 });
 
 bindClick("navBackupBtn", () => {
@@ -3102,6 +3104,17 @@ bindClick("navBackupBtn", () => {
 });
 
 bindClick("navFailuresBtn", async () => {
+  if (!failuresModal) {
+    setMessage("Failures panel is unavailable in this UI build.", true);
+    return;
+  }
+
+  if (!failuresModal.hidden) {
+    closeFailuresModal();
+    setFailuresMessage("Failures panel closed.");
+    return;
+  }
+
   openFailuresModal();
   try {
     await refreshFailures(true);

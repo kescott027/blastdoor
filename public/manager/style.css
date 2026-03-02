@@ -420,6 +420,35 @@ input:focus {
   display: none;
 }
 
+.inline-management-panel {
+  width: min(1420px, 98vw);
+  margin: 0 auto 1rem;
+}
+
+.inline-management-panel .session-dock-panel,
+.inline-management-panel .failures-dock-panel,
+.inline-management-panel .appearance-dock-panel,
+.inline-management-panel .user-dock-panel {
+  height: auto;
+  overflow: visible;
+  padding: 0;
+}
+
+.inline-management-panel .session-dock-header,
+.inline-management-panel .failures-dock-header,
+.inline-management-panel .appearance-dock-header,
+.inline-management-panel .user-dock-header {
+  position: static;
+  background: none;
+  padding-bottom: 0;
+}
+
+.inline-management-panel .session-list-wrap,
+.inline-management-panel .failures-list-wrap,
+.inline-management-panel .user-list-wrap {
+  max-height: 320px;
+}
+
 .appearance-dock.hidden {
   display: none;
 }
