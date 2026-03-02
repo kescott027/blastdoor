@@ -110,7 +110,7 @@
         <p class="status-message" id="statusMessage"></p>
       </section>
 
-      <section class="panel management-menu-panel" id="tlsManagementSection">
+      <section class="panel management-menu-panel hidden" id="tlsManagementSection" hidden>
         <h2>TLS Management</h2>
         <p class="panel-note">Manage certificates, detection, and Let's Encrypt planning.</p>
         <div class="button-row">
@@ -118,7 +118,7 @@
         </div>
       </section>
 
-      <section class="panel management-menu-panel" id="loginManagementSection">
+      <section class="panel management-menu-panel hidden" id="loginManagementSection" hidden>
         <h2>Login Screen Management</h2>
         <p class="panel-note">Create and apply Blastdoor portal login themes.</p>
         <div class="button-row">
@@ -126,7 +126,7 @@
         </div>
       </section>
 
-      <section class="panel management-menu-panel" id="userManagementSection">
+      <section class="panel management-menu-panel hidden" id="userManagementSection" hidden>
         <h2>User Management</h2>
         <p class="panel-note">Create users, set status, rotate temporary access, and invalidate user sessions.</p>
         <div class="button-row">
@@ -134,7 +134,7 @@
         </div>
       </section>
 
-      <section class="panel config-panel">
+      <section class="panel config-panel hidden" id="configSection" hidden>
         <h2>Configuration</h2>
         <form id="configForm">
           <input type="hidden" name="BLAST_DOORS_CLOSED" id="blastDoorsClosedField" />
@@ -189,7 +189,7 @@
         </form>
       </section>
 
-      <section class="panel config-maint-panel" id="backupManagementSection">
+      <section class="panel config-maint-panel hidden" id="backupManagementSection" hidden>
         <h2>Config Backups</h2>
         <p class="panel-note">
           Back up and restore install/runtime config files. Clean Install resets installation profile and env files to defaults.
@@ -214,7 +214,7 @@
         <pre id="configBackupDetails" class="log-box"></pre>
       </section>
 
-      <section class="panel diagnostics-panel" id="diagnosticsSection">
+      <section class="panel diagnostics-panel hidden" id="diagnosticsSection" hidden>
         <h2>Diagnostics</h2>
         <p class="panel-note">
           Generates a sanitized report for troubleshooting. Secrets are automatically redacted.
@@ -231,7 +231,7 @@
         <pre id="diagJson" class="log-box"></pre>
       </section>
 
-      <section class="panel troubleshooting-panel">
+      <section class="panel troubleshooting-panel hidden" id="troubleshootingSection" hidden>
         <h2>Troubleshooting</h2>
         <p class="panel-note">
           Run read-only environment checks and view guided remediation steps. Potentially destructive fixes are never
@@ -254,7 +254,7 @@
         <pre id="tsScript" class="log-box"></pre>
       </section>
 
-      <section class="panel modules-panel" id="modulesSection">
+      <section class="panel modules-panel hidden" id="modulesSection" hidden>
         <h2>Modules</h2>
         <p class="panel-note">Loaded modules and plugin runtime state.</p>
         <ul id="modulesList" class="modules-list">
@@ -262,14 +262,14 @@
         </ul>
       </section>
 
-      <section id="pluginPanels" class="plugin-panels"></section>
+      <section id="pluginPanels" class="plugin-panels hidden" hidden></section>
 
-      <section class="panel runtime-panel">
+      <section class="panel runtime-panel hidden" id="runtimeLogsSection" hidden>
         <h2>Runtime Logs</h2>
         <pre id="runtimeLogs" class="log-box"></pre>
       </section>
 
-      <section class="panel debug-panel">
+      <section class="panel debug-panel hidden" id="debugLogsSection" hidden>
         <h2>Debug Log Tail</h2>
         <pre id="debugLogs" class="log-box"></pre>
       </section>

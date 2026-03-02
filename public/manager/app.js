@@ -242,6 +242,30 @@ const managerPluginState = {
   refreshHandlers: [],
   styles: new Set(),
 };
+const managedMainSections = [
+  document.getElementById("serviceControlSection"),
+  document.getElementById("configSection"),
+  document.getElementById("tlsManagementSection"),
+  document.getElementById("loginManagementSection"),
+  document.getElementById("userManagementSection"),
+  document.getElementById("backupManagementSection"),
+  document.getElementById("diagnosticsSection"),
+  document.getElementById("troubleshootingSection"),
+  document.getElementById("modulesSection"),
+  document.getElementById("pluginPanels"),
+  document.getElementById("runtimeLogsSection"),
+  document.getElementById("debugLogsSection"),
+].filter(Boolean);
+const mainPanelGroups = {
+  default: [],
+  service: ["configSection", "runtimeLogsSection", "debugLogsSection"],
+  tls: ["tlsManagementSection"],
+  login: ["loginManagementSection"],
+  user: ["userManagementSection"],
+  backup: ["backupManagementSection"],
+  diagnostics: ["diagnosticsSection", "troubleshootingSection"],
+  modules: ["modulesSection", "pluginPanels"],
+};
 
 function bindClick(id, handler) {
   const element = document.getElementById(id);
@@ -2990,8 +3014,27 @@ function scrollToSection(id) {
   element.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function setMainPanelGroup(groupName, options = {}) {
+  const { scroll = true } = options;
+  const group = mainPanelGroups[groupName] || mainPanelGroups.default;
+  const visibleIds = new Set(["serviceControlSection", ...group]);
+
+  for (const section of managedMainSections) {
+    const visible = visibleIds.has(section.id);
+    section.hidden = !visible;
+    section.classList.toggle("hidden", !visible);
+  }
+
+  if (!scroll) {
+    return;
+  }
+
+  const targetId = group[0] || "serviceControlSection";
+  scrollToSection(targetId);
+}
+
 bindClick("navServiceBtn", () => {
-  scrollToSection("serviceControlSection");
+  setMainPanelGroup("service");
 });
 
 bindClick("navSessionBtn", () => {
@@ -3005,19 +3048,19 @@ bindClick("navLayoutBtn", () => {
 });
 
 bindClick("navTlsBtn", () => {
-  scrollToSection("tlsManagementSection");
+  setMainPanelGroup("tls");
 });
 
 bindClick("navLoginBtn", () => {
-  scrollToSection("loginManagementSection");
+  setMainPanelGroup("login");
 });
 
 bindClick("navUserBtn", () => {
-  scrollToSection("userManagementSection");
+  setMainPanelGroup("user");
 });
 
 bindClick("navBackupBtn", () => {
-  scrollToSection("backupManagementSection");
+  setMainPanelGroup("backup");
 });
 
 bindClick("navFailuresBtn", async () => {
@@ -3030,11 +3073,11 @@ bindClick("navFailuresBtn", async () => {
 });
 
 bindClick("navDiagBtn", () => {
-  scrollToSection("diagnosticsSection");
+  setMainPanelGroup("diagnostics");
 });
 
 bindClick("navModulesBtn", () => {
-  scrollToSection("modulesSection");
+  setMainPanelGroup("modules");
 });
 
 bindClick("openTlsFromPanelBtn", () => {
@@ -3565,6 +3608,7 @@ closeFailuresModal();
 closeSessionModal();
 closeLayoutModal();
 selectSession({});
+setMainPanelGroup("default", { scroll: false });
 
 loadManagerPlugins()
   .catch((error) => {
