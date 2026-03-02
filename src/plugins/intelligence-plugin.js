@@ -8,6 +8,16 @@ import {
   upsertIntelligenceWorkflow,
 } from "../intelligence-workflow-store.js";
 import { createIntelligencePlanStore } from "../intelligence-plan-store.js";
+import {
+  buildAgentScaffoldPrompt,
+  composeAgentDraft,
+  listAgentScaffolds,
+} from "../intelligence-agent-scaffold.js";
+import {
+  deleteIntelligenceAgent,
+  readIntelligenceAgentStore,
+  upsertIntelligenceAgent,
+} from "../intelligence-agent-store.js";
 
 function normalizeAssistantProvider(value) {
   const normalized = String(value || "ollama").trim().toLowerCase();
@@ -200,6 +210,18 @@ function chooseWorkflowById(workflowStore, workflowId) {
     workflows[0] ||
     null
   );
+}
+
+function summarizeAgentForList(agent) {
+  const source = agent && typeof agent === "object" ? agent : {};
+  return {
+    id: String(source.id || "").trim(),
+    name: String(source.name || "").trim(),
+    intent: String(source.intent || "").trim(),
+    scaffoldCount: Array.isArray(source.scaffoldIds) ? source.scaffoldIds.length : 0,
+    approvalRequired: Boolean(source.approvals?.required),
+    updatedAt: String(source.updatedAt || "").trim(),
+  };
 }
 
 export function createIntelligencePlugin() {
@@ -592,6 +614,7 @@ export function createIntelligencePlugin() {
         installationConfigPath,
       }) {
         const workflowStorePath = path.join(workspaceDir, "data", "intelligence-workflows.json");
+        const agentStorePath = path.join(workspaceDir, "data", "intelligence-agents.json");
         const DEFAULT_PHASE0_WORKFLOW_ID = "troubleshoot-recommendation";
 
         async function buildAssistantContext(config) {
@@ -838,6 +861,118 @@ export function createIntelligencePlugin() {
             res.json({
               ok: true,
               result: result || {},
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiGet("/assistant/agents/scaffolds", async (_req, res) => {
+          try {
+            const scaffolds = listAgentScaffolds();
+            res.json({
+              ok: true,
+              scaffolds,
+            });
+          } catch (error) {
+            res.status(500).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiGet("/assistant/agents", async (_req, res) => {
+          try {
+            const store = await readIntelligenceAgentStore(agentStorePath);
+            res.json({
+              ok: true,
+              agents: (store.agents || []).map(summarizeAgentForList),
+              agentConfigs: store.agents || [],
+            });
+          } catch (error) {
+            res.status(500).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/agents/generate", async (req, res) => {
+          try {
+            const name = normalizeManagerString(req.body?.name, "Scaffold Agent");
+            const intent = normalizeManagerString(req.body?.intent, "");
+            if (!intent) {
+              throw new Error("intent is required.");
+            }
+            const scaffoldIds = Array.isArray(req.body?.scaffoldIds) ? req.body.scaffoldIds : [];
+
+            const scaffoldPrompt = buildAgentScaffoldPrompt({
+              name,
+              intent,
+              scaffoldIds,
+            });
+
+            const result = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.runWorkflowChat({
+                workflow: {
+                  id: "workflow-config-builder",
+                  name: "Workflow Config Builder",
+                  type: "workflow-config-builder",
+                },
+                message: scaffoldPrompt.prompt,
+                context: {
+                  requestSource: "manager-agent-scaffold",
+                  scaffoldIds: scaffoldPrompt.selectedIds,
+                },
+              });
+            });
+
+            const draft = composeAgentDraft({
+              name,
+              intent,
+              scaffoldIds: scaffoldPrompt.selectedIds,
+              workflowSuggestion: result?.suggestedWorkflow || {},
+              workflowResult: result || {},
+            });
+
+            res.json({
+              ok: true,
+              draft,
+              scaffolds: scaffoldPrompt.selectedScaffolds,
+              result: result || {},
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/agents/save", async (req, res) => {
+          try {
+            const draft = req.body?.agent && typeof req.body.agent === "object" ? req.body.agent : req.body || {};
+            const saved = await upsertIntelligenceAgent(agentStorePath, draft);
+            res.json({
+              ok: true,
+              agent: saved.agent || null,
+              agents: (saved.store?.agents || []).map(summarizeAgentForList),
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/agents/delete", async (req, res) => {
+          try {
+            const agentId = normalizeManagerString(req.body?.agentId, "");
+            const saved = await deleteIntelligenceAgent(agentStorePath, agentId);
+            res.json({
+              ok: true,
+              deletedAgentId: agentId,
+              agents: (saved.agents || []).map(summarizeAgentForList),
             });
           } catch (error) {
             res.status(400).json({

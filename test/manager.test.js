@@ -2763,6 +2763,93 @@ test("manager intelligence workflow endpoints support list, generate, save, chat
   });
 });
 
+test("manager intelligence agent scaffold endpoints support catalog, generate, save, and delete", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=ollama",
+        "ASSISTANT_URL=",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const catalog = await request(port, {
+        pathname: "/api/assistant/agents/scaffolds",
+      });
+      assert.equal(catalog.status, 200);
+      assert.equal(catalog.body.ok, true);
+      assert.equal(Array.isArray(catalog.body.scaffolds), true);
+      assert.equal(catalog.body.scaffolds.some((entry) => entry.id === "gather-diagnostics"), true);
+
+      const generated = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/agents/generate",
+        body: {
+          name: "TLS Setup Agent",
+          intent: "Guide TLS setup with diagnostics and explicit approvals.",
+          scaffoldIds: ["gather-diagnostics", "recommend-remediation", "request-human-approval"],
+        },
+      });
+      assert.equal(generated.status, 200);
+      assert.equal(generated.body.ok, true);
+      assert.equal(generated.body.draft.name, "TLS Setup Agent");
+      assert.equal(Array.isArray(generated.body.draft.scaffoldIds), true);
+      assert.equal(generated.body.draft.scaffoldIds.includes("request-human-approval"), true);
+      assert.equal(generated.body.draft.approvals.required, true);
+
+      const saved = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/agents/save",
+        body: {
+          agent: generated.body.draft,
+        },
+      });
+      assert.equal(saved.status, 200);
+      assert.equal(saved.body.ok, true);
+      assert.equal(saved.body.agent.id, generated.body.draft.id);
+
+      const listed = await request(port, {
+        pathname: "/api/assistant/agents",
+      });
+      assert.equal(listed.status, 200);
+      assert.equal(listed.body.ok, true);
+      assert.equal(Array.isArray(listed.body.agents), true);
+      assert.equal(listed.body.agents.some((entry) => entry.id === generated.body.draft.id), true);
+
+      const deleted = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/agents/delete",
+        body: {
+          agentId: generated.body.draft.id,
+        },
+      });
+      assert.equal(deleted.status, 200);
+      assert.equal(deleted.body.ok, true);
+      assert.equal(deleted.body.deletedAgentId, generated.body.draft.id);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager assistant phase0 plan endpoints create, collect evidence, and refine", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");

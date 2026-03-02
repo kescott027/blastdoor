@@ -225,6 +225,18 @@ function createState(root) {
     planRefine: root.querySelector("[data-intel-plan-refine]"),
     planRefresh: root.querySelector("[data-intel-plan-refresh]"),
     planOutput: root.querySelector("[data-intel-plan-output]"),
+    agentButton: root.querySelector("[data-intel-open-agent]"),
+    agentSection: root.querySelector("[data-intel-agent-section]"),
+    closeAgentButton: root.querySelector("[data-intel-close-agent]"),
+    agentRefresh: root.querySelector("[data-intel-agent-refresh]"),
+    agentSelect: root.querySelector("[data-intel-agent-select]"),
+    agentName: root.querySelector("[data-intel-agent-name]"),
+    agentIntent: root.querySelector("[data-intel-agent-intent]"),
+    agentScaffoldList: root.querySelector("[data-intel-agent-scaffolds]"),
+    agentGenerate: root.querySelector("[data-intel-agent-generate]"),
+    agentSave: root.querySelector("[data-intel-agent-save]"),
+    agentDelete: root.querySelector("[data-intel-agent-delete]"),
+    agentOutput: root.querySelector("[data-intel-agent-output]"),
     workflowSelect: root.querySelector("[data-intel-workflow-select]"),
     workflowLaunch: root.querySelector("[data-intel-workflow-launch]"),
     workflowNew: root.querySelector("[data-intel-workflow-new]"),
@@ -288,6 +300,18 @@ function validateState(state) {
     "planRefine",
     "planRefresh",
     "planOutput",
+    "agentButton",
+    "agentSection",
+    "closeAgentButton",
+    "agentRefresh",
+    "agentSelect",
+    "agentName",
+    "agentIntent",
+    "agentScaffoldList",
+    "agentGenerate",
+    "agentSave",
+    "agentDelete",
+    "agentOutput",
     "workflowSelect",
     "workflowLaunch",
     "workflowNew",
@@ -326,6 +350,7 @@ function createPanelMarkup() {
       <div class="button-row">
         <button type="button" data-intel-open-config>Configure Intelligence Module</button>
         <button type="button" data-intel-open-plan>Phase 0 Plan Lab</button>
+        <button type="button" data-intel-open-agent>Agent Scaffolding (Phase 1)</button>
         <button type="button" data-intel-open-workflows>Create Workflow</button>
       </div>
       <div class="grid">
@@ -438,6 +463,39 @@ function createPanelMarkup() {
       </div>
 
       <pre class="log-box" data-intel-plan-output></pre>
+    </section>
+
+    <section class="intel-agent-wrap hidden" data-intel-agent-section hidden>
+      <div class="intel-section-header">
+        <h3>Agent Scaffolding (Phase 1)</h3>
+        <button type="button" class="secondary" data-intel-close-agent>Close</button>
+      </div>
+      <p class="muted">Human-in-the-loop enforced. Generated drafts cannot auto-apply destructive actions.</p>
+      <div class="grid">
+        <label>Saved Agents
+          <select data-intel-agent-select></select>
+        </label>
+        <div class="intel-workflow-launch-cell">
+          <button type="button" class="secondary" data-intel-agent-refresh>Refresh</button>
+        </div>
+      </div>
+      <div class="grid">
+        <label>Agent Name
+          <input type="text" data-intel-agent-name placeholder="TLS Setup Agent" />
+        </label>
+      </div>
+      <label>Agent Intent
+        <textarea data-intel-agent-intent placeholder="Describe what this agent should accomplish, constraints, and expected outputs."></textarea>
+      </label>
+      <label>Scaffold Blocks
+        <div class="intel-agent-scaffold-list" data-intel-agent-scaffolds></div>
+      </label>
+      <div class="button-row">
+        <button type="button" data-intel-agent-generate>Generate Draft From Scaffolds</button>
+        <button type="button" data-intel-agent-save>Save Draft</button>
+        <button type="button" class="secondary" data-intel-agent-delete>Delete</button>
+      </div>
+      <pre class="log-box" data-intel-agent-output></pre>
     </section>
 
     <section class="intel-workflow-wrap hidden" data-intel-workflow-section hidden>
@@ -579,6 +637,40 @@ function renderPlanRunSelect(state, runs, selectedRunId = "") {
   }
 }
 
+function renderAgentSelect(state, agents, selectedAgentId = "") {
+  state.agentSelect.textContent = "";
+  for (const agent of agents) {
+    const option = document.createElement("option");
+    option.value = agent.id;
+    option.textContent = `${agent.name} (${agent.id})`;
+    state.agentSelect.append(option);
+  }
+  if (selectedAgentId && agents.some((entry) => entry.id === selectedAgentId)) {
+    state.agentSelect.value = selectedAgentId;
+  } else if (agents[0]) {
+    state.agentSelect.value = agents[0].id;
+  }
+}
+
+function renderScaffoldChecklist(state, scaffolds, selectedIds = []) {
+  state.agentScaffoldList.textContent = "";
+  const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+  for (const scaffold of scaffolds) {
+    const wrapper = document.createElement("label");
+    wrapper.className = "checkbox-label";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = scaffold.id;
+    checkbox.checked = selected.has(scaffold.id);
+    checkbox.setAttribute("data-intel-agent-scaffold-checkbox", scaffold.id);
+    const text = document.createElement("span");
+    text.textContent = `${scaffold.name} (${scaffold.id})`;
+    wrapper.append(checkbox);
+    wrapper.append(text);
+    state.agentScaffoldList.append(wrapper);
+  }
+}
+
 export async function registerManagerPlugin(context) {
   const panel = context.createPanel({
     pluginId: context.pluginId || "intelligence",
@@ -597,6 +689,10 @@ export async function registerManagerPlugin(context) {
     selectedWorkflowId: "",
     planRuns: [],
     selectedPlanRunId: "",
+    agentScaffolds: [],
+    agents: [],
+    selectedAgentId: "",
+    currentAgentDraft: null,
     launchedWorkflowId: "",
     refreshTick: 0,
     statusLoadedOnce: false,
@@ -633,6 +729,11 @@ export async function registerManagerPlugin(context) {
   function showPlanSection(forceVisible = null) {
     const nextVisible = forceVisible === null ? state.planSection.hidden : Boolean(forceVisible);
     showSection(state.planSection, nextVisible);
+  }
+
+  function showAgentSection(forceVisible = null) {
+    const nextVisible = forceVisible === null ? state.agentSection.hidden : Boolean(forceVisible);
+    showSection(state.agentSection, nextVisible);
   }
 
   function hideChatSection() {
@@ -765,6 +866,117 @@ export async function registerManagerPlugin(context) {
     panel.setStatus("Generated next plan layer from collected evidence.");
   }
 
+  function getSelectedAgentScaffoldIds() {
+    const checkboxes = state.agentScaffoldList.querySelectorAll("input[data-intel-agent-scaffold-checkbox]");
+    return [...checkboxes]
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => asString(checkbox.value, "").trim())
+      .filter(Boolean);
+  }
+
+  function applyAgentDraftToForm(agent = null) {
+    const current = agent && typeof agent === "object" ? agent : null;
+    if (!current) {
+      state.agentName.value = "";
+      state.agentIntent.value = "";
+      renderScaffoldChecklist(state, runtime.agentScaffolds, []);
+      state.agentOutput.textContent = JSON.stringify({ ok: true, draft: null }, null, 2);
+      runtime.currentAgentDraft = null;
+      return;
+    }
+    state.agentName.value = asString(current.name, "");
+    state.agentIntent.value = asString(current.intent, "");
+    renderScaffoldChecklist(state, runtime.agentScaffolds, Array.isArray(current.scaffoldIds) ? current.scaffoldIds : []);
+    state.agentOutput.textContent = JSON.stringify({ ok: true, draft: current }, null, 2);
+    runtime.currentAgentDraft = current;
+  }
+
+  async function loadAgentCatalog() {
+    const payload = await context.apiGet("/assistant/agents/scaffolds");
+    runtime.agentScaffolds = Array.isArray(payload.scaffolds) ? payload.scaffolds : [];
+    if (!runtime.currentAgentDraft) {
+      renderScaffoldChecklist(state, runtime.agentScaffolds, []);
+    } else {
+      renderScaffoldChecklist(
+        state,
+        runtime.agentScaffolds,
+        Array.isArray(runtime.currentAgentDraft.scaffoldIds) ? runtime.currentAgentDraft.scaffoldIds : [],
+      );
+    }
+  }
+
+  async function loadAgents(showMessage = false, preferredAgentId = "") {
+    const payload = await context.apiGet("/assistant/agents");
+    const agents = Array.isArray(payload.agentConfigs) ? payload.agentConfigs : [];
+    runtime.agents = agents;
+    renderAgentSelect(state, agents, preferredAgentId || runtime.selectedAgentId);
+    runtime.selectedAgentId = asString(state.agentSelect.value, "");
+    const selectedAgent =
+      agents.find((entry) => entry.id === runtime.selectedAgentId) ||
+      agents.find((entry) => entry.id === preferredAgentId) ||
+      null;
+    applyAgentDraftToForm(selectedAgent);
+    if (showMessage) {
+      panel.setStatus(`Loaded ${agents.length} scaffold agents.`);
+    }
+  }
+
+  async function generateAgentDraft() {
+    const name = asString(state.agentName.value, "").trim() || "Scaffold Agent";
+    const intent = asString(state.agentIntent.value, "").trim();
+    if (!intent) {
+      throw new Error("Agent intent is required.");
+    }
+    const scaffoldIds = getSelectedAgentScaffoldIds();
+    const payload = await context.apiPost("/assistant/agents/generate", {
+      name,
+      intent,
+      scaffoldIds,
+    });
+    state.agentOutput.textContent = JSON.stringify(payload || {}, null, 2);
+    runtime.currentAgentDraft = payload?.draft || null;
+    if (runtime.currentAgentDraft) {
+      applyAgentDraftToForm(runtime.currentAgentDraft);
+      panel.setStatus("Generated scaffold-based agent draft. Review before saving.");
+    }
+  }
+
+  async function saveAgentDraft() {
+    const sourceDraft = runtime.currentAgentDraft && typeof runtime.currentAgentDraft === "object" ? runtime.currentAgentDraft : {};
+    const draft = {
+      ...sourceDraft,
+      name: asString(state.agentName.value, "").trim() || asString(sourceDraft.name, "").trim() || "Scaffold Agent",
+      intent: asString(state.agentIntent.value, "").trim() || asString(sourceDraft.intent, "").trim(),
+      scaffoldIds: getSelectedAgentScaffoldIds(),
+    };
+    if (!draft.intent) {
+      throw new Error("Agent intent is required before saving.");
+    }
+    if (!draft.id) {
+      throw new Error("Generate a draft first so it has an id.");
+    }
+    const payload = await context.apiPost("/assistant/agents/save", {
+      agent: draft,
+    });
+    state.agentOutput.textContent = JSON.stringify(payload || {}, null, 2);
+    await loadAgents(false, payload?.agent?.id || draft.id);
+    panel.setStatus(`Saved scaffold agent '${payload?.agent?.name || draft.name}'.`);
+  }
+
+  async function deleteAgentDraft() {
+    const agentId = asString(state.agentSelect.value, "").trim() || asString(runtime.currentAgentDraft?.id, "").trim();
+    if (!agentId) {
+      throw new Error("Select an agent to delete.");
+    }
+    const payload = await context.apiPost("/assistant/agents/delete", {
+      agentId,
+    });
+    state.agentOutput.textContent = JSON.stringify(payload || {}, null, 2);
+    runtime.currentAgentDraft = null;
+    await loadAgents(false);
+    panel.setStatus(`Deleted scaffold agent '${agentId}'.`);
+  }
+
   async function saveWorkflow() {
     const draft = activeWorkflowFromForm();
     if (!draft.name) {
@@ -876,6 +1088,9 @@ export async function registerManagerPlugin(context) {
   state.planButton.addEventListener("click", () => {
     showPlanSection();
   });
+  state.agentButton.addEventListener("click", () => {
+    showAgentSection();
+  });
   state.workflowsButton.addEventListener("click", () => {
     showWorkflowSection();
     hideChatSection();
@@ -894,6 +1109,9 @@ export async function registerManagerPlugin(context) {
   state.closePlanButton.addEventListener("click", () => {
     showPlanSection(false);
   });
+  state.closeAgentButton.addEventListener("click", () => {
+    showAgentSection(false);
+  });
   state.closeWorkflowButton.addEventListener("click", () => {
     showWorkflowSection(false);
     hideChatSection();
@@ -904,6 +1122,8 @@ export async function registerManagerPlugin(context) {
       await loadStatus(true);
       await loadWorkflows(false);
       await loadPlanRuns(false);
+      await loadAgentCatalog();
+      await loadAgents(false);
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
@@ -948,6 +1168,49 @@ export async function registerManagerPlugin(context) {
       await loadPlanRun(runId);
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.agentRefresh.addEventListener("click", async () => {
+    try {
+      await loadAgentCatalog();
+      await loadAgents(true);
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.agentGenerate.addEventListener("click", async () => {
+    try {
+      await generateAgentDraft();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.agentSave.addEventListener("click", async () => {
+    try {
+      await saveAgentDraft();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.agentDelete.addEventListener("click", async () => {
+    try {
+      await deleteAgentDraft();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.agentSelect.addEventListener("change", () => {
+    const selectedAgentId = asString(state.agentSelect.value, "");
+    runtime.selectedAgentId = selectedAgentId;
+    const selectedAgent = runtime.agents.find((entry) => entry.id === selectedAgentId) || null;
+    applyAgentDraftToForm(selectedAgent);
+    if (selectedAgent) {
+      panel.setStatus(`Selected scaffold agent '${selectedAgent.name}'.`);
     }
   });
 
@@ -1078,12 +1341,15 @@ export async function registerManagerPlugin(context) {
 
   showConfigSection(false);
   showPlanSection(false);
+  showAgentSection(false);
   showWorkflowSection(false);
 
   try {
     await loadStatus();
     await loadWorkflows();
     await loadPlanRuns(false);
+    await loadAgentCatalog();
+    await loadAgents(false);
   } catch (error) {
     panel.setStatus(error?.message || String(error), true);
   }
@@ -1095,6 +1361,8 @@ export async function registerManagerPlugin(context) {
         await loadStatus();
         await loadWorkflows();
         await loadPlanRuns(false);
+        await loadAgentCatalog();
+        await loadAgents(false);
         return;
       }
       if (runtime.refreshTick % 10 === 0) {
