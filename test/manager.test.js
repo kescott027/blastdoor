@@ -1442,7 +1442,7 @@ test("manager diagnostics endpoint returns sanitized report", async () => {
         "POSTGRES_URL=postgres://blastdoor:super-secret@127.0.0.1:5432/blastdoor",
         "AUTH_USERNAME=gm",
         "AUTH_PASSWORD_HASH=scrypt$param$hashvalue",
-        "SESSION_SECRET=super-session-secret",
+        "SESSION_SECRET=super-session-secret-super-session-secret",
         "REQUIRE_TOTP=true",
         "TOTP_SECRET=totp-shared-secret",
         "DEBUG_MODE=true",
@@ -1471,10 +1471,14 @@ test("manager diagnostics endpoint returns sanitized report", async () => {
       assert.equal(config.SESSION_SECRET, "[REDACTED]");
       assert.equal(config.TOTP_SECRET, "[REDACTED]");
       assert.match(config.POSTGRES_URL, /postgres:\/\/REDACTED:REDACTED@127\.0\.0\.1:5432\/blastdoor/);
+      assert.equal(typeof response.body.report.loginAppearance, "object");
+      assert.equal(typeof response.body.report.loginAppearance.copyPasteText, "string");
+      assert.equal(response.body.report.loginAppearance.activeThemeId, "blastdoor-default");
 
       assert.doesNotMatch(response.body.summary, /super-session-secret/);
       assert.doesNotMatch(response.body.summary, /super-secret/);
       assert.match(response.body.summary, /Redactions:/);
+      assert.match(response.body.summary, /Login Theme:/);
 
       const aliasResponse = await request(port, { pathname: "/manager/api/diagnostics" });
       assert.equal(aliasResponse.status, 200);
@@ -1632,7 +1636,10 @@ test("manager troubleshooting report includes WSL guidance when running in WSL",
       assert.equal(report.environment.isWsl, true);
       assert.equal(Array.isArray(report.checks), true);
       assert.ok(report.checks.find((check) => check.id === "network.wsl2-portproxy"));
+      assert.ok(report.checks.find((check) => String(check.id || "").startsWith("login-theme.")));
       assert.ok(report.safeActions.find((action) => action.id === "detect.wsl-portproxy"));
+      assert.equal(typeof report.loginAppearance, "object");
+      assert.equal(typeof report.loginAppearance.copyPasteText, "string");
 
       const guided = report.guidedActions.find((entry) => entry.id === "guide.wsl2-portproxy-fix");
       assert.ok(guided);

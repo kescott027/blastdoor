@@ -11,6 +11,8 @@
   --accent: #9be0ff;
   --accent-2: #b6ffac;
   --danger: #ff8a8a;
+  --controls-dock-width: 220px;
+  --controls-dock-gap: 14px;
 }
 
 * {
@@ -136,24 +138,59 @@ body {
 .console-shell {
   width: min(1420px, 98vw);
   margin: 0.9rem auto 2rem;
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 1rem;
+  padding-left: calc(var(--controls-dock-width) + var(--controls-dock-gap));
   align-items: start;
 }
 
 .left-dock {
-  position: sticky;
-  top: 1rem;
+  position: fixed;
+  top: 8.8rem;
+  left: max(0.5rem, calc((100vw - min(1420px, 98vw)) / 2));
+  width: var(--controls-dock-width);
+  max-height: calc(100vh - 9.6rem);
+  overflow: auto;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
   padding: 0.8rem;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
+  z-index: 30;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.left-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
 }
 
 .left-dock h2 {
   margin: 0 0 0.6rem;
   font-size: 1rem;
+}
+
+.left-dock-header h2 {
+  margin: 0;
+}
+
+body.controls-dock-collapsed .console-shell {
+  padding-left: 0;
+}
+
+body.controls-dock-collapsed .left-dock {
+  transform: translateX(calc(-1 * (var(--controls-dock-width) + 1.2rem)));
+  opacity: 0;
+  pointer-events: none;
+}
+
+.controls-dock-open {
+  position: fixed;
+  left: 0.5rem;
+  top: 8.9rem;
+  z-index: 34;
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
 }
 
 .dock-menu {
@@ -1135,11 +1172,26 @@ textarea:focus {
 
   .console-shell {
     width: calc(100vw - 1rem);
-    grid-template-columns: 1fr;
+    padding-left: 0;
   }
 
   .left-dock {
-    position: static;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0 12px 12px 0;
+    border-left: 0;
+    z-index: 45;
+  }
+
+  body.controls-dock-collapsed .left-dock {
+    transform: translateX(calc(-1 * (var(--controls-dock-width) + 1rem)));
+  }
+
+  .controls-dock-open {
+    top: 0.75rem;
+    z-index: 46;
   }
 
   .service-panel,

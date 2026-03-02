@@ -58,9 +58,16 @@
       </div>
     </section>
 
+    <button id="controlsDockOpenBtn" type="button" class="controls-dock-open hidden" hidden>
+      Show Controls
+    </button>
+
     <div class="console-shell">
-      <aside class="left-dock">
-        <h2>Controls</h2>
+      <aside class="left-dock" id="controlsDock">
+        <div class="left-dock-header">
+          <h2>Controls</h2>
+          <button id="controlsDockHideBtn" type="button" class="ghost-btn">Hide</button>
+        </div>
         <div class="dock-menu">
           <button id="navServiceBtn" type="button">Service Control</button>
           <button id="navConfigBtn" type="button">Configuration</button>

@@ -27,6 +27,7 @@ import { createConfigStore } from "./config-store.js";
 import { createBlastdoorApi } from "./blastdoor-api.js";
 import { createBlastDoorsStateController } from "./blastdoors-state.js";
 import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
+import { buildThemeAssetUrl, normalizeThemeAssetPath as normalizeThemeAssetPathByType } from "./login-theme.js";
 import { createPluginManager } from "./plugins/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -944,16 +945,103 @@ export function createApp(config, options = {}) {
     });
   });
 
+  function normalizeThemeAssetPath(value, type) {
+    return normalizeThemeAssetPathByType(value, type);
+  }
+
+  function resolveThemeAssetAbsolutePath(relativePath, type) {
+    const normalizedPath = normalizeThemeAssetPath(relativePath, type);
+    if (!normalizedPath) {
+      return "";
+    }
+
+    const baseDir = path.resolve(graphicsDir);
+    const absolutePath = path.resolve(baseDir, normalizedPath);
+    if (absolutePath === baseDir || !absolutePath.startsWith(`${baseDir}${path.sep}`)) {
+      return "";
+    }
+
+    return absolutePath;
+  }
+
+  async function themeAssetExists(relativePath, type) {
+    const absolutePath = resolveThemeAssetAbsolutePath(relativePath, type);
+    if (!absolutePath) {
+      return false;
+    }
+
+    try {
+      await fs.access(absolutePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function sanitizeResolvedLoginTheme(theme) {
+    const normalized = {
+      id: "",
+      name: "Default",
+      logoPath: "",
+      logoUrl: "",
+      closedBackgroundPath: "",
+      closedBackgroundUrl: "",
+      openBackgroundPath: "",
+      openBackgroundUrl: "",
+      createdAt: "",
+      updatedAt: "",
+      ...(theme && typeof theme === "object" ? theme : {}),
+    };
+
+    const assetDefs = [
+      { key: "logo", pathKey: "logoPath", urlKey: "logoUrl", type: "logo" },
+      { key: "closedBackground", pathKey: "closedBackgroundPath", urlKey: "closedBackgroundUrl", type: "background" },
+      { key: "openBackground", pathKey: "openBackgroundPath", urlKey: "openBackgroundUrl", type: "background" },
+    ];
+
+    for (const asset of assetDefs) {
+      const normalizedPath = normalizeThemeAssetPath(normalized[asset.pathKey], asset.type);
+      if (!normalizedPath) {
+        normalized[asset.pathKey] = "";
+        normalized[asset.urlKey] = "";
+        continue;
+      }
+
+      const exists = await themeAssetExists(normalizedPath, asset.type);
+      if (exists) {
+        normalized[asset.pathKey] = normalizedPath;
+        normalized[asset.urlKey] = buildThemeAssetUrl(normalizedPath);
+        continue;
+      }
+
+      if (logger.debugEnabled) {
+        logger.warn("theme.asset_missing", {
+          assetType: asset.key,
+          assetPath: normalizedPath,
+          themeId: normalized.id || "",
+        });
+      }
+      normalized[asset.pathKey] = "";
+      normalized[asset.urlKey] = "";
+    }
+
+    return normalized;
+  }
+
   async function resolveLoginTheme() {
     try {
-      return await blastdoorApi.getActiveTheme();
+      const theme = await blastdoorApi.getActiveTheme();
+      return await sanitizeResolvedLoginTheme(theme);
     } catch (error) {
       logger.warn("theme.load_failed", {
         error: {
           message: error instanceof Error ? error.message : String(error),
         },
       });
-      return await blastdoorApi.getActiveTheme().catch(() => ({
+      return await blastdoorApi
+        .getActiveTheme()
+        .then((theme) => sanitizeResolvedLoginTheme(theme))
+        .catch(() => ({
         id: "",
         name: "Default",
         logoPath: "",
@@ -964,7 +1052,7 @@ export function createApp(config, options = {}) {
         openBackgroundUrl: "",
         createdAt: "",
         updatedAt: "",
-      }));
+        }));
     }
   }
 

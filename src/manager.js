@@ -690,6 +690,7 @@ function createDiagnosticsSummary(report) {
   const status = report.serviceStatus || {};
   const health = report.health || {};
   const env = report.environment || {};
+  const loginAppearance = report.loginAppearance || {};
   const usesPostgres = config.PASSWORD_STORE_MODE === "postgres" || config.CONFIG_STORE_MODE === "postgres";
   const usesSqlite = config.PASSWORD_STORE_MODE === "sqlite" || config.CONFIG_STORE_MODE === "sqlite";
   const backend = usesPostgres ? "postgres" : usesSqlite ? "sqlite" : "env/file";
@@ -709,6 +710,8 @@ function createDiagnosticsSummary(report) {
     `Config Store Mode: ${config.CONFIG_STORE_MODE || "unset"}`,
     `Database Backend: ${backend}`,
     `Postgres URL: ${config.POSTGRES_URL || "n/a"}`,
+    `Login Theme: ${loginAppearance.activeThemeName || "n/a"} (${loginAppearance.activeThemeId || "n/a"})`,
+    `Login Assets: logo=${loginAppearance.assets?.logo?.status || "n/a"}, closed=${loginAppearance.assets?.closedBackground?.status || "n/a"}, open=${loginAppearance.assets?.openBackground?.status || "n/a"}`,
     ...pluginLines,
     `Debug Mode: ${config.DEBUG_MODE || "false"} (log: ${config.DEBUG_LOG_FILE || "unset"})`,
     `Manager UI: http://${env.managerHost || DEFAULT_MANAGER_HOST}:${env.managerPort || DEFAULT_MANAGER_PORT}/manager/`,
@@ -717,6 +720,76 @@ function createDiagnosticsSummary(report) {
   ];
 
   return lines.join("\n");
+}
+
+function normalizeThemeAssetRelativePath(value) {
+  const normalized = normalizeString(value, "").replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!normalized || normalized.includes("..")) {
+    return "";
+  }
+  return normalized;
+}
+
+function resolveThemeAssetAbsolutePath(graphicsDir, relativePath) {
+  const normalized = normalizeThemeAssetRelativePath(relativePath);
+  if (!normalized) {
+    return "";
+  }
+
+  const baseDir = path.resolve(graphicsDir);
+  const absolutePath = path.resolve(baseDir, normalized);
+  if (absolutePath === baseDir || !absolutePath.startsWith(`${baseDir}${path.sep}`)) {
+    return "";
+  }
+
+  return absolutePath;
+}
+
+function normalizeLoginAppearanceTheme(theme) {
+  const normalized = theme && typeof theme === "object" ? theme : {};
+  return {
+    id: normalizeString(normalized.id, ""),
+    name: normalizeString(normalized.name, ""),
+    logoPath: normalizeThemeAssetRelativePath(normalized.logoPath),
+    logoUrl: normalizeString(normalized.logoUrl, ""),
+    closedBackgroundPath: normalizeThemeAssetRelativePath(normalized.closedBackgroundPath),
+    closedBackgroundUrl: normalizeString(normalized.closedBackgroundUrl, ""),
+    openBackgroundPath: normalizeThemeAssetRelativePath(normalized.openBackgroundPath),
+    openBackgroundUrl: normalizeString(normalized.openBackgroundUrl, ""),
+    loginBoxMode: normalizeString(normalized.loginBoxMode, "dark"),
+    loginBoxWidthPercent: Number.parseInt(String(normalized.loginBoxWidthPercent || 100), 10) || 100,
+    loginBoxHeightPercent: Number.parseInt(String(normalized.loginBoxHeightPercent || 100), 10) || 100,
+    loginBoxOpacityPercent: Number.parseInt(String(normalized.loginBoxOpacityPercent || 100), 10) || 100,
+    loginBoxHoverOpacityPercent: Number.parseInt(String(normalized.loginBoxHoverOpacityPercent || 100), 10) || 100,
+    loginBoxPosXPercent: Number.parseInt(String(normalized.loginBoxPosXPercent || 50), 10) || 50,
+    loginBoxPosYPercent: Number.parseInt(String(normalized.loginBoxPosYPercent || 50), 10) || 50,
+    logoSizePercent: Number.parseInt(String(normalized.logoSizePercent || 30), 10) || 30,
+    logoOffsetXPercent: Number.parseInt(String(normalized.logoOffsetXPercent || 2), 10) || 2,
+    logoOffsetYPercent: Number.parseInt(String(normalized.logoOffsetYPercent || 2), 10) || 2,
+    backgroundZoomPercent: Number.parseInt(String(normalized.backgroundZoomPercent || 100), 10) || 100,
+  };
+}
+
+function formatLoginAppearanceCopyPasteText(details) {
+  return [
+    `activeThemeId: ${details.activeThemeId || ""}`,
+    `theme.id: ${details.activeTheme.id || ""}`,
+    `theme.name: ${details.activeTheme.name || ""}`,
+    `theme.logoPath: ${details.activeTheme.logoPath || ""}`,
+    `theme.closedBackgroundPath: ${details.activeTheme.closedBackgroundPath || ""}`,
+    `theme.openBackgroundPath: ${details.activeTheme.openBackgroundPath || ""}`,
+    `theme.loginBoxMode: ${details.activeTheme.loginBoxMode || "dark"}`,
+    `theme.loginBoxWidthPercent: ${details.activeTheme.loginBoxWidthPercent}`,
+    `theme.loginBoxHeightPercent: ${details.activeTheme.loginBoxHeightPercent}`,
+    `theme.loginBoxOpacityPercent: ${details.activeTheme.loginBoxOpacityPercent}`,
+    `theme.loginBoxHoverOpacityPercent: ${details.activeTheme.loginBoxHoverOpacityPercent}`,
+    `theme.loginBoxPosXPercent: ${details.activeTheme.loginBoxPosXPercent}`,
+    `theme.loginBoxPosYPercent: ${details.activeTheme.loginBoxPosYPercent}`,
+    `theme.logoSizePercent: ${details.activeTheme.logoSizePercent}`,
+    `theme.logoOffsetXPercent: ${details.activeTheme.logoOffsetXPercent}`,
+    `theme.logoOffsetYPercent: ${details.activeTheme.logoOffsetYPercent}`,
+    `theme.backgroundZoomPercent: ${details.activeTheme.backgroundZoomPercent}`,
+  ].join("\n");
 }
 
 async function readEnvConfig(envPath) {
@@ -1893,12 +1966,84 @@ async function runTroubleshootAction({ actionId, config, environment, workspaceD
   throw new Error(`Unknown or unsupported troubleshooting action '${actionId}'.`);
 }
 
-function createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus }) {
+function createLoginAppearanceChecks(loginAppearance) {
+  if (!loginAppearance || typeof loginAppearance !== "object") {
+    return [];
+  }
+
+  if (loginAppearance.error) {
+    return [
+      {
+        id: "login-theme.diagnostics-error",
+        title: "Login appearance diagnostics",
+        status: "warn",
+        detail: `Unable to evaluate login appearance settings (${loginAppearance.error}).`,
+        recommendation: "Verify theme store configuration and graphics directory permissions.",
+      },
+    ];
+  }
+
+  const checks = [];
+  const themeName = loginAppearance.activeThemeName || loginAppearance.activeThemeId || "unknown";
+  const logo = loginAppearance.assets?.logo;
+  const closedBackground = loginAppearance.assets?.closedBackground;
+  const openBackground = loginAppearance.assets?.openBackground;
+
+  if (logo?.exists === false) {
+    checks.push({
+      id: "login-theme.logo-missing",
+      title: "Login logo asset",
+      status: "warn",
+      detail: `Active theme '${themeName}' references missing logo asset '${logo.path || "unset"}'.`,
+      recommendation: "Select a valid logo in Login Screen Management, or clear the logo path.",
+    });
+  }
+
+  if (closedBackground?.exists === false) {
+    checks.push({
+      id: "login-theme.closed-background-missing",
+      title: "Login closed background asset",
+      status: "error",
+      detail: `Active theme '${themeName}' references missing closed background '${closedBackground.path || "unset"}'.`,
+      recommendation: "Set a valid closed background image in Login Screen Management.",
+    });
+  }
+
+  if (openBackground?.exists === false) {
+    checks.push({
+      id: "login-theme.open-background-missing",
+      title: "Login open background asset",
+      status: "warn",
+      detail: `Active theme '${themeName}' references missing open background '${openBackground.path || "unset"}'.`,
+      recommendation: "Set a valid open background image, or leave it empty to keep closed background during transition.",
+    });
+  }
+
+  if (checks.length === 0) {
+    checks.push({
+      id: "login-theme.assets",
+      title: "Login theme assets",
+      status: "ok",
+      detail: `Active theme '${themeName}' asset paths are valid.`,
+      recommendation: null,
+    });
+  }
+
+  return checks;
+}
+
+function createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus, loginAppearance }) {
+  const checks = [
+    ...createTroubleshootChecks({ config, health, foundryHealth, environment }),
+    ...createLoginAppearanceChecks(loginAppearance),
+  ];
+
   return {
     generatedAt: new Date().toISOString(),
     serviceStatus,
     environment,
-    checks: createTroubleshootChecks({ config, health, foundryHealth, environment }),
+    loginAppearance,
+    checks,
     safeActions: buildSafeActions(environment),
     guidedActions: buildGuidedActions({ environment, config }),
   };
@@ -1968,6 +2113,152 @@ export function createManagerApp(options = {}) {
       if (typeof blastdoorApi?.close === "function") {
         await blastdoorApi.close();
       }
+    }
+  }
+
+  async function resolveThemeAssetState(relativePath, url) {
+    const normalizedPath = normalizeThemeAssetRelativePath(relativePath);
+    const normalizedUrl = normalizeString(url, "");
+    if (!normalizedPath) {
+      return {
+        path: "",
+        url: normalizedUrl,
+        exists: null,
+        status: "unset",
+      };
+    }
+
+    const absolutePath = resolveThemeAssetAbsolutePath(graphicsDir, normalizedPath);
+    if (!absolutePath) {
+      return {
+        path: normalizedPath,
+        url: normalizedUrl,
+        exists: false,
+        status: "invalid-path",
+      };
+    }
+
+    try {
+      await fs.access(absolutePath);
+      return {
+        path: normalizedPath,
+        url: normalizedUrl,
+        exists: true,
+        status: "ok",
+      };
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        return {
+          path: normalizedPath,
+          url: normalizedUrl,
+          exists: false,
+          status: "missing",
+        };
+      }
+      return {
+        path: normalizedPath,
+        url: normalizedUrl,
+        exists: false,
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async function resolveLoginAppearanceDetails() {
+    try {
+      return await withBlastdoorApi(async ({ blastdoorApi }) => {
+        const [store, assets] = await Promise.all([blastdoorApi.readThemeStore(), blastdoorApi.listThemeAssets()]);
+        const themes = Array.isArray(store?.themes) ? store.themes : [];
+        const activeThemeId = normalizeString(store?.activeThemeId, DEFAULT_THEME_ID);
+        const activeThemeRaw = themes.find((theme) => normalizeString(theme?.id, "") === activeThemeId) || themes[0] || null;
+        const activeTheme = normalizeLoginAppearanceTheme(activeThemeRaw ? mapThemeForClient(activeThemeRaw) : {});
+
+        const [logoState, closedBackgroundState, openBackgroundState] = await Promise.all([
+          resolveThemeAssetState(activeTheme.logoPath, activeTheme.logoUrl),
+          resolveThemeAssetState(activeTheme.closedBackgroundPath, activeTheme.closedBackgroundUrl),
+          resolveThemeAssetState(activeTheme.openBackgroundPath, activeTheme.openBackgroundUrl),
+        ]);
+
+        const details = {
+          activeThemeId,
+          activeThemeName: activeTheme.name || activeTheme.id || "",
+          themesAvailable: themes.length,
+          themeCatalog: themes.map((theme) => ({
+            id: normalizeString(theme?.id, ""),
+            name: normalizeString(theme?.name, ""),
+          })),
+          assetCounts: {
+            logos: Array.isArray(assets?.logos) ? assets.logos.length : 0,
+            backgrounds: Array.isArray(assets?.backgrounds) ? assets.backgrounds.length : 0,
+          },
+          assets: {
+            logo: logoState,
+            closedBackground: closedBackgroundState,
+            openBackground: openBackgroundState,
+          },
+          activeTheme: {
+            id: activeTheme.id,
+            name: activeTheme.name,
+            logoPath: activeTheme.logoPath,
+            logoUrl: activeTheme.logoUrl,
+            closedBackgroundPath: activeTheme.closedBackgroundPath,
+            closedBackgroundUrl: activeTheme.closedBackgroundUrl,
+            openBackgroundPath: activeTheme.openBackgroundPath,
+            openBackgroundUrl: activeTheme.openBackgroundUrl,
+            loginBoxMode: activeTheme.loginBoxMode,
+            loginBoxWidthPercent: activeTheme.loginBoxWidthPercent,
+            loginBoxHeightPercent: activeTheme.loginBoxHeightPercent,
+            loginBoxOpacityPercent: activeTheme.loginBoxOpacityPercent,
+            loginBoxHoverOpacityPercent: activeTheme.loginBoxHoverOpacityPercent,
+            loginBoxPosXPercent: activeTheme.loginBoxPosXPercent,
+            loginBoxPosYPercent: activeTheme.loginBoxPosYPercent,
+            logoSizePercent: activeTheme.logoSizePercent,
+            logoOffsetXPercent: activeTheme.logoOffsetXPercent,
+            logoOffsetYPercent: activeTheme.logoOffsetYPercent,
+            backgroundZoomPercent: activeTheme.backgroundZoomPercent,
+          },
+        };
+
+        details.copyPasteText = formatLoginAppearanceCopyPasteText(details);
+        return details;
+      });
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : String(error),
+        activeThemeId: "",
+        activeThemeName: "",
+        themesAvailable: 0,
+        themeCatalog: [],
+        assetCounts: { logos: 0, backgrounds: 0 },
+        assets: {
+          logo: { path: "", url: "", exists: null, status: "unknown" },
+          closedBackground: { path: "", url: "", exists: null, status: "unknown" },
+          openBackground: { path: "", url: "", exists: null, status: "unknown" },
+        },
+        activeTheme: {
+          id: "",
+          name: "",
+          logoPath: "",
+          logoUrl: "",
+          closedBackgroundPath: "",
+          closedBackgroundUrl: "",
+          openBackgroundPath: "",
+          openBackgroundUrl: "",
+          loginBoxMode: "dark",
+          loginBoxWidthPercent: 100,
+          loginBoxHeightPercent: 100,
+          loginBoxOpacityPercent: 100,
+          loginBoxHoverOpacityPercent: 100,
+          loginBoxPosXPercent: 50,
+          loginBoxPosYPercent: 50,
+          logoSizePercent: 30,
+          logoOffsetXPercent: 2,
+          logoOffsetYPercent: 2,
+          backgroundZoomPercent: 100,
+        },
+        copyPasteText: "",
+      };
     }
   }
 
@@ -4250,6 +4541,7 @@ export function createManagerApp(options = {}) {
       const health = await checkBlastdoorHealth(config);
       const environment = detectEnvironmentInfo({ workspaceDir, envPath });
       const diagnosticsConfig = sanitizeConfigForDiagnostics(config);
+      const loginAppearance = await resolveLoginAppearanceDetails();
 
       const report = {
         generatedAt: new Date().toISOString(),
@@ -4257,6 +4549,7 @@ export function createManagerApp(options = {}) {
         health,
         environment,
         config: diagnosticsConfig,
+        loginAppearance,
       };
 
       res.json({
@@ -4277,7 +4570,8 @@ export function createManagerApp(options = {}) {
       const serviceStatus = processState.getStatus();
       const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
       const environment = detectEnvironmentInfo({ workspaceDir, envPath });
-      const report = createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus });
+      const loginAppearance = await resolveLoginAppearanceDetails();
+      const report = createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus, loginAppearance });
 
       res.json({
         ok: true,

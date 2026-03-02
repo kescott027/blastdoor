@@ -30,6 +30,8 @@ const postgresHealthValue = document.getElementById("postgresHealthValue");
 const objectStoreTypeValue = document.getElementById("objectStoreTypeValue");
 const objectStoreReachableValue = document.getElementById("objectStoreReachableValue");
 const pluginsStatusValue = document.getElementById("pluginsStatusValue");
+const controlsDockOpenBtn = document.getElementById("controlsDockOpenBtn");
+const controlsDockHideBtn = document.getElementById("controlsDockHideBtn");
 const configBackupStatusMessage = document.getElementById("configBackupStatusMessage");
 const configBackupName = document.getElementById("configBackupName");
 const configBackupSelect = document.getElementById("configBackupSelect");
@@ -141,6 +143,7 @@ const tlsDetectionOutput = document.getElementById("tlsDetectionOutput");
 const tlsPlanOutput = document.getElementById("tlsPlanOutput");
 const API_BASE = resolveApiBasePath(window.location.href);
 const API_BASE_CANDIDATES = getApiBaseCandidates(API_BASE);
+const CONTROLS_DOCK_STORAGE_KEY = "blastdoor.manager.controlsDockCollapsed";
 const THEME_LAYOUT_DEFAULTS = {
   loginBoxWidthPercent: 100,
   loginBoxHeightPercent: 100,
@@ -285,6 +288,38 @@ function bindClick(id, handler) {
 
   element.addEventListener("click", handler);
   return true;
+}
+
+function setControlsDockCollapsed(collapsed, persist = true) {
+  const isCollapsed = Boolean(collapsed);
+  document.body.classList.toggle("controls-dock-collapsed", isCollapsed);
+
+  if (controlsDockOpenBtn) {
+    controlsDockOpenBtn.hidden = !isCollapsed;
+    controlsDockOpenBtn.classList.toggle("hidden", !isCollapsed);
+  }
+
+  if (controlsDockHideBtn) {
+    controlsDockHideBtn.setAttribute("aria-expanded", String(!isCollapsed));
+  }
+
+  if (!persist) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(CONTROLS_DOCK_STORAGE_KEY, isCollapsed ? "1" : "0");
+  } catch {
+    // Ignore storage errors and continue with in-memory state.
+  }
+}
+
+function loadControlsDockCollapsedState() {
+  try {
+    return window.localStorage.getItem(CONTROLS_DOCK_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 function ensureThemeEditorFormControls() {
@@ -3067,6 +3102,14 @@ function toggleMainPanelSections(sectionIds, options = {}) {
   scrollToSection(sections[0].id);
 }
 
+bindClick("controlsDockHideBtn", () => {
+  setControlsDockCollapsed(true);
+});
+
+bindClick("controlsDockOpenBtn", () => {
+  setControlsDockCollapsed(false);
+});
+
 bindClick("navServiceBtn", () => {
   toggleMainPanelSections("serviceControlSection");
 });
@@ -3660,6 +3703,7 @@ closeSessionModal();
 closeLayoutModal();
 selectSession({});
 setMainPanelDefaultVisibility();
+setControlsDockCollapsed(loadControlsDockCollapsedState(), false);
 
 loadManagerPlugins()
   .catch((error) => {
