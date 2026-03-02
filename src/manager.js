@@ -49,6 +49,8 @@ import { registerManagerThemeRoutes } from "./manager/themes-routes.js";
 import { registerManagerConfigRoutes } from "./manager/config-routes.js";
 import { createConfigBackupService } from "./manager/config-backup-service.js";
 import { createRemoteSupportService } from "./manager/remote-support-service.js";
+import { createManagerAuthService } from "./manager/auth-session-service.js";
+import { createControlPlaneStatusService } from "./manager/control-plane-service.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -868,156 +870,6 @@ async function tailFile(filePath, lineLimit = 200) {
 
     throw new Error(`Failed to read log file ${filePath}: ${error.message}`, { cause: error });
   }
-}
-
-function parseCookies(headerValue) {
-  const cookies = {};
-  const raw = String(headerValue || "");
-  if (!raw) {
-    return cookies;
-  }
-
-  for (const chunk of raw.split(";")) {
-    const [namePart, ...valueParts] = chunk.split("=");
-    const name = String(namePart || "").trim();
-    if (!name) {
-      continue;
-    }
-    const value = valueParts.join("=").trim();
-    try {
-      cookies[name] = decodeURIComponent(value);
-    } catch {
-      cookies[name] = value;
-    }
-  }
-
-  return cookies;
-}
-
-function createCookieHeader(name, value, options = {}) {
-  const parts = [`${name}=${encodeURIComponent(String(value || ""))}`];
-  parts.push(`Path=${options.path || "/"}`);
-  if (Number.isInteger(options.maxAge)) {
-    parts.push(`Max-Age=${options.maxAge}`);
-  }
-  if (options.httpOnly !== false) {
-    parts.push("HttpOnly");
-  }
-  if (options.sameSite) {
-    parts.push(`SameSite=${options.sameSite}`);
-  }
-  if (options.secure) {
-    parts.push("Secure");
-  }
-  return parts.join("; ");
-}
-
-function normalizeManagerNextPath(value, fallback = "/manager/") {
-  const candidate = String(value || "").trim();
-  if (!candidate || !candidate.startsWith("/") || candidate.startsWith("//")) {
-    return fallback;
-  }
-  if (candidate.includes("..") || candidate.includes("\\")) {
-    return fallback;
-  }
-  if (!candidate.startsWith("/manager")) {
-    return "/manager/";
-  }
-  return candidate;
-}
-
-function renderManagerLoginPage({ error = "", nextPath = "/manager/" } = {}) {
-  const safeNext = normalizeManagerNextPath(nextPath, "/manager/");
-  const safeError = normalizeString(error, "");
-  const errorBlock = safeError
-    ? `<p class="manager-login-error">${safeError.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`
-    : "";
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Blastdoor Manager Login</title>
-    <style>
-      :root {
-        color-scheme: dark;
-      }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-        background:
-          radial-gradient(circle at 15% 15%, rgba(155, 224, 255, 0.14), transparent 32%),
-          radial-gradient(circle at 88% 18%, rgba(182, 255, 172, 0.1), transparent 30%),
-          linear-gradient(180deg, #131926, #090b10);
-        color: #e7edf6;
-      }
-      main {
-        width: min(420px, 92vw);
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 14px;
-        padding: 1.1rem 1.1rem 1.2rem;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(10, 14, 24, 0.92));
-      }
-      h1 {
-        margin: 0 0 0.35rem;
-        font-size: 1.28rem;
-      }
-      p {
-        margin: 0 0 0.8rem;
-        color: #9ca8bd;
-        font-size: 0.92rem;
-      }
-      label {
-        display: grid;
-        gap: 0.3rem;
-        font-size: 0.85rem;
-      }
-      input {
-        width: 100%;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        background: rgba(10, 14, 24, 0.95);
-        color: #e7edf6;
-        padding: 0.55rem 0.6rem;
-        font-size: 0.95rem;
-      }
-      button {
-        margin-top: 0.8rem;
-        width: 100%;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        background: linear-gradient(180deg, #263557, #1b2741);
-        color: #e7edf6;
-        padding: 0.55rem 0.7rem;
-        font-size: 0.95rem;
-        cursor: pointer;
-      }
-      .manager-login-error {
-        margin: 0 0 0.8rem;
-        color: #ff9a9a;
-        font-weight: 600;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>Blastdoor Manager Login</h1>
-      <p>Manager access is password protected.</p>
-      ${errorBlock}
-      <form method="post" action="/api/manager-auth/login-form">
-        <input type="hidden" name="next" value="${safeNext.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}" />
-        <label>
-          Password
-          <input name="password" type="password" autocomplete="current-password" required />
-        </label>
-        <button type="submit">Unlock Manager</button>
-      </form>
-    </main>
-  </body>
-</html>`;
 }
 
 function createProcessState({ workspaceDir, processFactory }) {
@@ -2758,13 +2610,7 @@ export function createManagerApp(options = {}) {
   const postgresPoolFactory = options.postgresPoolFactory;
   const processState = createProcessState({ workspaceDir, processFactory });
   const managerStartedAtMs = Date.now();
-  const managerAuthSessions = new Map();
   let managerConsoleSettingsCache = null;
-  const controlPlaneCache = {
-    payload: null,
-    updatedAtMs: 0,
-    inflight: null,
-  };
   const managerWriteRateLimitWindowMs = Number.isInteger(options.managerWriteRateLimitWindowMs)
     ? options.managerWriteRateLimitWindowMs
     : 15 * 60 * 1000;
@@ -2980,6 +2826,51 @@ export function createManagerApp(options = {}) {
     return saved;
   }
 
+  const managerAuthService = createManagerAuthService({
+    readConsoleSettings,
+    normalizeString,
+    randomBytes,
+    managerAuthCookieName: MANAGER_AUTH_COOKIE_NAME,
+  });
+  const {
+    getManagerAuthSession,
+    normalizeManagerNextPath,
+    createManagerAuthSession,
+    createCookieHeader,
+    clearManagerAuthSession,
+    enforceManagerAccess,
+    renderManagerLoginPage,
+  } = managerAuthService;
+
+  const controlPlaneStatusService = createControlPlaneStatusService({
+    readEnvConfig,
+    envPath,
+    readInstallationConfig,
+    installationConfigPath,
+    detectEnvironmentInfo,
+    workspaceDir,
+    normalizeString,
+    parseBooleanLike,
+    processState,
+    checkBlastdoorHealth,
+    checkFoundryTargetHealth,
+    probeFoundryApiStatus,
+    buildObjectStoreStatus,
+    readFailureStore,
+    summarizeFailureStore,
+    failureStorePath,
+    pluginManager,
+    loadComposeServiceStates,
+    commandRunner,
+    probeHttpHealth,
+    detectHostProcessState,
+    parsePostgresUrlEndpoint,
+    probeTcpPort,
+    formatPluginName,
+    managerStartedAtMs,
+  });
+  const { getControlPlaneStatusCached } = controlPlaneStatusService;
+
   const remoteSupportService = createRemoteSupportService({
     normalizeString,
     verifyPassword,
@@ -3040,113 +2931,6 @@ export function createManagerApp(options = {}) {
       ok: true,
       report,
     };
-  }
-
-  function purgeExpiredManagerAuthSessions(nowMs = Date.now()) {
-    for (const [token, session] of managerAuthSessions.entries()) {
-      const expiresAtMs = new Date(session?.expiresAt || "").getTime();
-      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
-        managerAuthSessions.delete(token);
-      }
-    }
-  }
-
-  function getManagerAuthSession(req) {
-    const cookies = parseCookies(req.headers?.cookie || "");
-    const token = String(cookies[MANAGER_AUTH_COOKIE_NAME] || "");
-    if (!token) {
-      return null;
-    }
-    purgeExpiredManagerAuthSessions();
-    const session = managerAuthSessions.get(token);
-    if (!session) {
-      return null;
-    }
-    return {
-      token,
-      ...session,
-    };
-  }
-
-  function createManagerAuthSession({ ttlHours = 12 } = {}) {
-    purgeExpiredManagerAuthSessions();
-    const token = randomBytes(32).toString("base64url");
-    const nowMs = Date.now();
-    const expiresAtMs = nowMs + Math.max(1, Number.parseInt(String(ttlHours || "12"), 10)) * 60 * 60 * 1000;
-    managerAuthSessions.set(token, {
-      createdAt: new Date(nowMs).toISOString(),
-      expiresAt: new Date(expiresAtMs).toISOString(),
-    });
-    return token;
-  }
-
-  function clearManagerAuthSession(req) {
-    const existing = getManagerAuthSession(req);
-    if (existing?.token) {
-      managerAuthSessions.delete(existing.token);
-    }
-  }
-
-  function isManagerAuthBypassPath(pathname = "") {
-    if (
-      pathname.startsWith("/api/remote-support/v1/") ||
-      pathname === "/api/remote-support/v1" ||
-      pathname.startsWith("/manager/api/remote-support/v1/") ||
-      pathname === "/manager/api/remote-support/v1"
-    ) {
-      return true;
-    }
-
-    return (
-      pathname === "/manager/login" ||
-      pathname === "/api/manager-auth/login" ||
-      pathname === "/api/manager-auth/login-form" ||
-      pathname === "/api/manager-auth/logout" ||
-      pathname === "/api/manager-auth/state" ||
-      pathname === "/manager/api/manager-auth/login" ||
-      pathname === "/manager/api/manager-auth/login-form" ||
-      pathname === "/manager/api/manager-auth/logout" ||
-      pathname === "/manager/api/manager-auth/state"
-    );
-  }
-
-  async function enforceManagerAccess(req, res, next) {
-    try {
-      const settings = await readConsoleSettings();
-      if (!settings.access.requirePassword) {
-        next();
-        return;
-      }
-
-      if (isManagerAuthBypassPath(req.path)) {
-        next();
-        return;
-      }
-
-      const session = getManagerAuthSession(req);
-      if (session) {
-        next();
-        return;
-      }
-
-      if (req.path.startsWith("/api/") || req.path.startsWith("/manager/api/")) {
-        res.status(401).json({
-          error: "Manager authentication required.",
-          managerAuthRequired: true,
-        });
-        return;
-      }
-
-      if (req.path.startsWith("/manager")) {
-        const nextPath = normalizeManagerNextPath(`${req.path}${req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""}`);
-        res.redirect(`/manager/login?next=${encodeURIComponent(nextPath)}`);
-        return;
-      }
-
-      next();
-    } catch (error) {
-      next(error);
-    }
   }
 
   async function applyThreatLockdown(existingConfig) {
@@ -3370,337 +3154,6 @@ export function createManagerApp(options = {}) {
       reachable: false,
       error: "not-implemented",
     };
-  }
-
-  async function resolveControlPlaneStatus() {
-    const [config, installationConfigRaw] = await Promise.all([
-      readEnvConfig(envPath),
-      readInstallationConfig(installationConfigPath),
-    ]);
-
-    const environment = detectEnvironmentInfo({ workspaceDir, envPath });
-    const installationConfig = installationConfigRaw || null;
-    const installType = normalizeString(installationConfig?.installType, "local").toLowerCase();
-    const portal = processState.getStatus();
-    const [portalHealth, foundryHealth, foundryApiStatus] = await Promise.all([
-      checkBlastdoorHealth(config),
-      checkFoundryTargetHealth(config),
-      probeFoundryApiStatus(config, 1500),
-    ]);
-    const adminUptimeSeconds = Math.max(0, Math.floor((Date.now() - managerStartedAtMs) / 1000));
-    const objectStore = await buildObjectStoreStatus(config, installationConfig);
-    const [failureStore, enabledPlugins] = await Promise.all([
-      readFailureStore(failureStorePath),
-      Promise.resolve(pluginManager.getEnabledPlugins()),
-    ]);
-    const failureSummary = summarizeFailureStore(failureStore);
-
-    const response = {
-      ok: true,
-      generatedAt: new Date().toISOString(),
-      installation: {
-        profile: installType === "container" ? "container" : "local",
-      },
-      environment: {
-        isWsl: Boolean(environment.isWsl),
-        wslDistro: normalizeString(environment.wslDistro, ""),
-        isContainer: Boolean(environment.isContainer),
-      },
-      admin: {
-        running: true,
-        pid: process.pid,
-        uptimeSeconds: adminUptimeSeconds,
-        health: { ok: true, statusCode: 200 },
-      },
-      portal: {
-        running: portal.running,
-        pid: portal.pid,
-        uptimeSeconds: portal.uptimeSeconds || 0,
-        health: portalHealth,
-      },
-      foundry: {
-        target: normalizeString(config.FOUNDRY_TARGET, ""),
-        reachable: Boolean(foundryApiStatus.reachable || foundryHealth.ok || foundryHealth.tcp?.ok),
-        health: foundryHealth,
-        apiStatus: foundryApiStatus,
-      },
-      api: {
-        running: false,
-        pid: null,
-        uptimeSeconds: 0,
-        health: { ok: false, statusCode: null, error: "unknown" },
-      },
-      postgres: {
-        running: false,
-        pid: null,
-        uptimeSeconds: 0,
-        health: { ok: false, statusCode: null, error: "not-configured" },
-      },
-      failures: failureSummary,
-      objectStore,
-      plugins: [],
-    };
-
-    if (installType === "container") {
-      const composeState = await loadComposeServiceStates({
-        commandRunner,
-        workspaceDir,
-      });
-      const services = composeState.services || {};
-
-      const portalContainer = services.blastdoor || null;
-      if (portalContainer) {
-        response.portal = {
-          running: Boolean(portalContainer.running),
-          pid: portalContainer.pid || null,
-          uptimeSeconds: portalContainer.uptimeSeconds || 0,
-          health: portalContainer.health || portalHealth,
-        };
-      }
-
-      const apiContainer = services["blastdoor-api"] || null;
-      response.api = apiContainer
-        ? {
-            running: Boolean(apiContainer.running),
-            pid: apiContainer.pid || null,
-            uptimeSeconds: apiContainer.uptimeSeconds || 0,
-            health: apiContainer.health || { ok: false, statusCode: null, error: "unknown" },
-          }
-        : {
-            running: false,
-            pid: null,
-            uptimeSeconds: 0,
-            health: composeState.ok
-              ? { ok: false, statusCode: null, error: "not-running" }
-              : { ok: false, statusCode: null, error: composeState.error || "compose-unavailable" },
-          };
-
-      const postgresContainer = services.postgres || null;
-      response.postgres = postgresContainer
-        ? {
-            running: Boolean(postgresContainer.running),
-            pid: postgresContainer.pid || null,
-            uptimeSeconds: postgresContainer.uptimeSeconds || 0,
-            health: postgresContainer.health || { ok: false, statusCode: null, error: "unknown" },
-          }
-        : {
-            running: false,
-            pid: null,
-            uptimeSeconds: 0,
-            health: composeState.ok
-              ? { ok: false, statusCode: null, error: "not-running" }
-              : { ok: false, statusCode: null, error: composeState.error || "compose-unavailable" },
-          };
-
-      response.plugins = enabledPlugins.map((plugin) => {
-        const id = normalizeString(plugin?.id, "");
-        const assistantContainer = id === "intelligence" ? services["blastdoor-assistant"] || null : null;
-        if (assistantContainer) {
-          return {
-            id,
-            name: formatPluginName(id),
-            running: Boolean(assistantContainer.running),
-            pid: assistantContainer.pid || null,
-            uptimeSeconds: assistantContainer.uptimeSeconds || 0,
-            health: assistantContainer.health || { ok: false, statusCode: null, error: "unknown" },
-          };
-        }
-        return {
-          id,
-          name: formatPluginName(id),
-          running: true,
-          pid: null,
-          uptimeSeconds: adminUptimeSeconds,
-          health: { ok: true, statusCode: 200 },
-        };
-      });
-
-      return response;
-    }
-
-    const apiUrl = normalizeString(config.BLASTDOOR_API_URL, "");
-    if (apiUrl) {
-      const healthUrl = (() => {
-        try {
-          const parsed = new URL(apiUrl);
-          parsed.pathname = "/healthz";
-          parsed.search = "";
-          parsed.hash = "";
-          return parsed.toString();
-        } catch {
-          return apiUrl;
-        }
-      })();
-
-      const apiHealth = await probeHttpHealth(healthUrl, 1500);
-      const apiProcess = await detectHostProcessState({
-        commandRunner,
-        workspaceDir,
-        matchers: ["blastdoor-api", "src/api-server.js"],
-      });
-      response.api = {
-        running: apiProcess?.running || apiHealth.ok,
-        pid: apiProcess?.pid || null,
-        uptimeSeconds: apiProcess?.uptimeSeconds || 0,
-        health: apiHealth,
-      };
-    } else {
-      const apiProcess = await detectHostProcessState({
-        commandRunner,
-        workspaceDir,
-        matchers: ["blastdoor-api", "src/api-server.js"],
-      });
-      response.api = apiProcess
-        ? {
-            running: true,
-            pid: apiProcess.pid || null,
-            uptimeSeconds: apiProcess.uptimeSeconds || 0,
-            health: { ok: true, statusCode: 200 },
-          }
-        : {
-            running: response.portal.running,
-            pid: response.portal.pid,
-            uptimeSeconds: response.portal.uptimeSeconds,
-            health: response.portal.health,
-          };
-    }
-
-    const postgresMode =
-      normalizeString(config.PASSWORD_STORE_MODE, "").toLowerCase() === "postgres" ||
-      normalizeString(config.CONFIG_STORE_MODE, "").toLowerCase() === "postgres";
-    if (postgresMode) {
-      const endpoint = parsePostgresUrlEndpoint(config.POSTGRES_URL);
-      if (!endpoint) {
-        response.postgres = {
-          running: false,
-          pid: null,
-          uptimeSeconds: 0,
-          health: {
-            ok: false,
-            statusCode: null,
-            error: "invalid-postgres-url",
-          },
-        };
-      } else {
-        const [tcpHealth, processHealth] = await Promise.all([
-          probeTcpPort({
-            host: endpoint.host,
-            port: endpoint.port,
-            timeoutMs: 1500,
-          }),
-          detectHostProcessState({
-            commandRunner,
-            workspaceDir,
-            matchers: ["postgres"],
-          }),
-        ]);
-
-        response.postgres = {
-          running: processHealth?.running || tcpHealth.ok,
-          pid: processHealth?.pid || null,
-          uptimeSeconds: processHealth?.uptimeSeconds || 0,
-          health: tcpHealth.ok
-            ? {
-                ok: true,
-                statusCode: 200,
-                detail: `${endpoint.host}:${endpoint.port}`,
-              }
-            : {
-                ok: false,
-                statusCode: null,
-                error: tcpHealth.error || "unreachable",
-                detail: `${endpoint.host}:${endpoint.port}`,
-              },
-        };
-      }
-    }
-
-    response.plugins = await Promise.all(
-      enabledPlugins.map(async (plugin) => {
-        const id = normalizeString(plugin?.id, "");
-        if (id === "intelligence") {
-          const enabled = parseBooleanLike(config.ASSISTANT_ENABLED, true);
-          if (!enabled) {
-            return {
-              id,
-              name: formatPluginName(id),
-              running: false,
-              pid: null,
-              uptimeSeconds: 0,
-              health: { ok: false, statusCode: null, error: "disabled" },
-            };
-          }
-
-          const assistantUrl = normalizeString(config.ASSISTANT_URL, "");
-          if (assistantUrl) {
-            const healthUrl = (() => {
-              try {
-                const parsed = new URL(assistantUrl);
-                parsed.pathname = "/healthz";
-                parsed.search = "";
-                parsed.hash = "";
-                return parsed.toString();
-              } catch {
-                return assistantUrl;
-              }
-            })();
-
-            const assistantHealth = await probeHttpHealth(healthUrl, 1500);
-            return {
-              id,
-              name: formatPluginName(id),
-              running: assistantHealth.ok,
-              pid: null,
-              uptimeSeconds: 0,
-              health: assistantHealth,
-            };
-          }
-
-          return {
-            id,
-            name: formatPluginName(id),
-            running: true,
-            pid: null,
-            uptimeSeconds: adminUptimeSeconds,
-            health: { ok: true, statusCode: 200 },
-          };
-        }
-
-        return {
-          id,
-          name: formatPluginName(id),
-          running: true,
-          pid: null,
-          uptimeSeconds: adminUptimeSeconds,
-          health: { ok: true, statusCode: 200 },
-        };
-      }),
-    );
-
-    return response;
-  }
-
-  async function getControlPlaneStatusCached() {
-    const now = Date.now();
-    if (controlPlaneCache.payload && now - controlPlaneCache.updatedAtMs < 2000) {
-      return controlPlaneCache.payload;
-    }
-
-    if (controlPlaneCache.inflight) {
-      return await controlPlaneCache.inflight;
-    }
-
-    controlPlaneCache.inflight = resolveControlPlaneStatus()
-      .then((payload) => {
-        controlPlaneCache.payload = payload;
-        controlPlaneCache.updatedAtMs = Date.now();
-        return payload;
-      })
-      .finally(() => {
-        controlPlaneCache.inflight = null;
-      });
-
-    return await controlPlaneCache.inflight;
   }
 
   const app = express();
@@ -3961,7 +3414,7 @@ export function createManagerApp(options = {}) {
     workspaceDir,
     runTroubleshootAction,
     commandRunner,
-    controlPlaneCache,
+    controlPlaneCache: controlPlaneStatusService.cache,
     operationTimeoutMs: managerOperationTimeoutMs,
   });
 
