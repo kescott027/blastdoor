@@ -44,6 +44,11 @@ body {
   overflow: hidden;
 }
 
+body.account-page {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .theme-stage {
   position: fixed;
   inset: 0;
@@ -369,11 +374,14 @@ body.auth-success.auth-success-active .theme-bg-open {
 }
 
 .account-shell {
-  padding: 26px;
+  display: block;
+  min-height: auto;
+  padding: 26px 20px 36px;
 }
 
 .account-panel {
   width: min(920px, 100%);
+  margin: 0 auto;
 }
 
 .account-panel h2 {

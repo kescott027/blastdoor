@@ -639,7 +639,7 @@ function renderBlastDoorsClosedPage() {
       }
     </style>
   </head>
-  <body>
+  <body class="account-page">
     <main>
       <h1>Blast Doors Are Locked</h1>
       <p class="alert">Gateway lockout is active. External routing is disabled.</p>
@@ -944,6 +944,9 @@ function normalizeManagedUserStatus(value) {
 export function createApp(config, options = {}) {
   validateConfig(config);
   const logger = options.logger || createNoopLogger();
+  const isWslRuntime = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+  const isContainerRuntime =
+    Boolean(process.env.CONTAINER || process.env.DOCKER_CONTAINER) || fsSync.existsSync("/.dockerenv");
 
   if (config.requireTotp) {
     authenticator.options = { window: 1, step: 30 };
@@ -1927,7 +1930,20 @@ export function createApp(config, options = {}) {
           err.code === "ECONNREFUSED"
             ? "Foundry target refused the connection. Verify FOUNDRY_TARGET and that Foundry is running."
             : "Verify FOUNDRY_TARGET and upstream Foundry availability.";
-        res.end(`Gateway error: ${err.message}\nTarget: ${config.foundryTarget}\n${suggestion}`);
+        let networkHint = "";
+        if (err.code === "ECONNREFUSED") {
+          try {
+            const target = new URL(String(config.foundryTarget || ""));
+            if (isLoopbackHost(normalizeHostname(target.hostname)) && (isWslRuntime || isContainerRuntime)) {
+              networkHint =
+                "\nRuntime networking hint: Blastdoor is running inside WSL/container, so localhost resolves inside that runtime. " +
+                "If Foundry runs on the host OS, set FOUNDRY_TARGET to a host-reachable address (for Docker often host.docker.internal, or your host/LAN IP).";
+            }
+          } catch {
+            // Ignore target URL parse failures in hint path.
+          }
+        }
+        res.end(`Gateway error: ${err.message}\nTarget: ${config.foundryTarget}\n${suggestion}${networkHint}`);
       },
     },
   });
