@@ -48,6 +48,42 @@ function normalizeObject(value) {
   return value;
 }
 
+function normalizeSafeActionTrust(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const out = [];
+  for (const entry of value) {
+    const source = normalizeObject(entry);
+    const actionId = normalizeString(source.actionId, "");
+    const hostFingerprint = normalizeString(source.hostFingerprint, "");
+    if (!actionId || !hostFingerprint) {
+      continue;
+    }
+    const dedupeKey = `${actionId}::${hostFingerprint}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    out.push({
+      actionId,
+      hostFingerprint,
+      trustedAt: normalizeString(source.trustedAt, new Date().toISOString()),
+      trustedBy: normalizeString(source.trustedBy, "operator"),
+    });
+  }
+  return out;
+}
+
+function normalizeWorkflowConfig(value) {
+  const config = normalizeObject(value);
+  return {
+    ...config,
+    safeActionTrust: normalizeSafeActionTrust(config.safeActionTrust),
+  };
+}
+
 function slugifyName(name) {
   const normalized = normalizeString(name, "").toLowerCase();
   if (!normalized) {
@@ -170,7 +206,7 @@ function normalizeWorkflow(input = {}, { fallbackId = "", fallbackName = "" } = 
     allowWebSearch: normalizeBoolean(source.allowWebSearch, false),
     autoLockOnThreat: normalizeBoolean(source.autoLockOnThreat, false),
     threatScoreThreshold: clampInteger(source.threatScoreThreshold, 80, 20, 100),
-    config: normalizeObject(source.config),
+    config: normalizeWorkflowConfig(source.config),
     createdAt,
     updatedAt,
   };
@@ -348,4 +384,3 @@ export function summarizeWorkflowForList(workflow) {
     inputPlaceholder: workflow.inputPlaceholder || "",
   };
 }
-

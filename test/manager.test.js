@@ -3203,6 +3203,245 @@ test("manager assistant phase0 plan endpoints create, collect evidence, and refi
   });
 });
 
+test("manager assistant wizard endpoints support step flow, save/resume, and safe-action trust", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const databaseFile = path.join(workspaceDir, "data", "blastdoor.sqlite");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=ollama",
+        "ASSISTANT_URL=",
+        "ASSISTANT_RAG_ENABLED=false",
+        "ASSISTANT_ALLOW_WEB_SEARCH=false",
+        "CONFIG_STORE_MODE=sqlite",
+        `DATABASE_FILE=${databaseFile}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const commandRunner = async ({ command, args = [] }) => {
+      const key = `${command} ${(Array.isArray(args) ? args : []).join(" ")}`.trim();
+      if (key.startsWith("ss ")) {
+        return { ok: true, command, args, stdout: "LISTEN 0 511 0.0.0.0:8080 0.0.0.0:*", stderr: "" };
+      }
+      if (key.startsWith("ip -4 addr show")) {
+        return { ok: true, command, args, stdout: "inet 127.0.0.1/8 scope host lo", stderr: "" };
+      }
+      if (key.startsWith("ip route")) {
+        return { ok: true, command, args, stdout: "default via 172.24.0.1 dev eth0", stderr: "" };
+      }
+      if (key.startsWith("hostname -I")) {
+        return { ok: true, command, args, stdout: "127.0.0.1", stderr: "" };
+      }
+      if (key.startsWith("ufw status")) {
+        return { ok: false, command, args, error: "not-installed", stdout: "", stderr: "ufw: not found" };
+      }
+      return { ok: true, command, args, stdout: "", stderr: "" };
+    };
+
+    const { app } = createManagerApp({ workspaceDir, envPath, commandRunner });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const started = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/wizard/start",
+        body: {
+          runName: "TLS Wizard Run",
+          workflowId: "troubleshoot-recommendation",
+        },
+      });
+      assert.equal(started.status, 200);
+      assert.equal(started.body.ok, true);
+      const runId = String(started.body.run?.runId || "");
+      assert.ok(runId.length > 8);
+      assert.equal(started.body.run?.wizard?.currentStep, "define_goal");
+
+      const stepGoal = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {
+          runName: "TLS Wizard Run",
+          goal: "Set up TLS with diagnostics-first checkpoints.",
+          workflowId: "troubleshoot-recommendation",
+        },
+      });
+      assert.equal(stepGoal.status, 200);
+      assert.equal(stepGoal.body.ok, true);
+      assert.equal(stepGoal.body.run?.wizard?.currentStep, "create_initial_plan");
+
+      const stepInitial = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {
+          workflowId: "troubleshoot-recommendation",
+        },
+      });
+      assert.equal(stepInitial.status, 200);
+      assert.equal(stepInitial.body.ok, true);
+      assert.equal(stepInitial.body.run?.wizard?.currentStep, "clarify_round");
+      const questions = Array.isArray(stepInitial.body.run?.wizard?.clarification?.questions)
+        ? stepInitial.body.run.wizard.clarification.questions
+        : [];
+      assert.equal(questions.length > 0, true);
+
+      for (const question of questions) {
+        if (question.required === false) {
+          continue;
+        }
+        const answered = await request(port, {
+          method: "POST",
+          pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/answer`,
+          body: {
+            questionId: question.id,
+            answer: `answer for ${question.id}`,
+          },
+        });
+        assert.equal(answered.status, 200);
+        assert.equal(answered.body.ok, true);
+      }
+
+      const stepClarify = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {},
+      });
+      assert.equal(stepClarify.status, 200);
+      assert.equal(stepClarify.body.ok, true);
+      assert.equal(stepClarify.body.run?.wizard?.currentStep, "sufficiency_gate");
+
+      const stepSufficiency = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {},
+      });
+      assert.equal(stepSufficiency.status, 200);
+      assert.equal(stepSufficiency.body.ok, true);
+      assert.equal(stepSufficiency.body.run?.wizard?.currentStep, "collect_evidence");
+
+      const stepEvidence = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {
+          note: "Operator note for evidence.",
+        },
+      });
+      assert.equal(stepEvidence.status, 200);
+      assert.equal(stepEvidence.body.ok, true);
+      assert.equal(stepEvidence.body.run?.wizard?.currentStep, "refine_layer");
+
+      const stepRefine = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {},
+      });
+      assert.equal(stepRefine.status, 200);
+      assert.equal(stepRefine.body.ok, true);
+      assert.equal(stepRefine.body.run?.wizard?.currentStep, "execution_prep");
+
+      const stepPrep = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {},
+      });
+      assert.equal(stepPrep.status, 200);
+      assert.equal(stepPrep.body.ok, true);
+      assert.equal(stepPrep.body.run?.wizard?.currentStep, "execute_steps");
+      const executionSteps = Array.isArray(stepPrep.body.run?.wizard?.execution?.steps)
+        ? stepPrep.body.run.wizard.execution.steps
+        : [];
+      assert.equal(executionSteps.length >= 2, true);
+
+      const manualStep = executionSteps.find((step) => step.mode === "manual" || step.mode === "manual-risky");
+      assert.ok(manualStep);
+      const stepManualComplete = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {
+          completeStepId: manualStep.id,
+          result: "Manual verification complete.",
+        },
+      });
+      assert.equal(stepManualComplete.status, 200);
+      assert.equal(stepManualComplete.body.ok, true);
+      assert.equal(stepManualComplete.body.run?.wizard?.currentStep, "execute_steps");
+
+      const awaitingSafe = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+        body: {},
+      });
+      assert.equal(awaitingSafe.status, 200);
+      assert.equal(awaitingSafe.body.ok, true);
+      assert.equal(awaitingSafe.body.awaitingAction, true);
+      const requiredAction = awaitingSafe.body.requiredAction || {};
+      assert.equal(Boolean(requiredAction.actionId), true);
+
+      const runSafe = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/run-safe-action`,
+        body: {
+          actionId: requiredAction.actionId,
+          approved: true,
+          rememberTrust: true,
+        },
+      });
+      assert.equal(runSafe.status, 200);
+      assert.equal(runSafe.body.ok, true);
+      assert.equal(runSafe.body.trustSaved, true);
+
+      const workflowList = await request(port, {
+        pathname: "/api/assistant/workflows",
+      });
+      assert.equal(workflowList.status, 200);
+      assert.equal(workflowList.body.ok, true);
+      const troubleshootWorkflow = (workflowList.body.workflowConfigs || []).find(
+        (entry) => entry.id === "troubleshoot-recommendation",
+      );
+      assert.ok(troubleshootWorkflow);
+      const trustEntries = Array.isArray(troubleshootWorkflow?.config?.safeActionTrust)
+        ? troubleshootWorkflow.config.safeActionTrust
+        : [];
+      assert.equal(trustEntries.some((entry) => entry.actionId === requiredAction.actionId), true);
+
+      const saved = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/save`,
+        body: {
+          runName: "TLS Wizard Run",
+          goal: "Set up TLS with diagnostics-first checkpoints.",
+        },
+      });
+      assert.equal(saved.status, 200);
+      assert.equal(saved.body.ok, true);
+      assert.equal(saved.body.run?.wizard?.lastSavedAt ? true : false, true);
+
+      const listedRuns = await request(port, {
+        pathname: "/api/assistant/wizard/runs?limit=10",
+      });
+      assert.equal(listedRuns.status, 200);
+      assert.equal(listedRuns.body.ok, true);
+      assert.equal(Array.isArray(listedRuns.body.runs), true);
+      assert.equal(listedRuns.body.runs.some((entry) => entry.runId === runId), true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager exposes plugin UI manifest for enabled plugins", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");

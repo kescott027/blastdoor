@@ -18,6 +18,19 @@ const DEFAULTS = {
   ASSISTANT_EXTERNAL_API_SIGNED_TOKEN_TTL_SECONDS: "900",
 };
 
+const WIZARD_STEPS = [
+  "define_name",
+  "define_goal",
+  "create_initial_plan",
+  "clarify_round",
+  "sufficiency_gate",
+  "collect_evidence",
+  "refine_layer",
+  "execution_prep",
+  "execute_steps",
+  "completed",
+];
+
 function normalizeAssistantProvider(value) {
   const normalized = asString(value, DEFAULTS.ASSISTANT_PROVIDER).trim().toLowerCase();
   return normalized === "ollama" ? "ollama" : "ollama";
@@ -121,6 +134,82 @@ function renderOutput(state, payload) {
 
 function renderPlanOutput(state, payload) {
   state.planOutput.textContent = JSON.stringify(payload || {}, null, 2);
+}
+
+function renderWizardOutput(state, payload) {
+  state.wizardOutput.textContent = JSON.stringify(payload || {}, null, 2);
+}
+
+function renderWizardRuns(state, runs, selectedRunId = "") {
+  state.wizardRunSelect.textContent = "";
+  for (const run of runs) {
+    const option = document.createElement("option");
+    option.value = asString(run.runId, "");
+    const runName = asString(run.runName, "").trim();
+    const goal = asString(run.goal, "").trim();
+    const labelBase = runName || goal || asString(run.runId, "");
+    const step = asString(run?.wizard?.currentStep, "");
+    option.textContent = step ? `${labelBase} [${step}]` : labelBase;
+    state.wizardRunSelect.append(option);
+  }
+  if (selectedRunId && runs.some((run) => asString(run.runId, "") === selectedRunId)) {
+    state.wizardRunSelect.value = selectedRunId;
+  } else if (runs[0]) {
+    state.wizardRunSelect.value = asString(runs[0].runId, "");
+  }
+}
+
+function renderWizardStepRail(state, wizard = {}) {
+  const currentStep = asString(wizard.currentStep, "define_name");
+  const completed = Array.isArray(wizard.completedSteps) ? wizard.completedSteps : [];
+  const currentIndex = Math.max(0, WIZARD_STEPS.indexOf(currentStep));
+  const items = state.wizardSteps.querySelectorAll("[data-intel-wizard-step-item]");
+  for (const item of items) {
+    const step = asString(item.getAttribute("data-intel-wizard-step-item"), "");
+    item.classList.remove("wizard-step-current", "wizard-step-complete", "wizard-step-future");
+    if (step === currentStep) {
+      item.classList.add("wizard-step-current");
+      continue;
+    }
+    if (completed.includes(step) || WIZARD_STEPS.indexOf(step) < currentIndex) {
+      item.classList.add("wizard-step-complete");
+      continue;
+    }
+    item.classList.add("wizard-step-future");
+  }
+}
+
+function findPendingQuestion(run = {}) {
+  const wizard = run?.wizard && typeof run.wizard === "object" ? run.wizard : {};
+  const questions = Array.isArray(wizard?.clarification?.questions) ? wizard.clarification.questions : [];
+  const answers = Array.isArray(wizard?.clarification?.answers) ? wizard.clarification.answers : [];
+  for (const question of questions) {
+    if (!question?.required) {
+      continue;
+    }
+    const answered = answers.some(
+      (entry) => asString(entry?.questionId, "") === asString(question.id, "") && asString(entry?.answer, ""),
+    );
+    if (!answered) {
+      return question;
+    }
+  }
+  return questions[0] || null;
+}
+
+function showWizardSafeCard(state, requiredAction = null) {
+  const show = Boolean(requiredAction && typeof requiredAction === "object");
+  state.wizardSafeCard.hidden = !show;
+  state.wizardSafeCard.classList.toggle("hidden", !show);
+  if (!show) {
+    state.wizardSafeSummary.textContent = "";
+    state.wizardSafeRemember.checked = false;
+    return;
+  }
+  const title = asString(requiredAction.title, asString(requiredAction.actionId, "Safe action"));
+  const description = asString(requiredAction.description, "");
+  const commandSummary = asString(requiredAction.commandSummary, "");
+  state.wizardSafeSummary.textContent = [title, description, commandSummary].filter(Boolean).join(" ");
 }
 
 function showSection(section, show) {
@@ -235,11 +324,34 @@ function createState(root) {
     assistantExternalApiSignedTokensEnabled: root.querySelector("[data-intel-assistant-external-signed-enabled]"),
     assistantExternalApiSigningSecret: root.querySelector("[data-intel-assistant-external-signing-secret]"),
     assistantExternalApiSignedTokenTtlSeconds: root.querySelector("[data-intel-assistant-external-signed-ttl]"),
+    wizardCreateButton: root.querySelector("[data-intel-open-wizard-create]"),
+    wizardModifyButton: root.querySelector("[data-intel-open-wizard-modify]"),
+    advancedButton: root.querySelector("[data-intel-open-advanced]"),
+    advancedMenu: root.querySelector("[data-intel-advanced-menu]"),
     configureButton: root.querySelector("[data-intel-open-config]"),
     planButton: root.querySelector("[data-intel-open-plan]"),
     workflowsButton: root.querySelector("[data-intel-open-workflows]"),
     openChatPopoutButton: root.querySelector("[data-intel-open-chat-popout]"),
     menuWorkflowSelect: root.querySelector("[data-intel-menu-workflow-select]"),
+    wizardSection: root.querySelector("[data-intel-wizard-section]"),
+    closeWizardButton: root.querySelector("[data-intel-close-wizard]"),
+    wizardPrompt: root.querySelector("[data-intel-wizard-prompt]"),
+    wizardSteps: root.querySelector("[data-intel-wizard-steps]"),
+    wizardRunSelect: root.querySelector("[data-intel-wizard-run-select]"),
+    wizardRefresh: root.querySelector("[data-intel-wizard-refresh]"),
+    wizardName: root.querySelector("[data-intel-wizard-name]"),
+    wizardGoal: root.querySelector("[data-intel-wizard-goal]"),
+    wizardQuestion: root.querySelector("[data-intel-wizard-question]"),
+    wizardAnswer: root.querySelector("[data-intel-wizard-answer]"),
+    wizardStepResult: root.querySelector("[data-intel-wizard-step-result]"),
+    wizardBack: root.querySelector("[data-intel-wizard-back]"),
+    wizardSave: root.querySelector("[data-intel-wizard-save]"),
+    wizardNext: root.querySelector("[data-intel-wizard-next]"),
+    wizardOutput: root.querySelector("[data-intel-wizard-output]"),
+    wizardSafeCard: root.querySelector("[data-intel-wizard-safe-card]"),
+    wizardSafeSummary: root.querySelector("[data-intel-wizard-safe-summary]"),
+    wizardSafeRemember: root.querySelector("[data-intel-wizard-safe-remember]"),
+    wizardSafeApprove: root.querySelector("[data-intel-wizard-safe-approve]"),
     configSection: root.querySelector("[data-intel-config-section]"),
     planSection: root.querySelector("[data-intel-plan-section]"),
     workflowsSection: root.querySelector("[data-intel-workflow-section]"),
@@ -321,11 +433,34 @@ function validateState(state) {
     "assistantExternalApiSignedTokensEnabled",
     "assistantExternalApiSigningSecret",
     "assistantExternalApiSignedTokenTtlSeconds",
+    "wizardCreateButton",
+    "wizardModifyButton",
+    "advancedButton",
+    "advancedMenu",
     "configureButton",
     "planButton",
     "workflowsButton",
     "openChatPopoutButton",
     "menuWorkflowSelect",
+    "wizardSection",
+    "closeWizardButton",
+    "wizardPrompt",
+    "wizardSteps",
+    "wizardRunSelect",
+    "wizardRefresh",
+    "wizardName",
+    "wizardGoal",
+    "wizardQuestion",
+    "wizardAnswer",
+    "wizardStepResult",
+    "wizardBack",
+    "wizardSave",
+    "wizardNext",
+    "wizardOutput",
+    "wizardSafeCard",
+    "wizardSafeSummary",
+    "wizardSafeRemember",
+    "wizardSafeApprove",
     "configSection",
     "planSection",
     "workflowsSection",
@@ -397,9 +532,9 @@ function createPanelMarkup() {
     <section class="intel-menu">
       <div class="button-row">
         <button type="button" data-intel-open-config>Configure Intelligence Module</button>
-        <button type="button" data-intel-open-plan>Phase 0 Plan Lab</button>
-        <button type="button" data-intel-open-agent>Agent Scaffolding (Phase 1)</button>
-        <button type="button" data-intel-open-workflows>Create Workflow</button>
+        <button type="button" data-intel-open-wizard-create>Create Agent Workflow</button>
+        <button type="button" data-intel-open-wizard-modify>Modify Existing Workflow</button>
+        <button type="button" class="secondary" data-intel-open-advanced>Advanced Panels</button>
       </div>
       <div class="grid">
         <label>Workflow to Launch
@@ -409,6 +544,79 @@ function createPanelMarkup() {
       <div class="button-row">
         <button type="button" data-intel-open-chat-popout>Launch Workflow</button>
       </div>
+      <section class="intel-advanced-menu hidden" data-intel-advanced-menu hidden>
+        <div class="button-row">
+          <button type="button" class="secondary" data-intel-open-plan>Phase 0 Plan Lab (Advanced)</button>
+          <button type="button" class="secondary" data-intel-open-agent>Agent Scaffolding (Advanced)</button>
+          <button type="button" class="secondary" data-intel-open-workflows>Create/Manage Workflow Templates</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="intel-wizard-wrap hidden" data-intel-wizard-section hidden>
+      <div class="intel-section-header">
+        <h3>Guided Agent Workflow Wizard</h3>
+        <button type="button" class="secondary" data-intel-close-wizard>Close</button>
+      </div>
+      <div class="intel-wizard-banner" data-intel-wizard-prompt>
+        Select Create Agent Workflow or Modify Existing Workflow to begin.
+      </div>
+      <ol class="intel-step-rail" data-intel-wizard-steps>
+        <li data-intel-wizard-step-item="define_name">1. Define Name</li>
+        <li data-intel-wizard-step-item="define_goal">2. Define Goal</li>
+        <li data-intel-wizard-step-item="create_initial_plan">3. Create Initial Plan</li>
+        <li data-intel-wizard-step-item="clarify_round">4. Clarify Round</li>
+        <li data-intel-wizard-step-item="sufficiency_gate">5. Sufficiency Gate</li>
+        <li data-intel-wizard-step-item="collect_evidence">6. Collect Evidence</li>
+        <li data-intel-wizard-step-item="refine_layer">7. Refine Layer</li>
+        <li data-intel-wizard-step-item="execution_prep">8. Execution Prep</li>
+        <li data-intel-wizard-step-item="execute_steps">9. Execute Steps</li>
+        <li data-intel-wizard-step-item="completed">10. Completed</li>
+      </ol>
+      <div class="grid">
+        <label>Saved Workflow Runs
+          <select data-intel-wizard-run-select></select>
+        </label>
+        <div class="intel-workflow-launch-cell">
+          <button type="button" class="secondary" data-intel-wizard-refresh>Refresh Runs</button>
+        </div>
+      </div>
+      <div class="grid">
+        <label>Workflow Name
+          <input type="text" data-intel-wizard-name placeholder="TLS rollout workflow" />
+        </label>
+      </div>
+      <label>Workflow Goal
+        <textarea data-intel-wizard-goal placeholder="Describe the workflow objective and expected outcome."></textarea>
+      </label>
+      <div class="grid">
+        <label>Clarifying Question
+          <textarea data-intel-wizard-question readonly placeholder="Questions from the assistant will appear here."></textarea>
+        </label>
+        <label>Answer
+          <textarea data-intel-wizard-answer placeholder="Enter answer for the current clarifying question."></textarea>
+        </label>
+      </div>
+      <label>Manual Step Result
+        <textarea data-intel-wizard-step-result placeholder="For manual steps, paste results before clicking Next."></textarea>
+      </label>
+      <section class="intel-safe-action-card hidden" data-intel-wizard-safe-card hidden>
+        <h4>Safe Action Approval Required</h4>
+        <div class="muted" data-intel-wizard-safe-summary></div>
+        <label class="checkbox-label">
+          <input type="checkbox" data-intel-wizard-safe-remember />
+          Do not ask again for this task in this workflow on this host
+        </label>
+        <div class="button-row">
+          <button type="button" data-intel-wizard-safe-approve>Approve and Run Safe Action</button>
+        </div>
+      </section>
+      <div class="button-row">
+        <button type="button" class="secondary" data-intel-wizard-back>Back</button>
+        <button type="button" class="secondary" data-intel-wizard-save>Save</button>
+        <button type="button" data-intel-wizard-next>Next</button>
+      </div>
+      <pre class="log-box" data-intel-wizard-output></pre>
     </section>
 
     <section class="intel-config-wrap hidden" data-intel-config-section hidden>
@@ -800,6 +1008,11 @@ export async function registerManagerPlugin(context) {
     launchedWorkflowId: "",
     refreshTick: 0,
     statusLoadedOnce: false,
+    wizardRuns: [],
+    selectedWizardRunId: "",
+    currentWizardRun: null,
+    wizardMode: "create",
+    pendingSafeAction: null,
   };
 
   function getWorkflowById(workflowId) {
@@ -840,9 +1053,191 @@ export async function registerManagerPlugin(context) {
     showSection(state.agentSection, nextVisible);
   }
 
+  function showWizardSection(forceVisible = null) {
+    const nextVisible = forceVisible === null ? state.wizardSection.hidden : Boolean(forceVisible);
+    showSection(state.wizardSection, nextVisible);
+  }
+
+  function showAdvancedMenu(forceVisible = null) {
+    const nextVisible = forceVisible === null ? state.advancedMenu.hidden : Boolean(forceVisible);
+    showSection(state.advancedMenu, nextVisible);
+  }
+
   function hideChatSection() {
     showSection(state.chatSection, false);
     runtime.launchedWorkflowId = "";
+  }
+
+  function applyWizardRun(run, payload = {}) {
+    runtime.currentWizardRun = run && typeof run === "object" ? run : null;
+    runtime.selectedWizardRunId = asString(runtime.currentWizardRun?.runId, "");
+    const runName = asString(runtime.currentWizardRun?.meta?.runName, asString(runtime.currentWizardRun?.runName, ""));
+    const goal = asString(runtime.currentWizardRun?.goal, "");
+    state.wizardName.value = runName;
+    state.wizardGoal.value = goal;
+    const wizard = runtime.currentWizardRun?.wizard && typeof runtime.currentWizardRun.wizard === "object"
+      ? runtime.currentWizardRun.wizard
+      : {};
+    renderWizardStepRail(state, wizard);
+    state.wizardPrompt.textContent = asString(wizard.nextPrompt, "Select the next step to continue.");
+    const pendingQuestion = findPendingQuestion(runtime.currentWizardRun);
+    if (pendingQuestion) {
+      state.wizardQuestion.value = asString(pendingQuestion.prompt, "");
+      state.wizardQuestion.setAttribute("data-intel-wizard-question-id", asString(pendingQuestion.id, ""));
+    } else {
+      state.wizardQuestion.value = "";
+      state.wizardQuestion.setAttribute("data-intel-wizard-question-id", "");
+    }
+    showWizardSafeCard(state, payload.requiredAction || null);
+    runtime.pendingSafeAction = payload.requiredAction || null;
+    renderWizardOutput(state, payload && Object.keys(payload).length > 0 ? payload : { ok: true, run: runtime.currentWizardRun });
+  }
+
+  async function loadWizardRuns(showMessage = false, preferredRunId = "") {
+    const payload = await context.apiGet("/assistant/wizard/runs?limit=50");
+    const runs = Array.isArray(payload.runs) ? payload.runs : [];
+    runtime.wizardRuns = runs;
+    renderWizardRuns(state, runs, preferredRunId || runtime.selectedWizardRunId);
+    runtime.selectedWizardRunId = asString(state.wizardRunSelect.value, "");
+    if (showMessage) {
+      panel.setStatus(`Loaded ${runs.length} wizard run(s).`);
+    }
+  }
+
+  async function loadWizardRun(runId, showMessage = false) {
+    const selectedRunId = asString(runId || state.wizardRunSelect.value, "");
+    if (!selectedRunId) {
+      runtime.currentWizardRun = null;
+      renderWizardOutput(state, { ok: true, run: null });
+      return;
+    }
+    const payload = await context.apiGet(`/assistant/wizard/${encodeURIComponent(selectedRunId)}`);
+    applyWizardRun(payload.run || null, payload);
+    runtime.selectedWizardRunId = selectedRunId;
+    if (showMessage) {
+      panel.setStatus(`Loaded wizard run '${selectedRunId}'.`);
+    }
+  }
+
+  async function startWizardRun({ mode = "create" } = {}) {
+    const runName = asString(state.wizardName.value, "").trim();
+    const payload = await context.apiPost("/assistant/wizard/start", {
+      runName,
+      workflowId: asString(state.menuWorkflowSelect.value, "").trim(),
+    });
+    runtime.wizardMode = mode;
+    await loadWizardRuns(false, asString(payload?.run?.runId, ""));
+    applyWizardRun(payload.run || null, payload);
+    panel.setStatus("Wizard run started.");
+  }
+
+  async function saveWizardRun() {
+    const runId = asString(runtime.currentWizardRun?.runId, "");
+    if (!runId) {
+      throw new Error("Start or select a workflow run before saving.");
+    }
+    const payload = await context.apiPost(`/assistant/wizard/${encodeURIComponent(runId)}/save`, {
+      runName: asString(state.wizardName.value, "").trim(),
+      goal: asString(state.wizardGoal.value, "").trim(),
+      workflowId: asString(state.menuWorkflowSelect.value, "").trim(),
+    });
+    applyWizardRun(payload.run || null, payload);
+    await loadWizardRuns(false, asString(payload?.run?.runId, runId));
+    panel.setStatus("Wizard state saved.");
+  }
+
+  async function submitPendingWizardAnswer(runId) {
+    const questionId = asString(state.wizardQuestion.getAttribute("data-intel-wizard-question-id"), "");
+    const answer = asString(state.wizardAnswer.value, "").trim();
+    if (!questionId || !answer) {
+      return;
+    }
+    const payload = await context.apiPost(`/assistant/wizard/${encodeURIComponent(runId)}/answer`, {
+      questionId,
+      answer,
+    });
+    state.wizardAnswer.value = "";
+    applyWizardRun(payload.run || null, payload);
+  }
+
+  function buildExecutionCompletionPayload(run) {
+    const wizard = run?.wizard && typeof run.wizard === "object" ? run.wizard : {};
+    if (asString(wizard.currentStep, "") !== "execute_steps") {
+      return {};
+    }
+    const steps = Array.isArray(wizard?.execution?.steps) ? wizard.execution.steps : [];
+    const firstIncomplete = steps.find((step) => step && step.completed !== true) || null;
+    if (!firstIncomplete) {
+      return {};
+    }
+    const stepResult = asString(state.wizardStepResult.value, "").trim();
+    if (firstIncomplete.mode === "manual" || firstIncomplete.mode === "manual-risky") {
+      if (!stepResult) {
+        return {};
+      }
+      return {
+        completeStepId: asString(firstIncomplete.id, ""),
+        result: stepResult,
+      };
+    }
+    return {};
+  }
+
+  async function moveWizardNext() {
+    if (!runtime.currentWizardRun) {
+      await startWizardRun({ mode: runtime.wizardMode || "create" });
+    }
+    const runId = asString(runtime.currentWizardRun?.runId, "");
+    if (!runId) {
+      throw new Error("Unable to resolve wizard run.");
+    }
+
+    await submitPendingWizardAnswer(runId);
+    const completionPatch = buildExecutionCompletionPayload(runtime.currentWizardRun);
+    const payload = await context.apiPost(`/assistant/wizard/${encodeURIComponent(runId)}/next`, {
+      runName: asString(state.wizardName.value, "").trim(),
+      goal: asString(state.wizardGoal.value, "").trim(),
+      workflowId: asString(state.menuWorkflowSelect.value, "").trim(),
+      message: asString(state.planNote?.value, "").trim(),
+      note: asString(state.planNote?.value, "").trim(),
+      ...completionPatch,
+    });
+    state.wizardStepResult.value = "";
+    if (payload.awaitingAction) {
+      applyWizardRun(payload.run || runtime.currentWizardRun, payload);
+      panel.setStatus("Action required before continuing.", true);
+      return;
+    }
+    applyWizardRun(payload.run || null, payload);
+    await loadWizardRuns(false, asString(payload?.run?.runId, runId));
+    panel.setStatus("Moved to next wizard step.");
+  }
+
+  async function moveWizardBack() {
+    const runId = asString(runtime.currentWizardRun?.runId, "");
+    if (!runId) {
+      throw new Error("Select a wizard run first.");
+    }
+    const payload = await context.apiPost(`/assistant/wizard/${encodeURIComponent(runId)}/back`, {});
+    applyWizardRun(payload.run || null, payload);
+    await loadWizardRuns(false, asString(payload?.run?.runId, runId));
+    panel.setStatus("Moved back one wizard step.");
+  }
+
+  async function approveWizardSafeAction() {
+    const runId = asString(runtime.currentWizardRun?.runId, "");
+    const actionId = asString(runtime.pendingSafeAction?.actionId, "");
+    if (!runId || !actionId) {
+      throw new Error("No pending safe action is waiting for approval.");
+    }
+    const payload = await context.apiPost(`/assistant/wizard/${encodeURIComponent(runId)}/run-safe-action`, {
+      actionId,
+      approved: true,
+      rememberTrust: Boolean(state.wizardSafeRemember.checked),
+    });
+    applyWizardRun(payload.run || null, payload);
+    await loadWizardRuns(false, asString(payload?.run?.runId, runId));
+    panel.setStatus("Safe action executed.");
   }
 
   function openWorkflowChatPopup(preferredWorkflowId = "") {
@@ -1248,6 +1643,95 @@ export async function registerManagerPlugin(context) {
     }
   });
 
+  state.wizardCreateButton.addEventListener("click", async () => {
+    try {
+      runtime.wizardMode = "create";
+      showWizardSection(true);
+      await startWizardRun({ mode: "create" });
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.wizardModifyButton.addEventListener("click", async () => {
+    try {
+      runtime.wizardMode = "modify";
+      showWizardSection(true);
+      await loadWizardRuns(true);
+      if (runtime.selectedWizardRunId) {
+        await loadWizardRun(runtime.selectedWizardRunId);
+      } else {
+        renderWizardOutput(state, { ok: true, runs: [] });
+      }
+      panel.setStatus("Select an existing run and continue the wizard.");
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.closeWizardButton.addEventListener("click", () => {
+    showWizardSection(false);
+    runtime.pendingSafeAction = null;
+    showWizardSafeCard(state, null);
+  });
+
+  state.wizardRefresh.addEventListener("click", async () => {
+    try {
+      await loadWizardRuns(true);
+      if (runtime.selectedWizardRunId) {
+        await loadWizardRun(runtime.selectedWizardRunId);
+      }
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.wizardRunSelect.addEventListener("change", async () => {
+    try {
+      const runId = asString(state.wizardRunSelect.value, "");
+      runtime.selectedWizardRunId = runId;
+      await loadWizardRun(runId, true);
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.wizardBack.addEventListener("click", async () => {
+    try {
+      await moveWizardBack();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.wizardSave.addEventListener("click", async () => {
+    try {
+      await saveWizardRun();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.wizardNext.addEventListener("click", async () => {
+    try {
+      await moveWizardNext();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.wizardSafeApprove.addEventListener("click", async () => {
+    try {
+      await approveWizardSafeAction();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.advancedButton.addEventListener("click", () => {
+    showAdvancedMenu();
+  });
+
   state.configureButton.addEventListener("click", () => {
     showConfigSection();
   });
@@ -1290,6 +1774,10 @@ export async function registerManagerPlugin(context) {
       await loadPlanRuns(false);
       await loadAgentCatalog();
       await loadAgents(false);
+      await loadWizardRuns(false);
+      if (runtime.selectedWizardRunId) {
+        await loadWizardRun(runtime.selectedWizardRunId);
+      }
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
@@ -1530,9 +2018,12 @@ export async function registerManagerPlugin(context) {
   });
 
   showConfigSection(false);
+  showWizardSection(false);
+  showAdvancedMenu(false);
   showPlanSection(false);
   showAgentSection(false);
   showWorkflowSection(false);
+  showWizardSafeCard(state, null);
 
   try {
     await loadStatus();
@@ -1540,6 +2031,7 @@ export async function registerManagerPlugin(context) {
     await loadPlanRuns(false);
     await loadAgentCatalog();
     await loadAgents(false);
+    await loadWizardRuns(false);
   } catch (error) {
     panel.setStatus(error?.message || String(error), true);
   }

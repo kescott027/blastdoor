@@ -3,6 +3,18 @@ import { createConfigStore } from "./config-store.js";
 
 const PLAN_INDEX_KEY = "assistant.plan.index.v1";
 const PLAN_PREFIX = "assistant.plan.run.v1.";
+const WIZARD_STEPS = [
+  "define_name",
+  "define_goal",
+  "create_initial_plan",
+  "clarify_round",
+  "sufficiency_gate",
+  "collect_evidence",
+  "refine_layer",
+  "execution_prep",
+  "execute_steps",
+  "completed",
+];
 
 function normalizeString(value, fallback = "") {
   if (value === undefined || value === null) {
@@ -32,6 +44,7 @@ function toPlanKey(runId) {
 }
 
 function summarizeRun(run) {
+  const wizard = run?.wizard && typeof run.wizard === "object" ? run.wizard : null;
   return {
     runId: run.runId,
     workflowId: run.workflowId,
@@ -41,6 +54,139 @@ function summarizeRun(run) {
     updatedAt: run.updatedAt,
     layerCount: Array.isArray(run.layers) ? run.layers.length : 0,
     evidenceCount: Array.isArray(run.evidence) ? run.evidence.length : 0,
+    runName: normalizeString(run?.meta?.runName, ""),
+    wizardState: normalizeString(wizard?.state, ""),
+    wizardStep: normalizeString(wizard?.currentStep, ""),
+    wizardWorkflowId: normalizeString(wizard?.workflowId, ""),
+    wizardLastSavedAt: normalizeString(wizard?.lastSavedAt, ""),
+  };
+}
+
+function clampInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isInteger(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeWizardQuestions(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry, index) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      const questionId = normalizeString(source.id || source.questionId, `q-${index + 1}`);
+      const prompt = normalizeString(source.prompt, "");
+      const type = normalizeString(source.type, "text");
+      const required = source.required !== false;
+      const options = Array.isArray(source.options)
+        ? source.options.map((option) => normalizeString(option, "")).filter(Boolean).slice(0, 20)
+        : [];
+      return {
+        id: questionId,
+        prompt,
+        type,
+        required,
+        options,
+      };
+    })
+    .filter((entry) => entry.id && entry.prompt);
+}
+
+function normalizeWizardAnswers(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      return {
+        questionId: normalizeString(source.questionId, ""),
+        answer: normalizeString(source.answer, ""),
+        answeredAt: normalizeString(source.answeredAt, nowIso()),
+      };
+    })
+    .filter((entry) => entry.questionId);
+}
+
+function normalizeWizardExecutionSteps(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry, index) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      const mode = normalizeString(source.mode, "manual");
+      return {
+        id: normalizeString(source.id, `step-${index + 1}`),
+        title: normalizeString(source.title, `Step ${index + 1}`),
+        instructions: normalizeString(source.instructions, ""),
+        mode: ["manual", "safe-action", "manual-risky"].includes(mode) ? mode : "manual",
+        actionId: normalizeString(source.actionId, ""),
+        completionCriteria: normalizeString(source.completionCriteria, ""),
+        completed: source.completed === true,
+        result: normalizeString(source.result, ""),
+        completedAt: normalizeString(source.completedAt, ""),
+      };
+    })
+    .filter((entry) => entry.id && entry.title);
+}
+
+function normalizeWizardExecutionLogs(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      return {
+        ts: normalizeString(source.ts, nowIso()),
+        event: normalizeString(source.event, ""),
+        detail: normalizeString(source.detail, ""),
+      };
+    })
+    .filter((entry) => entry.event);
+}
+
+function normalizeWizard(source = {}) {
+  const input = source && typeof source === "object" ? source : {};
+  const state = normalizeString(input.state, "define_name");
+  const currentStep = normalizeString(input.currentStep, state || "define_name");
+  const resolvedState = WIZARD_STEPS.includes(state) ? state : "define_name";
+  const resolvedStep = WIZARD_STEPS.includes(currentStep) ? currentStep : resolvedState;
+  const completedSteps = Array.isArray(input.completedSteps)
+    ? input.completedSteps.map((entry) => normalizeString(entry, "")).filter((entry) => WIZARD_STEPS.includes(entry))
+    : [];
+  const dedupedCompletedSteps = [];
+  for (const step of completedSteps) {
+    if (!dedupedCompletedSteps.includes(step)) {
+      dedupedCompletedSteps.push(step);
+    }
+  }
+  return {
+    version: 1,
+    state: resolvedState,
+    currentStep: resolvedStep,
+    completedSteps: dedupedCompletedSteps,
+    nextPrompt: normalizeString(input.nextPrompt, ""),
+    confidence: {
+      current: clampInteger(input?.confidence?.current, 0, 0, 100),
+      threshold: clampInteger(input?.confidence?.threshold, 80, 1, 100),
+    },
+    clarification: {
+      round: clampInteger(input?.clarification?.round, 0, 0, 32),
+      questions: normalizeWizardQuestions(input?.clarification?.questions),
+      answers: normalizeWizardAnswers(input?.clarification?.answers),
+    },
+    execution: {
+      steps: normalizeWizardExecutionSteps(input?.execution?.steps),
+      logs: normalizeWizardExecutionLogs(input?.execution?.logs),
+    },
+    lastSavedAt: normalizeString(input.lastSavedAt, nowIso()),
+    hostFingerprint: normalizeString(input.hostFingerprint, ""),
+    workflowId: normalizeString(input.workflowId, "troubleshoot-recommendation"),
   };
 }
 
@@ -60,6 +206,7 @@ function normalizeRun(input = {}) {
     evidence,
     links: Array.isArray(source.links) ? source.links : [],
     meta: source.meta && typeof source.meta === "object" ? source.meta : {},
+    wizard: normalizeWizard(source.wizard),
   };
 }
 
@@ -157,6 +304,11 @@ export async function createIntelligencePlanStore(config, options = {}) {
       evidence: [],
       links: [],
       meta: meta && typeof meta === "object" ? meta : {},
+      wizard: normalizeWizard({
+        state: "define_name",
+        currentStep: "define_name",
+        workflowId,
+      }),
     });
     return await saveRun(run);
   }
@@ -205,12 +357,17 @@ export async function createIntelligencePlanStore(config, options = {}) {
     return await saveRun(run);
   }
 
+  async function putRun(runInput = {}) {
+    return await saveRun(runInput);
+  }
+
   return {
     getRun,
     listRuns,
     createRun,
     addEvidence,
     addLayer,
+    putRun,
     close: async () => {
       if (typeof configStore.close === "function") {
         await configStore.close();

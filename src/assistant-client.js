@@ -49,11 +49,168 @@ function normalizeWorkflowType(value) {
       "grimoire",
       "custom",
       "workflow-config-builder",
+      "wizard-clarification",
+      "wizard-sufficiency",
+      "wizard-execution-plan",
     ].includes(normalized)
   ) {
     return normalized;
   }
   return "custom";
+}
+
+function clampInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isInteger(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeWizardClarificationQuestions(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry, index) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      const id = normalizeString(source.id || source.questionId, `q-${index + 1}`);
+      const prompt = normalizeString(source.prompt, "");
+      const type = normalizeString(source.type, "text");
+      const required = source.required !== false;
+      const options = Array.isArray(source.options)
+        ? source.options.map((option) => normalizeString(option, "")).filter(Boolean).slice(0, 12)
+        : [];
+      return { id, prompt, type, required, options };
+    })
+    .filter((entry) => entry.id && entry.prompt);
+}
+
+function normalizeWizardClarificationAnswers(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      return {
+        questionId: normalizeString(source.questionId, ""),
+        answer: normalizeString(source.answer, ""),
+      };
+    })
+    .filter((entry) => entry.questionId && entry.answer);
+}
+
+function buildWizardClarificationResult({ context = {} } = {}) {
+  const threshold = clampInteger(context?.confidenceThreshold, 80, 1, 100);
+  const maxRounds = clampInteger(context?.maxRounds, 3, 1, 10);
+  const round = clampInteger(context?.round, 1, 1, maxRounds);
+  const goal = normalizeString(context?.goal, "");
+  const runName = normalizeString(context?.runName, "");
+  const existingQuestions = normalizeWizardClarificationQuestions(context?.existingQuestions);
+  const answers = normalizeWizardClarificationAnswers(context?.answers);
+  const answeredCount = answers.length;
+
+  let confidence = 35;
+  if (runName) {
+    confidence += 15;
+  }
+  if (goal) {
+    confidence += 20;
+  }
+  confidence += Math.min(35, answeredCount * 10);
+  confidence = clampInteger(confidence, 35, 0, 100);
+
+  let questions = existingQuestions;
+  if (questions.length === 0) {
+    questions = [
+      {
+        id: "scope-boundary",
+        prompt: "What is explicitly out of scope for this workflow?",
+        type: "text",
+        required: true,
+        options: [],
+      },
+      {
+        id: "success-signal",
+        prompt: "What concrete result proves this workflow succeeded?",
+        type: "text",
+        required: true,
+        options: [],
+      },
+      {
+        id: "constraints",
+        prompt: "List constraints (time, tools, risk tolerance, permissions).",
+        type: "text",
+        required: false,
+        options: [],
+      },
+    ];
+  }
+
+  const hasOutstandingQuestions = questions.some(
+    (question) =>
+      question.required &&
+      !answers.some((answer) => answer.questionId === question.id && normalizeString(answer.answer, "")),
+  );
+  const needsMoreInfo = (confidence < threshold || hasOutstandingQuestions) && round < maxRounds;
+
+  return {
+    confidence,
+    needsMoreInfo,
+    questions: questions.slice(0, 5),
+    summary: needsMoreInfo
+      ? "More input is needed before proceeding."
+      : "Clarification appears sufficient for the 80/20 threshold.",
+  };
+}
+
+function buildWizardSufficiencyResult({ context = {} } = {}) {
+  const threshold = clampInteger(context?.confidenceThreshold, 80, 1, 100);
+  const current = clampInteger(context?.confidenceCurrent, 0, 0, 100);
+  const unansweredRequired = clampInteger(context?.unansweredRequired, 0, 0, 100);
+  const readyForEvidence = current >= threshold && unansweredRequired === 0;
+  return {
+    confidence: current,
+    readyForEvidence,
+    rationale: readyForEvidence
+      ? "Confidence reached threshold and required questions are answered."
+      : "More clarification is required before evidence collection.",
+  };
+}
+
+function buildWizardExecutionPlanResult({ context = {} } = {}) {
+  const isWsl = Boolean(context?.environment?.isWsl);
+  const steps = [
+    {
+      id: "review-plan",
+      title: "Review scoped objective and guardrails",
+      instructions: "Confirm the workflow objective, constraints, and rollback criteria before running commands.",
+      mode: "manual",
+      completionCriteria: "Operator confirms objective and constraints are correct.",
+    },
+    {
+      id: "collect-runtime",
+      title: "Collect runtime network and health snapshot",
+      instructions: "Run the safe diagnostic action and attach results to this workflow run.",
+      mode: "safe-action",
+      actionId: isWsl ? "detect.wsl-portproxy" : "snapshot.network",
+      completionCriteria: "Diagnostic output is collected and attached.",
+    },
+    {
+      id: "validate-gateway",
+      title: "Validate gateway reachability and summarize findings",
+      instructions:
+        "Run gateway checks, compare against expected state, and capture any deviations with recommended next actions.",
+      mode: "safe-action",
+      actionId: "check.gateway-local",
+      completionCriteria: "Gateway check results are captured and interpreted.",
+    },
+  ];
+  return {
+    steps,
+    completionCriteria: "All execution steps are completed and findings are logged.",
+  };
 }
 
 function inferWorkflowTypeFromDescription(description = "") {
@@ -354,6 +511,39 @@ function createLocalAssistantClient(config) {
           result.assistantNarrative ||
           result.summary ||
           "Grimoire generated an API block chain for the provided intent.",
+      };
+    }
+
+    if (workflowType === "wizard-clarification") {
+      const result = buildWizardClarificationResult({ context });
+      return {
+        workflowId,
+        workflowType,
+        generatedAt: new Date().toISOString(),
+        result,
+        reply: result.summary,
+      };
+    }
+
+    if (workflowType === "wizard-sufficiency") {
+      const result = buildWizardSufficiencyResult({ context });
+      return {
+        workflowId,
+        workflowType,
+        generatedAt: new Date().toISOString(),
+        result,
+        reply: result.rationale,
+      };
+    }
+
+    if (workflowType === "wizard-execution-plan") {
+      const result = buildWizardExecutionPlanResult({ context });
+      return {
+        workflowId,
+        workflowType,
+        generatedAt: new Date().toISOString(),
+        result,
+        reply: "Execution plan generated.",
       };
     }
 

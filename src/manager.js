@@ -5199,6 +5199,8 @@ export function createManagerApp(options = {}) {
     parseBooleanLikeBody,
     normalizeString,
     applyThreatLockdown,
+    runTroubleshootAction,
+    commandRunner,
     CONFIG_DEFAULTS,
     installationConfigPath,
   });
