@@ -93,6 +93,10 @@ function renderOutput(state, payload) {
   state.output.textContent = JSON.stringify(payload || {}, null, 2);
 }
 
+function renderPlanOutput(state, payload) {
+  state.planOutput.textContent = JSON.stringify(payload || {}, null, 2);
+}
+
 function showSection(section, show) {
   if (!section) {
     return;
@@ -201,14 +205,26 @@ function createState(root) {
     assistantAutoLockOnThreat: root.querySelector("[data-intel-assistant-auto-lock]"),
     assistantThreatScoreThreshold: root.querySelector("[data-intel-assistant-threat-threshold]"),
     configureButton: root.querySelector("[data-intel-open-config]"),
+    planButton: root.querySelector("[data-intel-open-plan]"),
     workflowsButton: root.querySelector("[data-intel-open-workflows]"),
     openChatPopoutButton: root.querySelector("[data-intel-open-chat-popout]"),
     menuWorkflowSelect: root.querySelector("[data-intel-menu-workflow-select]"),
     configSection: root.querySelector("[data-intel-config-section]"),
+    planSection: root.querySelector("[data-intel-plan-section]"),
     workflowsSection: root.querySelector("[data-intel-workflow-section]"),
     closeConfigButton: root.querySelector("[data-intel-close-config]"),
+    closePlanButton: root.querySelector("[data-intel-close-plan]"),
     closeWorkflowButton: root.querySelector("[data-intel-close-workflow]"),
     refreshButton: root.querySelector("[data-intel-action-refresh]"),
+    planGoal: root.querySelector("[data-intel-plan-goal]"),
+    planWorkflowSelect: root.querySelector("[data-intel-plan-workflow]"),
+    planRunSelect: root.querySelector("[data-intel-plan-run]"),
+    planNote: root.querySelector("[data-intel-plan-note]"),
+    planCreate: root.querySelector("[data-intel-plan-create]"),
+    planCollect: root.querySelector("[data-intel-plan-collect]"),
+    planRefine: root.querySelector("[data-intel-plan-refine]"),
+    planRefresh: root.querySelector("[data-intel-plan-refresh]"),
+    planOutput: root.querySelector("[data-intel-plan-output]"),
     workflowSelect: root.querySelector("[data-intel-workflow-select]"),
     workflowLaunch: root.querySelector("[data-intel-workflow-launch]"),
     workflowNew: root.querySelector("[data-intel-workflow-new]"),
@@ -252,14 +268,26 @@ function validateState(state) {
     "assistantAutoLockOnThreat",
     "assistantThreatScoreThreshold",
     "configureButton",
+    "planButton",
     "workflowsButton",
     "openChatPopoutButton",
     "menuWorkflowSelect",
     "configSection",
+    "planSection",
     "workflowsSection",
     "closeConfigButton",
+    "closePlanButton",
     "closeWorkflowButton",
     "refreshButton",
+    "planGoal",
+    "planWorkflowSelect",
+    "planRunSelect",
+    "planNote",
+    "planCreate",
+    "planCollect",
+    "planRefine",
+    "planRefresh",
+    "planOutput",
     "workflowSelect",
     "workflowLaunch",
     "workflowNew",
@@ -297,6 +325,7 @@ function createPanelMarkup() {
     <section class="intel-menu">
       <div class="button-row">
         <button type="button" data-intel-open-config>Configure Intelligence Module</button>
+        <button type="button" data-intel-open-plan>Phase 0 Plan Lab</button>
         <button type="button" data-intel-open-workflows>Create Workflow</button>
       </div>
       <div class="grid">
@@ -372,6 +401,43 @@ function createPanelMarkup() {
         <h3>Output</h3>
         <pre class="log-box" data-intel-output></pre>
       </section>
+    </section>
+
+    <section class="intel-plan-wrap hidden" data-intel-plan-section hidden>
+      <div class="intel-section-header">
+        <h3>Phase 0 Plan Lab (Human-in-the-loop)</h3>
+        <button type="button" class="secondary" data-intel-close-plan>Close</button>
+      </div>
+
+      <div class="grid">
+        <label>Goal
+          <textarea data-intel-plan-goal placeholder="Describe the outcome you want and constraints to honor."></textarea>
+        </label>
+        <label>Workflow
+          <select data-intel-plan-workflow></select>
+        </label>
+      </div>
+
+      <div class="button-row">
+        <button type="button" data-intel-plan-create>Create Plan Run</button>
+        <button type="button" class="secondary" data-intel-plan-refresh>Refresh Runs</button>
+      </div>
+
+      <div class="grid">
+        <label>Plan Runs
+          <select data-intel-plan-run></select>
+        </label>
+        <label>Operator Note / Refine Prompt
+          <input type="text" data-intel-plan-note placeholder="Optional note for evidence collection or refine prompt." />
+        </label>
+      </div>
+
+      <div class="button-row">
+        <button type="button" data-intel-plan-collect>Collect Evidence</button>
+        <button type="button" data-intel-plan-refine>Refine Next Layer</button>
+      </div>
+
+      <pre class="log-box" data-intel-plan-output></pre>
     </section>
 
     <section class="intel-workflow-wrap hidden" data-intel-workflow-section hidden>
@@ -470,6 +536,7 @@ function createPanelMarkup() {
 function renderWorkflowSelects(state, workflows, selectedId = "") {
   state.menuWorkflowSelect.textContent = "";
   state.workflowSelect.textContent = "";
+  state.planWorkflowSelect.textContent = "";
   for (const workflow of workflows) {
     const menuOption = document.createElement("option");
     menuOption.value = workflow.id;
@@ -480,13 +547,35 @@ function renderWorkflowSelects(state, workflows, selectedId = "") {
     option.value = workflow.id;
     option.textContent = `${workflow.name} (${workflow.type})`;
     state.workflowSelect.append(option);
+
+    const planOption = document.createElement("option");
+    planOption.value = workflow.id;
+    planOption.textContent = `${workflow.name} (${workflow.type})`;
+    state.planWorkflowSelect.append(planOption);
   }
   if (selectedId && workflows.some((workflow) => workflow.id === selectedId)) {
     state.menuWorkflowSelect.value = selectedId;
     state.workflowSelect.value = selectedId;
+    state.planWorkflowSelect.value = selectedId;
   } else if (workflows[0]) {
     state.menuWorkflowSelect.value = workflows[0].id;
     state.workflowSelect.value = workflows[0].id;
+    state.planWorkflowSelect.value = workflows[0].id;
+  }
+}
+
+function renderPlanRunSelect(state, runs, selectedRunId = "") {
+  state.planRunSelect.textContent = "";
+  for (const run of runs) {
+    const option = document.createElement("option");
+    option.value = run.runId;
+    option.textContent = `${run.goal || run.runId} [layers:${run.layerCount || 0} evidence:${run.evidenceCount || 0}]`;
+    state.planRunSelect.append(option);
+  }
+  if (selectedRunId && runs.some((run) => run.runId === selectedRunId)) {
+    state.planRunSelect.value = selectedRunId;
+  } else if (runs[0]) {
+    state.planRunSelect.value = runs[0].runId;
   }
 }
 
@@ -506,6 +595,8 @@ export async function registerManagerPlugin(context) {
     workflows: [],
     workflowMap: new Map(),
     selectedWorkflowId: "",
+    planRuns: [],
+    selectedPlanRunId: "",
     launchedWorkflowId: "",
     refreshTick: 0,
     statusLoadedOnce: false,
@@ -537,6 +628,11 @@ export async function registerManagerPlugin(context) {
   function showWorkflowSection(forceVisible = null) {
     const nextVisible = forceVisible === null ? state.workflowsSection.hidden : Boolean(forceVisible);
     showSection(state.workflowsSection, nextVisible);
+  }
+
+  function showPlanSection(forceVisible = null) {
+    const nextVisible = forceVisible === null ? state.planSection.hidden : Boolean(forceVisible);
+    showSection(state.planSection, nextVisible);
   }
 
   function hideChatSection() {
@@ -595,6 +691,78 @@ export async function registerManagerPlugin(context) {
     if (showMessage) {
       panel.setStatus(`Loaded ${workflows.length} workflows.`);
     }
+  }
+
+  async function loadPlanRun(runId) {
+    if (!runId) {
+      renderPlanOutput(state, { ok: true, run: null });
+      return;
+    }
+    const payload = await context.apiGet(`/assistant/plans/${encodeURIComponent(runId)}`);
+    renderPlanOutput(state, payload);
+    runtime.selectedPlanRunId = asString(payload?.run?.runId || runId, "");
+  }
+
+  async function loadPlanRuns(showMessage = false, preferredRunId = "") {
+    const payload = await context.apiGet("/assistant/plans?limit=50");
+    const runs = Array.isArray(payload.runs) ? payload.runs : [];
+    runtime.planRuns = runs;
+    renderPlanRunSelect(state, runs, preferredRunId || runtime.selectedPlanRunId);
+    runtime.selectedPlanRunId = asString(state.planRunSelect.value, "");
+    if (runtime.selectedPlanRunId) {
+      await loadPlanRun(runtime.selectedPlanRunId);
+    } else {
+      renderPlanOutput(state, payload);
+    }
+    if (showMessage) {
+      panel.setStatus(`Loaded ${runs.length} phase 0 plan runs.`);
+    }
+  }
+
+  async function createPlanRun() {
+    const goal = asString(state.planGoal.value, "").trim();
+    if (!goal) {
+      throw new Error("Goal is required to create a plan run.");
+    }
+    const workflowId = asString(state.planWorkflowSelect.value, "").trim() || "troubleshoot-recommendation";
+    const payload = await context.apiPost("/assistant/plans/create", {
+      goal,
+      workflowId,
+    });
+    renderPlanOutput(state, payload);
+    const runId = asString(payload?.run?.runId, "");
+    await loadPlanRuns(false, runId);
+    panel.setStatus(`Created phase 0 plan run ${runId || ""}`.trim());
+  }
+
+  async function collectPlanEvidence() {
+    const runId = asString(state.planRunSelect.value, "").trim();
+    if (!runId) {
+      throw new Error("Select a plan run first.");
+    }
+    const note = asString(state.planNote.value, "").trim();
+    const payload = await context.apiPost(`/assistant/plans/${encodeURIComponent(runId)}/collect-evidence`, {
+      note,
+    });
+    renderPlanOutput(state, payload);
+    await loadPlanRuns(false, runId);
+    panel.setStatus("Collected diagnostics evidence into selected plan run.");
+  }
+
+  async function refinePlanRun() {
+    const runId = asString(state.planRunSelect.value, "").trim();
+    if (!runId) {
+      throw new Error("Select a plan run first.");
+    }
+    const message = asString(state.planNote.value, "").trim();
+    const workflowId = asString(state.planWorkflowSelect.value, "").trim() || undefined;
+    const payload = await context.apiPost(`/assistant/plans/${encodeURIComponent(runId)}/refine`, {
+      message,
+      workflowId,
+    });
+    renderPlanOutput(state, payload);
+    await loadPlanRuns(false, runId);
+    panel.setStatus("Generated next plan layer from collected evidence.");
   }
 
   async function saveWorkflow() {
@@ -705,6 +873,9 @@ export async function registerManagerPlugin(context) {
   state.configureButton.addEventListener("click", () => {
     showConfigSection();
   });
+  state.planButton.addEventListener("click", () => {
+    showPlanSection();
+  });
   state.workflowsButton.addEventListener("click", () => {
     showWorkflowSection();
     hideChatSection();
@@ -720,6 +891,9 @@ export async function registerManagerPlugin(context) {
   state.closeConfigButton.addEventListener("click", () => {
     showConfigSection(false);
   });
+  state.closePlanButton.addEventListener("click", () => {
+    showPlanSection(false);
+  });
   state.closeWorkflowButton.addEventListener("click", () => {
     showWorkflowSection(false);
     hideChatSection();
@@ -729,6 +903,49 @@ export async function registerManagerPlugin(context) {
     try {
       await loadStatus(true);
       await loadWorkflows(false);
+      await loadPlanRuns(false);
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.planRefresh.addEventListener("click", async () => {
+    try {
+      await loadPlanRuns(true);
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.planCreate.addEventListener("click", async () => {
+    try {
+      await createPlanRun();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.planCollect.addEventListener("click", async () => {
+    try {
+      await collectPlanEvidence();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.planRefine.addEventListener("click", async () => {
+    try {
+      await refinePlanRun();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.planRunSelect.addEventListener("change", async () => {
+    try {
+      const runId = asString(state.planRunSelect.value, "");
+      runtime.selectedPlanRunId = runId;
+      await loadPlanRun(runId);
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
@@ -860,11 +1077,13 @@ export async function registerManagerPlugin(context) {
   });
 
   showConfigSection(false);
+  showPlanSection(false);
   showWorkflowSection(false);
 
   try {
     await loadStatus();
     await loadWorkflows();
+    await loadPlanRuns(false);
   } catch (error) {
     panel.setStatus(error?.message || String(error), true);
   }
@@ -875,6 +1094,7 @@ export async function registerManagerPlugin(context) {
       if (!runtime.statusLoadedOnce) {
         await loadStatus();
         await loadWorkflows();
+        await loadPlanRuns(false);
         return;
       }
       if (runtime.refreshTick % 10 === 0) {

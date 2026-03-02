@@ -7,6 +7,7 @@ import {
   summarizeWorkflowForList,
   upsertIntelligenceWorkflow,
 } from "../intelligence-workflow-store.js";
+import { createIntelligencePlanStore } from "../intelligence-plan-store.js";
 
 function normalizeAssistantProvider(value) {
   const normalized = String(value || "ollama").trim().toLowerCase();
@@ -95,6 +96,110 @@ function makeApiDocSnapshot() {
     "POST /api/themes/apply",
     "POST /api/sessions/revoke-all",
   ];
+}
+
+function parseEmbeddedJsonObject(rawText) {
+  const text = String(rawText || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Ignore invalid JSON; the caller will fall back to plain-text handling.
+  }
+
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  const candidate = text.slice(start, end + 1);
+  try {
+    const parsed = JSON.parse(candidate);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Ignore invalid JSON; this is a best-effort extractor.
+  }
+  return null;
+}
+
+function normalizePlanSteps(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry, index) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      const stepIdRaw = String(source.id || source.stepId || `step-${index + 1}`).trim();
+      const stepId = stepIdRaw || `step-${index + 1}`;
+      return {
+        id: stepId,
+        title: String(source.title || source.name || `Step ${index + 1}`).trim(),
+        objective: String(source.objective || source.goal || "").trim(),
+        actions: Array.isArray(source.actions)
+          ? source.actions.map((action) => String(action || "").trim()).filter(Boolean)
+          : [],
+        validation: String(source.validation || source.verify || "").trim(),
+        safeOnly: source.safeOnly !== false,
+      };
+    })
+    .filter((step) => step.id && step.title);
+}
+
+function derivePlanLayerFromChatResult(chatResult, { goal = "", fallbackSummary = "" } = {}) {
+  const safeGoal = String(goal || "").trim();
+  const fallback = String(fallbackSummary || "").trim() || (safeGoal ? `Plan draft for: ${safeGoal}` : "Plan draft");
+  const replyText = String(
+    chatResult?.reply || chatResult?.result?.assistantNarrative || chatResult?.summary || "",
+  ).trim();
+
+  const candidates = [
+    chatResult?.result?.plan,
+    chatResult?.result?.phase0Plan,
+    chatResult?.result,
+    chatResult?.suggestedPlan,
+    parseEmbeddedJsonObject(replyText),
+  ];
+  const planCandidate = candidates.find((entry) => entry && typeof entry === "object" && !Array.isArray(entry)) || {};
+
+  const planSummary = String(planCandidate.summary || planCandidate.planSummary || replyText || fallback).trim() || fallback;
+  const steps = normalizePlanSteps(planCandidate.steps);
+  const normalizedPlan = {
+    goal: safeGoal,
+    summary: planSummary,
+    steps,
+    source: "assistant",
+    assistantReply: replyText,
+    metadata: {
+      workflowId: String(chatResult?.workflowId || "").trim(),
+      workflowType: String(chatResult?.workflowType || "").trim(),
+      generatedAt: String(chatResult?.generatedAt || new Date().toISOString()).trim(),
+    },
+  };
+
+  return {
+    summary: planSummary,
+    plan: normalizedPlan,
+  };
+}
+
+function chooseWorkflowById(workflowStore, workflowId) {
+  const workflows = Array.isArray(workflowStore?.workflows) ? workflowStore.workflows : [];
+  const desired = String(workflowId || "").trim();
+  return (
+    workflows.find((workflow) => workflow.id === desired) ||
+    workflows.find((workflow) => workflow.id === "troubleshoot-recommendation") ||
+    workflows.find((workflow) => workflow.id === "config-recommendations") ||
+    workflows[0] ||
+    null
+  );
 }
 
 export function createIntelligencePlugin() {
@@ -200,6 +305,7 @@ export function createIntelligencePlugin() {
       decorateLocalApi(api, context) {
         const intelligence = ensureIntelligenceNamespace(api);
         let assistantClient = null;
+        let planStorePromise = null;
         function getAssistantClient() {
           if (assistantClient) {
             return assistantClient;
@@ -211,6 +317,23 @@ export function createIntelligencePlugin() {
             },
           });
           return assistantClient;
+        }
+        async function getPlanStore() {
+          if (!planStorePromise) {
+            const runtimeConfig =
+              context?.config && typeof context.config === "object"
+                ? context.config
+                : {
+                    configStoreMode: "env",
+                    databaseFile: "",
+                    postgresUrl: "",
+                    postgresSsl: false,
+                  };
+            planStorePromise = createIntelligencePlanStore(runtimeConfig, {
+              postgresPoolFactory: context?.postgresPoolFactory || context?.options?.postgresPoolFactory,
+            });
+          }
+          return await planStorePromise;
         }
 
         intelligence.getStatus = async () => {
@@ -231,6 +354,40 @@ export function createIntelligencePlugin() {
         intelligence.runWorkflowChat = async (payload = {}) => {
           return await getAssistantClient().runWorkflowChat(payload);
         };
+        intelligence.listPlanRuns = async (payload = {}) => {
+          const planStore = await getPlanStore();
+          return await planStore.listRuns({
+            limit: Number.parseInt(String(payload?.limit ?? "20"), 10),
+          });
+        };
+        intelligence.getPlanRun = async (payload = {}) => {
+          const runId = String(payload?.runId || "").trim();
+          if (!runId) {
+            throw new Error("runId is required.");
+          }
+          const planStore = await getPlanStore();
+          return await planStore.getRun(runId);
+        };
+        intelligence.createPlanRun = async (payload = {}) => {
+          const planStore = await getPlanStore();
+          return await planStore.createRun(payload);
+        };
+        intelligence.addPlanEvidence = async (payload = {}) => {
+          const runId = String(payload?.runId || "").trim();
+          if (!runId) {
+            throw new Error("runId is required.");
+          }
+          const planStore = await getPlanStore();
+          return await planStore.addEvidence(runId, payload?.entries || []);
+        };
+        intelligence.addPlanLayer = async (payload = {}) => {
+          const runId = String(payload?.runId || "").trim();
+          if (!runId) {
+            throw new Error("runId is required.");
+          }
+          const planStore = await getPlanStore();
+          return await planStore.addLayer(runId, payload?.layer || {});
+        };
 
         const previousClose = api.close;
         api.close = async () => {
@@ -239,6 +396,12 @@ export function createIntelligencePlugin() {
           }
           if (typeof assistantClient?.close === "function") {
             await assistantClient.close();
+          }
+          if (planStorePromise) {
+            const planStore = await planStorePromise;
+            if (typeof planStore?.close === "function") {
+              await planStore.close();
+            }
           }
         };
       },
@@ -292,6 +455,54 @@ export function createIntelligencePlugin() {
           });
           return body.result || {};
         };
+        intelligence.listPlanRuns = async (payload = {}) => {
+          const limit = Number.parseInt(String(payload?.limit ?? "20"), 10);
+          const body = await request(`/internal/plugins/intelligence/plans?limit=${encodeURIComponent(String(limit))}`, {
+            method: "GET",
+            retryable: true,
+          });
+          return Array.isArray(body.runs) ? body.runs : [];
+        };
+        intelligence.getPlanRun = async (payload = {}) => {
+          const runId = String(payload?.runId || "").trim();
+          if (!runId) {
+            throw new Error("runId is required.");
+          }
+          const body = await request(`/internal/plugins/intelligence/plans/${encodeURIComponent(runId)}`, {
+            method: "GET",
+            retryable: true,
+          });
+          return body.run || null;
+        };
+        intelligence.createPlanRun = async (payload = {}) => {
+          const body = await request("/internal/plugins/intelligence/plans", {
+            method: "POST",
+            payload,
+          });
+          return body.run || null;
+        };
+        intelligence.addPlanEvidence = async (payload = {}) => {
+          const runId = String(payload?.runId || "").trim();
+          if (!runId) {
+            throw new Error("runId is required.");
+          }
+          const body = await request(`/internal/plugins/intelligence/plans/${encodeURIComponent(runId)}/evidence`, {
+            method: "POST",
+            payload,
+          });
+          return body.run || null;
+        };
+        intelligence.addPlanLayer = async (payload = {}) => {
+          const runId = String(payload?.runId || "").trim();
+          if (!runId) {
+            throw new Error("runId is required.");
+          }
+          const body = await request(`/internal/plugins/intelligence/plans/${encodeURIComponent(runId)}/layers`, {
+            method: "POST",
+            payload,
+          });
+          return body.run || null;
+        };
       },
 
       registerApiServerRoutes({ registerRead, registerWrite, api }) {
@@ -323,6 +534,38 @@ export function createIntelligencePlugin() {
           const result = await api.plugins?.intelligence?.runWorkflowChat(req.body || {});
           res.json({ ok: true, result: result || {} });
         });
+        registerRead("/internal/plugins/intelligence/plans", async (req, res) => {
+          const limit = Number.parseInt(String(req.query?.limit ?? "20"), 10);
+          const runs = await api.plugins?.intelligence?.listPlanRuns({ limit });
+          res.json({ ok: true, runs: Array.isArray(runs) ? runs : [] });
+        });
+        registerRead("/internal/plugins/intelligence/plans/:runId", async (req, res) => {
+          const run = await api.plugins?.intelligence?.getPlanRun({
+            runId: req.params?.runId,
+          });
+          if (!run) {
+            return res.status(404).json({ error: "Plan run not found." });
+          }
+          return res.json({ ok: true, run });
+        });
+        registerWrite("/internal/plugins/intelligence/plans", async (req, res) => {
+          const run = await api.plugins?.intelligence?.createPlanRun(req.body || {});
+          res.json({ ok: true, run: run || null });
+        });
+        registerWrite("/internal/plugins/intelligence/plans/:runId/evidence", async (req, res) => {
+          const run = await api.plugins?.intelligence?.addPlanEvidence({
+            ...(req.body || {}),
+            runId: req.params?.runId,
+          });
+          res.json({ ok: true, run: run || null });
+        });
+        registerWrite("/internal/plugins/intelligence/plans/:runId/layers", async (req, res) => {
+          const run = await api.plugins?.intelligence?.addPlanLayer({
+            ...(req.body || {}),
+            runId: req.params?.runId,
+          });
+          res.json({ ok: true, run: run || null });
+        });
       },
     },
 
@@ -349,6 +592,41 @@ export function createIntelligencePlugin() {
         installationConfigPath,
       }) {
         const workflowStorePath = path.join(workspaceDir, "data", "intelligence-workflows.json");
+        const DEFAULT_PHASE0_WORKFLOW_ID = "troubleshoot-recommendation";
+
+        async function buildAssistantContext(config) {
+          const serviceStatus = processState.getStatus();
+          const [health, foundryHealth] = await Promise.all([
+            checkBlastdoorHealth(config),
+            checkFoundryTargetHealth(config),
+          ]);
+          const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+          const diagnosticsReport = {
+            generatedAt: new Date().toISOString(),
+            serviceStatus,
+            health,
+            environment,
+            config: sanitizeConfigForDiagnostics(config),
+          };
+          const troubleshootReport = createTroubleshootReport({
+            config,
+            health,
+            foundryHealth,
+            environment,
+            serviceStatus,
+          });
+          const installationConfig = await readInstallationConfig(installationConfigPath);
+
+          return {
+            serviceStatus,
+            health,
+            foundryHealth,
+            environment,
+            diagnosticsReport,
+            troubleshootReport,
+            installationConfig: installationConfig || {},
+          };
+        }
 
         registerApiGet("/assistant/status", async (_req, res) => {
           try {
@@ -563,6 +841,286 @@ export function createIntelligencePlugin() {
             });
           } catch (error) {
             res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiGet("/assistant/plans", async (req, res) => {
+          try {
+            const limit = Number.parseInt(normalizeManagerString(req.query?.limit, "20"), 10);
+            const runs = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.listPlanRuns({ limit });
+            });
+            res.json({
+              ok: true,
+              runs: Array.isArray(runs) ? runs : [],
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiGet("/assistant/plans/:runId", async (req, res) => {
+          try {
+            const runId = normalizeManagerString(req.params?.runId, "");
+            if (!runId) {
+              throw new Error("runId is required.");
+            }
+            const run = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.getPlanRun({ runId });
+            });
+            if (!run) {
+              return res.status(404).json({ error: "Plan run not found." });
+            }
+            return res.json({
+              ok: true,
+              run,
+            });
+          } catch (error) {
+            return res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/plans/create", async (req, res) => {
+          try {
+            const goal = normalizeManagerString(req.body?.goal, "");
+            if (!goal) {
+              throw new Error("goal is required.");
+            }
+
+            const requestedWorkflowId = normalizeManagerString(req.body?.workflowId, DEFAULT_PHASE0_WORKFLOW_ID);
+            const workflowStore = await readIntelligenceWorkflowStore(workflowStorePath);
+            const selectedWorkflow = chooseWorkflowById(workflowStore, requestedWorkflowId);
+            if (!selectedWorkflow) {
+              throw new Error("No workflow is available to generate plan scaffolding.");
+            }
+
+            const config = await readEnvConfig(envPath);
+            const contextData = await buildAssistantContext(config);
+            const assistantMessage =
+              normalizeManagerString(req.body?.message, "") ||
+              `Create a phase 0 plan for this goal: ${goal}. Return concise JSON with summary and steps[].`;
+
+            const chatResult = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.runWorkflowChat({
+                workflow: selectedWorkflow,
+                message: assistantMessage,
+                context: {
+                  diagnosticsReport: contextData.diagnosticsReport,
+                  troubleshootReport: contextData.troubleshootReport,
+                  installationConfig: contextData.installationConfig || {},
+                  apiDocs: makeApiDocSnapshot(),
+                  planGoal: goal,
+                  phase: "phase-0",
+                },
+              });
+            });
+
+            const initialLayer = derivePlanLayerFromChatResult(chatResult, {
+              goal,
+              fallbackSummary: `Phase 0 plan created for: ${goal}`,
+            });
+
+            const run = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.createPlanRun({
+                workflowId: selectedWorkflow.id,
+                goal,
+                createdBy: "manager-ui",
+                initialLayer: {
+                  summary: initialLayer.summary,
+                  plan: {
+                    ...initialLayer.plan,
+                    bootstrap: true,
+                  },
+                },
+                meta: {
+                  phase: "phase-0",
+                  workflowType: selectedWorkflow.type,
+                },
+              });
+            });
+
+            res.json({
+              ok: true,
+              run: run || null,
+              selectedWorkflow: summarizeWorkflowForList(selectedWorkflow),
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/plans/:runId/evidence", async (req, res) => {
+          try {
+            const runId = normalizeManagerString(req.params?.runId, "");
+            if (!runId) {
+              throw new Error("runId is required.");
+            }
+            const title = normalizeManagerString(req.body?.title, "Operator note");
+            const summary = normalizeManagerString(req.body?.summary, "");
+            if (!summary) {
+              throw new Error("summary is required.");
+            }
+            const payload =
+              req.body?.payload && typeof req.body.payload === "object"
+                ? req.body.payload
+                : {
+                    note: summary,
+                  };
+
+            const run = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.addPlanEvidence({
+                runId,
+                entries: [
+                  {
+                    type: "operator-note",
+                    title,
+                    summary,
+                    payload,
+                  },
+                ],
+              });
+            });
+            res.json({
+              ok: true,
+              run: run || null,
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/plans/:runId/collect-evidence", async (req, res) => {
+          try {
+            const runId = normalizeManagerString(req.params?.runId, "");
+            if (!runId) {
+              throw new Error("runId is required.");
+            }
+            const config = await readEnvConfig(envPath);
+            const contextData = await buildAssistantContext(config);
+            const operatorNote = normalizeManagerString(req.body?.note, "");
+            const entries = [
+              {
+                type: "diagnostics-report",
+                title: "Diagnostics report snapshot",
+                summary: "Captured current diagnostics report for this plan run.",
+                payload: contextData.diagnosticsReport,
+              },
+              {
+                type: "troubleshoot-report",
+                title: "Troubleshooting report snapshot",
+                summary: "Captured troubleshooting report for current runtime state.",
+                payload: contextData.troubleshootReport,
+              },
+            ];
+            if (operatorNote) {
+              entries.push({
+                type: "operator-note",
+                title: "Operator note",
+                summary: operatorNote,
+                payload: {
+                  note: operatorNote,
+                },
+              });
+            }
+
+            const run = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.addPlanEvidence({
+                runId,
+                entries,
+              });
+            });
+
+            res.json({
+              ok: true,
+              run: run || null,
+              evidenceAdded: entries.length,
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/plans/:runId/refine", async (req, res) => {
+          try {
+            const runId = normalizeManagerString(req.params?.runId, "");
+            if (!runId) {
+              throw new Error("runId is required.");
+            }
+
+            const run = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.getPlanRun({ runId });
+            });
+            if (!run) {
+              return res.status(404).json({ error: "Plan run not found." });
+            }
+
+            const workflowStore = await readIntelligenceWorkflowStore(workflowStorePath);
+            const selectedWorkflow = chooseWorkflowById(
+              workflowStore,
+              normalizeManagerString(req.body?.workflowId, run.workflowId || DEFAULT_PHASE0_WORKFLOW_ID),
+            );
+            if (!selectedWorkflow) {
+              return res.status(400).json({ error: "No workflow is available to refine this plan." });
+            }
+
+            const config = await readEnvConfig(envPath);
+            const contextData = await buildAssistantContext(config);
+            const operatorMessage =
+              normalizeManagerString(req.body?.message, "") ||
+              `Refine this plan with a deeper layer based on evidence and diagnostics. Goal: ${run.goal || ""}`.trim();
+
+            const chatResult = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.runWorkflowChat({
+                workflow: selectedWorkflow,
+                message: operatorMessage,
+                context: {
+                  diagnosticsReport: contextData.diagnosticsReport,
+                  troubleshootReport: contextData.troubleshootReport,
+                  installationConfig: contextData.installationConfig || {},
+                  apiDocs: makeApiDocSnapshot(),
+                  planRun: run,
+                  phase: "phase-0-refine",
+                },
+              });
+            });
+
+            const lastLayer = Array.isArray(run.layers) && run.layers.length > 0 ? run.layers[run.layers.length - 1] : null;
+            const layer = derivePlanLayerFromChatResult(chatResult, {
+              goal: run.goal || "",
+              fallbackSummary: `Refined layer for: ${run.goal || "plan run"}`,
+            });
+
+            const updatedRun = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.addPlanLayer({
+                runId,
+                layer: {
+                  source: "assistant",
+                  parentLayer: Number.isInteger(lastLayer?.layer) ? lastLayer.layer : null,
+                  summary: layer.summary,
+                  plan: layer.plan,
+                },
+              });
+            });
+
+            return res.json({
+              ok: true,
+              run: updatedRun || null,
+              selectedWorkflow: summarizeWorkflowForList(selectedWorkflow),
+            });
+          } catch (error) {
+            return res.status(400).json({
               error: error instanceof Error ? error.message : String(error),
             });
           }

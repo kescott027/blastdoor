@@ -1,5 +1,6 @@
 .intelligence-plugin-panel .intel-menu,
 .intelligence-plugin-panel .intel-config-wrap,
+.intelligence-plugin-panel .intel-plan-wrap,
 .intelligence-plugin-panel .intel-workflow-wrap {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
@@ -8,6 +9,7 @@
 }
 
 .intelligence-plugin-panel .intel-config-wrap,
+.intelligence-plugin-panel .intel-plan-wrap,
 .intelligence-plugin-panel .intel-workflow-wrap {
   margin-top: 0.8rem;
 }

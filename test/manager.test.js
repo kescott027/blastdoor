@@ -2763,6 +2763,99 @@ test("manager intelligence workflow endpoints support list, generate, save, chat
   });
 });
 
+test("manager assistant phase0 plan endpoints create, collect evidence, and refine", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const databaseFile = path.join(workspaceDir, "data", "blastdoor.sqlite");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=ollama",
+        "ASSISTANT_URL=",
+        "ASSISTANT_RAG_ENABLED=false",
+        "ASSISTANT_ALLOW_WEB_SEARCH=false",
+        "CONFIG_STORE_MODE=sqlite",
+        `DATABASE_FILE=${databaseFile}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const initial = await request(port, { pathname: "/api/assistant/plans" });
+      assert.equal(initial.status, 200);
+      assert.equal(initial.body.ok, true);
+      assert.equal(Array.isArray(initial.body.runs), true);
+
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/plans/create",
+        body: {
+          goal: "Prepare TLS rollout with clear diagnostics-first checks.",
+          workflowId: "troubleshoot-recommendation",
+        },
+      });
+      assert.equal(created.status, 200);
+      assert.equal(created.body.ok, true);
+      assert.equal(typeof created.body.run?.runId, "string");
+      assert.equal(Array.isArray(created.body.run?.layers), true);
+      assert.equal(created.body.run.layers.length >= 1, true);
+
+      const runId = created.body.run.runId;
+
+      const collected = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/plans/${encodeURIComponent(runId)}/collect-evidence`,
+        body: {
+          note: "Operator captured baseline before TLS migration.",
+        },
+      });
+      assert.equal(collected.status, 200);
+      assert.equal(collected.body.ok, true);
+      assert.equal(collected.body.evidenceAdded >= 2, true);
+      assert.equal(Array.isArray(collected.body.run?.evidence), true);
+      assert.equal(collected.body.run.evidence.length >= 2, true);
+
+      const refined = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/plans/${encodeURIComponent(runId)}/refine`,
+        body: {
+          message: "Use collected evidence to produce a deeper layer with verification gates.",
+        },
+      });
+      assert.equal(refined.status, 200);
+      assert.equal(refined.body.ok, true);
+      assert.equal(Array.isArray(refined.body.run?.layers), true);
+      assert.equal(refined.body.run.layers.length >= 2, true);
+
+      const fetched = await request(port, {
+        pathname: `/api/assistant/plans/${encodeURIComponent(runId)}`,
+      });
+      assert.equal(fetched.status, 200);
+      assert.equal(fetched.body.ok, true);
+      assert.equal(fetched.body.run?.runId, runId);
+      assert.equal(Array.isArray(fetched.body.run?.layers), true);
+      assert.equal(fetched.body.run.layers.length >= 2, true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager exposes plugin UI manifest for enabled plugins", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");
