@@ -7,7 +7,8 @@ import { createPluginManager } from "./plugins/index.js";
 export const INSTALLATION_CONFIG_VERSION = 1;
 
 const INSTALL_TYPES = new Set(["local", "container"]);
-const PLATFORM_TYPES = new Set(["wsl", "mac", "linux"]);
+const PLATFORM_TYPES = new Set(["wsl", "mac", "linux", "windows"]);
+const INSTALL_GUIDANCE_TYPES = new Set(["standard", "ai-guided"]);
 const DATABASE_TYPES = new Set(["sqlite", "postgres"]);
 const OBJECT_STORAGE_TYPES = new Set(["local", "gdrive", "s3"]);
 const FOUNDRY_MODES = new Set(["local", "external"]);
@@ -190,6 +191,9 @@ export function detectPlatformType(env = process.env) {
   if (env.WSL_DISTRO_NAME) {
     return "wsl";
   }
+  if (process.platform === "win32") {
+    return "windows";
+  }
   if (process.platform === "darwin") {
     return "mac";
   }
@@ -201,6 +205,7 @@ export function defaultInstallationConfig(overrides = {}) {
   return {
     schemaVersion: INSTALLATION_CONFIG_VERSION,
     installType: "local",
+    installGuidance: "standard",
     platform: detectPlatformType(),
     database: "sqlite",
     objectStorage: "local",
@@ -237,6 +242,7 @@ export function normalizeInstallationConfig(input = {}, existing = null) {
   const normalized = {
     schemaVersion: INSTALLATION_CONFIG_VERSION,
     installType: normalizeEnum(merged.installType, INSTALL_TYPES, "local"),
+    installGuidance: normalizeEnum(merged.installGuidance, INSTALL_GUIDANCE_TYPES, "standard"),
     platform: normalizeEnum(merged.platform, PLATFORM_TYPES, detectPlatformType()),
     database: normalizeEnum(merged.database, DATABASE_TYPES, "sqlite"),
     objectStorage: normalizeEnum(merged.objectStorage, OBJECT_STORAGE_TYPES, "local"),

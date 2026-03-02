@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  buildFoundryTarget,
   defaultInstallationConfig,
   detectPlatformType,
   normalizeInstallationConfig,
@@ -12,6 +13,7 @@ import {
   syncRuntimeEnvFromInstallation,
   writeInstallationConfig,
 } from "../src/installation-config.js";
+import { createAssistantClient } from "../src/assistant-client.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,6 +35,332 @@ function parseBoolean(value, fallback = false) {
     return false;
   }
   return fallback;
+}
+
+function normalizeString(value, fallback = "") {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  return String(value).trim();
+}
+
+function isLoopbackHost(hostname) {
+  const host = normalizeString(hostname, "").toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+function commandAvailable(command, args = ["--version"]) {
+  try {
+    const result = spawnSync(command, args, {
+      stdio: "ignore",
+    });
+    return !result.error && result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function detectCoreInstallerEnvironment() {
+  const platform = detectPlatformType();
+  const dockerAvailable = commandAvailable("docker", ["--version"]);
+  const dockerComposeAvailable = dockerAvailable && commandAvailable("docker", ["compose", "version"]);
+  const npmAvailable = commandAvailable("npm", ["--version"]);
+  const nodeVersion = process.version;
+  const isWsl = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+  const wslDistro = normalizeString(process.env.WSL_DISTRO_NAME, "");
+  return {
+    platform,
+    isWsl,
+    wslDistro,
+    dockerAvailable,
+    dockerComposeAvailable,
+    npmAvailable,
+    nodeVersion,
+  };
+}
+
+function detectWslGatewayIp() {
+  try {
+    const result = spawnSync("ip", ["route", "show", "default"], {
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+    });
+    if (result.error || result.status !== 0) {
+      return "";
+    }
+    const match = String(result.stdout || "").match(/\bdefault\s+via\s+((?:\d{1,3}\.){3}\d{1,3})\b/i);
+    return normalizeString(match?.[1], "");
+  } catch {
+    return "";
+  }
+}
+
+async function probeUrl(url, timeoutMs = 2500) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      error: "",
+      url,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      error: error instanceof Error ? error.message : String(error),
+      url,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildInstallerDiagnostics({ config, environment, foundryProbe }) {
+  const foundryTarget = foundryProbe?.url || "";
+  const foundryHost = normalizeString(config?.foundryMode, "local") === "local"
+    ? normalizeString(config?.foundryLocalHost, "127.0.0.1")
+    : normalizeString(config?.foundryExternalIp, "");
+
+  const configEnvelope = {
+    HOST: normalizeString(config?.gatewayHost, "0.0.0.0"),
+    PORT: String(config?.gatewayPort || 8080),
+    FOUNDRY_TARGET: foundryTarget,
+    INSTALL_PROFILE: normalizeString(config?.installType, "local"),
+    COOKIE_SECURE: normalizeString(config?.installType, "local") === "container" ? "true" : "false",
+    TRUST_PROXY: normalizeString(config?.installType, "local") === "container" ? "1" : "false",
+    BLASTDOOR_API_URL: config?.useExternalBlastdoorApi ? normalizeString(config?.blastdoorApiUrl, "") : "",
+    ASSISTANT_PROVIDER: normalizeString(process.env.ASSISTANT_PROVIDER, "ollama"),
+    ASSISTANT_OLLAMA_URL: normalizeString(process.env.ASSISTANT_OLLAMA_URL, "http://127.0.0.1:11434"),
+    TLS_ENABLED: normalizeString(config?.installType, "local") === "container" ? "true" : "false",
+    TLS_DOMAIN: normalizeString(config?.publicDomain, ""),
+    SESSION_SECRET: normalizeString(process.env.SESSION_SECRET, ""),
+    MANAGER_HOST: normalizeString(config?.managerHost, "127.0.0.1"),
+    MANAGER_PORT: String(config?.managerPort || 8090),
+    FOUNDRY_HOST: foundryHost,
+  };
+
+  return {
+    generatedAt: new Date().toISOString(),
+    environment: {
+      platform: environment.platform,
+      isWsl: environment.isWsl,
+      wslDistro: environment.wslDistro,
+      nodeVersion: environment.nodeVersion,
+      dockerAvailable: environment.dockerAvailable,
+      dockerComposeAvailable: environment.dockerComposeAvailable,
+    },
+    config: configEnvelope,
+    foundryHealth: {
+      ok: foundryProbe?.ok === true,
+      statusCode: foundryProbe?.statusCode ?? null,
+      url: foundryTarget,
+      error: foundryProbe?.error || "",
+      targetHost: foundryHost,
+      targetIsLoopback: isLoopbackHost(foundryHost),
+    },
+  };
+}
+
+function deriveCoreInstallPatch({ config, environment, foundryProbe }) {
+  const patch = {};
+  const notes = [];
+  const warnings = [];
+  const errors = [];
+
+  if (config.platform !== environment.platform) {
+    patch.platform = environment.platform;
+    notes.push(`Detected platform is '${environment.platform}'. Updated platform selection to match runtime.`);
+  }
+
+  if (config.installType === "container" && !environment.dockerComposeAvailable) {
+    patch.installType = "local";
+    errors.push("Container install selected but Docker Compose is unavailable. Recommended switching to local install.");
+  } else if (config.installType === "local" && environment.dockerComposeAvailable) {
+    notes.push("Docker Compose is available. Standard-Resilient container install is supported on this host.");
+  }
+
+  if (environment.isWsl && config.installType === "local" && config.managerHost === "127.0.0.1") {
+    patch.managerHost = "0.0.0.0";
+    notes.push("WSL detected. Manager host adjusted to 0.0.0.0 for easier LAN/admin reachability.");
+  }
+
+  if (environment.isWsl && config.foundryMode === "local" && isLoopbackHost(config.foundryLocalHost)) {
+    const gatewayIp = detectWslGatewayIp();
+    if (gatewayIp) {
+      patch.foundryLocalHost = gatewayIp;
+      notes.push(
+        `WSL detected with local Foundry loopback target. Suggested Foundry local host updated to Windows gateway ${gatewayIp}.`,
+      );
+    } else {
+      warnings.push("WSL detected and Foundry local host is loopback. Consider using Windows gateway IP for cross-runtime access.");
+    }
+  }
+
+  if (config.installType === "container") {
+    if (!normalizeString(config.publicDomain, "")) {
+      warnings.push("Container install typically requires a public domain for automated TLS.");
+    }
+    if (!normalizeString(config.letsEncryptEmail, "")) {
+      warnings.push("Container install typically requires a Let's Encrypt contact email.");
+    }
+  }
+
+  if (!foundryProbe.ok) {
+    warnings.push(
+      `Foundry endpoint probe failed (${foundryProbe.error || foundryProbe.statusCode || "unreachable"}). Verify Foundry host/port before launch.`,
+    );
+  }
+
+  return {
+    patch,
+    notes,
+    warnings,
+    errors,
+  };
+}
+
+function mapAssistantDefaultsToInstallPatch(suggestedDefaults = {}) {
+  const patch = {};
+  if (normalizeString(suggestedDefaults.HOST, "")) {
+    patch.gatewayHost = normalizeString(suggestedDefaults.HOST, "");
+  }
+  return patch;
+}
+
+function mergeInstallPatch(base, patch) {
+  const next = { ...base };
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    next[key] = value;
+  }
+  return next;
+}
+
+async function buildCoreInstallAnalysis({ rawConfig = {}, existingConfig = null, userMessage = "" } = {}) {
+  const normalizedConfig = normalizeInstallationConfig(rawConfig, existingConfig);
+  const environment = detectCoreInstallerEnvironment();
+  const foundryTarget = buildFoundryTarget(normalizedConfig);
+  const foundryProbe = await probeUrl(foundryTarget, 2200);
+  const diagnosticsReport = buildInstallerDiagnostics({
+    config: normalizedConfig,
+    environment,
+    foundryProbe: { ...foundryProbe, url: foundryTarget },
+  });
+
+  const assistant = createAssistantClient({ forceLocal: true });
+  let assistantStatus;
+  let assistantRecommendations;
+  let assistantChatReply = "";
+  try {
+    assistantStatus = await assistant.getStatus();
+    assistantRecommendations = await assistant.runConfigRecommendations({
+      diagnosticsReport,
+      installationConfig: normalizedConfig,
+    });
+    if (userMessage) {
+      const chat = await assistant.runWorkflowChat({
+        workflow: {
+          id: "installer-core-guidance",
+          type: "custom",
+          name: "Installer Core Guidance",
+          systemPrompt:
+            "You are a Blastdoor installer assistant. Give direct, concise install guidance and highlight blockers.",
+          seedPrompt:
+            "Use the provided installer config and runtime diagnostics. Prioritize safe, practical next actions.",
+        },
+        message: userMessage,
+        context: {
+          installationConfig: normalizedConfig,
+          diagnosticsReport,
+        },
+      });
+      assistantChatReply = normalizeString(chat?.reply, "");
+    }
+  } finally {
+    if (typeof assistant.close === "function") {
+      await assistant.close();
+    }
+  }
+
+  const coreDerived = deriveCoreInstallPatch({
+    config: normalizedConfig,
+    environment,
+    foundryProbe: { ...foundryProbe, url: foundryTarget },
+  });
+  const assistantPatch = mapAssistantDefaultsToInstallPatch(assistantRecommendations?.suggestedDefaults || {});
+  const mergedPatch = mergeInstallPatch(coreDerived.patch, assistantPatch);
+  const recommendedConfig = normalizeInstallationConfig(mergeInstallPatch(normalizedConfig, mergedPatch), normalizedConfig);
+
+  const checklist = [
+    {
+      id: "runtime.detected",
+      title: "Runtime detection",
+      status: "ok",
+      detail: `Detected ${environment.platform}${environment.isWsl ? ` (${environment.wslDistro || "WSL"})` : ""}`,
+    },
+    {
+      id: "docker.available",
+      title: "Docker availability",
+      status: environment.dockerComposeAvailable ? "ok" : "warn",
+      detail: environment.dockerComposeAvailable
+        ? "Docker Compose is available."
+        : "Docker Compose is not available.",
+    },
+    {
+      id: "foundry.probe",
+      title: "Foundry endpoint probe",
+      status: foundryProbe.ok ? "ok" : "warn",
+      detail: foundryProbe.ok
+        ? `Reachable: ${foundryTarget} (${foundryProbe.statusCode || "ok"})`
+        : `Unreachable: ${foundryTarget}${foundryProbe.error ? ` (${foundryProbe.error})` : ""}`,
+    },
+  ];
+
+  return {
+    environment,
+    diagnosticsReport,
+    normalizedConfig,
+    recommendedConfig,
+    recommendedPatch: mergedPatch,
+    coreRecommendations: coreDerived,
+    assistantStatus,
+    assistantRecommendations,
+    assistantChatReply,
+    checklist,
+  };
+}
+
+function buildCoreStepPrompt({ stepIndex = 0, analysis = null }) {
+  const stepPrompts = [
+    "Step 1/7: Choose install model and workflow mode. Prefer container if Docker Compose is available and you want resilient deployment.",
+    "Step 2/7: Confirm detected platform (Linux/Windows/WSL/Mac). This drives networking recommendations.",
+    "Step 3/7: Select database backend. Use SQLite for simplest local setup; PostgreSQL for multi-service durability.",
+    "Step 4/7: Select object storage. Local filesystem is simplest; S3/GDrive require external credential setup.",
+    "Step 5/7: Configure Foundry endpoint. In WSL, avoid loopback targets when Foundry runs on Windows host.",
+    "Step 6/7: Set service topology/API details. Validate manager host/port and external API options.",
+    "Step 7/7: Review, validate, then save. Fix any blocking errors before launch.",
+  ];
+
+  const basePrompt = stepPrompts[Math.max(0, Math.min(stepPrompts.length - 1, Number(stepIndex) || 0))];
+  const errors = Array.isArray(analysis?.coreRecommendations?.errors) ? analysis.coreRecommendations.errors : [];
+  const warnings = Array.isArray(analysis?.coreRecommendations?.warnings) ? analysis.coreRecommendations.warnings : [];
+  const checklist = Array.isArray(analysis?.checklist) ? analysis.checklist : [];
+  const lines = [basePrompt];
+  for (const check of checklist) {
+    lines.push(`Check [${check.status || "info"}] ${check.title}: ${check.detail}`);
+  }
+  for (const error of errors) {
+    lines.push(`Blocking: ${error}`);
+  }
+  for (const warning of warnings) {
+    lines.push(`Warning: ${warning}`);
+  }
+  return lines.join("\n");
 }
 
 function openBrowser(url) {
@@ -176,6 +504,13 @@ function renderHtml({ deferLaunch = false } = {}) {
       <section class="step active" data-step="0">
         <h2>1. Install Type</h2>
         <div class="row">
+          <label for="installGuidance">Workflow mode</label>
+          <select id="installGuidance">
+            <option value="standard">Standard guided install</option>
+            <option value="ai-guided">AI guided install (chat-assisted)</option>
+          </select>
+        </div>
+        <div class="row">
           <label for="installType">Install model</label>
           <select id="installType">
             <option value="local">Basic-Standalone (local processes)</option>
@@ -190,6 +525,7 @@ function renderHtml({ deferLaunch = false } = {}) {
           <label for="platform">Host platform</label>
           <select id="platform">
             <option value="wsl">WSL</option>
+            <option value="windows">Windows</option>
             <option value="mac">Mac</option>
             <option value="linux">Linux</option>
           </select>
@@ -310,6 +646,24 @@ function renderHtml({ deferLaunch = false } = {}) {
         <pre id="review"></pre>
       </section>
 
+      <section id="aiGuidePanel" class="hidden">
+        <h2>AI Guided Core Install Workflow</h2>
+        <p class="hint">Use AI mode for environment-aware recommendations, preflight checks, and step guidance.</p>
+        <div class="buttons">
+          <button id="aiAnalyzeBtn" type="button" class="secondary">Analyze + Recommend</button>
+          <button id="aiApplyBtn" type="button" class="secondary" disabled>Apply Suggested Values</button>
+          <button id="aiValidateBtn" type="button" class="secondary">Validate Install Path</button>
+        </div>
+        <div class="row">
+          <label for="aiQuestion">Ask AI</label>
+          <div style="display:flex; gap:8px;">
+            <input id="aiQuestion" placeholder="Ask about install choices, detected risks, or next steps." />
+            <button id="aiAskBtn" type="button" class="secondary">Send</button>
+          </div>
+        </div>
+        <pre id="aiLog"></pre>
+      </section>
+
       <div class="buttons">
         <button id="prevBtn" type="button" class="secondary">Back</button>
         <button id="nextBtn" type="button">Next</button>
@@ -334,16 +688,27 @@ function renderHtml({ deferLaunch = false } = {}) {
       const launchExitBtn = document.getElementById("launchExitBtn");
       const foundryMode = document.getElementById("foundryMode");
       const installType = document.getElementById("installType");
+      const installGuidance = document.getElementById("installGuidance");
       const foundryLocalGroup = document.getElementById("foundryLocalGroup");
       const foundryExternalGroup = document.getElementById("foundryExternalGroup");
       const useExternalBlastdoorApi = document.getElementById("useExternalBlastdoorApi");
       const externalApiGroup = document.getElementById("externalApiGroup");
       const tlsContainerGroup = document.getElementById("tlsContainerGroup");
+      const aiGuidePanel = document.getElementById("aiGuidePanel");
+      const aiAnalyzeBtn = document.getElementById("aiAnalyzeBtn");
+      const aiApplyBtn = document.getElementById("aiApplyBtn");
+      const aiValidateBtn = document.getElementById("aiValidateBtn");
+      const aiAskBtn = document.getElementById("aiAskBtn");
+      const aiQuestion = document.getElementById("aiQuestion");
+      const aiLog = document.getElementById("aiLog");
       let current = 0;
       let model = null;
+      let aiSuggestedPatch = null;
+      let aiLastAnalysis = null;
 
       function formData() {
         return {
+          installGuidance: installGuidance.value,
           installType: document.getElementById("installType").value,
           platform: document.getElementById("platform").value,
           database: document.getElementById("database").value,
@@ -394,6 +759,16 @@ function renderHtml({ deferLaunch = false } = {}) {
         tlsContainerGroup.classList.add("hidden");
       }
 
+      function syncAiGuidanceSection() {
+        const enabled = installGuidance.value === "ai-guided";
+        aiGuidePanel.classList.toggle("hidden", !enabled);
+        if (!enabled) {
+          aiSuggestedPatch = null;
+          aiLastAnalysis = null;
+          aiApplyBtn.disabled = true;
+        }
+      }
+
       function renderStep() {
         steps.forEach((step, index) => {
           step.classList.toggle("active", index === current);
@@ -419,7 +794,111 @@ function renderHtml({ deferLaunch = false } = {}) {
         return payload;
       }
 
+      function appendAiLog(role, text) {
+        const stamp = new Date().toISOString().replace("T", " ").replace("Z", "");
+        aiLog.textContent += "[" + stamp + "] " + role + ": " + text + "\n";
+        aiLog.scrollTop = aiLog.scrollHeight;
+      }
+
+      async function postAi(pathname, body) {
+        const response = await fetch(pathname, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body || {}),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "AI workflow request failed.");
+        }
+        return payload;
+      }
+
+      function applyInstallPatch(patch = {}) {
+        if (patch.installGuidance) installGuidance.value = String(patch.installGuidance);
+        if (patch.installType) installType.value = String(patch.installType);
+        if (patch.platform) document.getElementById("platform").value = String(patch.platform);
+        if (patch.database) document.getElementById("database").value = String(patch.database);
+        if (patch.objectStorage) document.getElementById("objectStorage").value = String(patch.objectStorage);
+        if (patch.foundryMode) foundryMode.value = String(patch.foundryMode);
+        if (patch.foundryLocalHost) document.getElementById("foundryLocalHost").value = String(patch.foundryLocalHost);
+        if (patch.foundryLocalPort) document.getElementById("foundryLocalPort").value = String(patch.foundryLocalPort);
+        if (patch.foundryExternalIp) document.getElementById("foundryExternalIp").value = String(patch.foundryExternalIp);
+        if (patch.foundryExternalPort) document.getElementById("foundryExternalPort").value = String(patch.foundryExternalPort);
+        if (patch.gatewayHost) document.getElementById("gatewayHost").value = String(patch.gatewayHost);
+        if (patch.gatewayPort) document.getElementById("gatewayPort").value = String(patch.gatewayPort);
+        if (patch.managerHost) document.getElementById("managerHost").value = String(patch.managerHost);
+        if (patch.managerPort) document.getElementById("managerPort").value = String(patch.managerPort);
+        if (patch.apiHost) document.getElementById("apiHost").value = String(patch.apiHost);
+        if (patch.apiPort) document.getElementById("apiPort").value = String(patch.apiPort);
+        if (Object.prototype.hasOwnProperty.call(patch, "useExternalBlastdoorApi")) {
+          useExternalBlastdoorApi.checked = patch.useExternalBlastdoorApi === true || String(patch.useExternalBlastdoorApi) === "true";
+        }
+        if (patch.blastdoorApiUrl) document.getElementById("blastdoorApiUrl").value = String(patch.blastdoorApiUrl);
+        if (patch.blastdoorApiToken) document.getElementById("blastdoorApiToken").value = String(patch.blastdoorApiToken);
+        if (patch.publicDomain) document.getElementById("publicDomain").value = String(patch.publicDomain);
+        if (patch.letsEncryptEmail) document.getElementById("letsEncryptEmail").value = String(patch.letsEncryptEmail);
+        syncFoundrySections();
+        syncApiSection();
+        syncTlsSection();
+        syncAiGuidanceSection();
+        renderStep();
+      }
+
+      function summarizeAnalysis(payload) {
+        const env = payload?.analysis?.environment || {};
+        const checks = Array.isArray(payload?.analysis?.checklist) ? payload.analysis.checklist : [];
+        const notes = Array.isArray(payload?.analysis?.coreRecommendations?.notes)
+          ? payload.analysis.coreRecommendations.notes
+          : [];
+        const warnings = Array.isArray(payload?.analysis?.coreRecommendations?.warnings)
+          ? payload.analysis.coreRecommendations.warnings
+          : [];
+        const errors = Array.isArray(payload?.analysis?.coreRecommendations?.errors)
+          ? payload.analysis.coreRecommendations.errors
+          : [];
+        const assistantSummary = payload?.analysis?.assistantRecommendations?.summary || "";
+        const runtimeLabel =
+          "Detected runtime: " +
+          (env.platform || "unknown") +
+          (env.isWsl ? " (" + (env.wslDistro || "WSL") + ")" : "");
+        const lines = [
+          runtimeLabel,
+          "Docker Compose: " + (env.dockerComposeAvailable ? "available" : "not available"),
+          assistantSummary ? "Assistant summary: " + assistantSummary : "",
+          ...checks.map((entry) => "Check [" + (entry.status || "info") + "] " + entry.title + ": " + entry.detail),
+          ...notes.map((entry) => "Note: " + entry),
+          ...warnings.map((entry) => "Warning: " + entry),
+          ...errors.map((entry) => "Error: " + entry),
+        ].filter(Boolean);
+        return lines.join("\n");
+      }
+
+      async function runAiAnalyzeAndRecommend() {
+        const payload = await postAi("/api/core-workflow/analyze", {
+          config: formData(),
+          stepIndex: current,
+        });
+        aiLastAnalysis = payload.analysis || null;
+        aiSuggestedPatch = payload.analysis?.recommendedPatch || null;
+        aiApplyBtn.disabled = !aiSuggestedPatch || Object.keys(aiSuggestedPatch).length === 0;
+        appendAiLog("assistant", summarizeAnalysis(payload));
+      }
+
+      async function runAiStepGuidance() {
+        if (installGuidance.value !== "ai-guided") {
+          return;
+        }
+        const payload = await postAi("/api/core-workflow/step", {
+          config: formData(),
+          stepIndex: current,
+        });
+        if (payload?.prompt) {
+          appendAiLog("assistant", payload.prompt);
+        }
+      }
+
       function fillForm(config) {
+        installGuidance.value = config.installGuidance || "standard";
         document.getElementById("installType").value = config.installType || "local";
         document.getElementById("platform").value = config.platform || "linux";
         document.getElementById("database").value = config.database || "sqlite";
@@ -443,6 +922,7 @@ function renderHtml({ deferLaunch = false } = {}) {
         syncFoundrySections();
         syncApiSection();
         syncTlsSection();
+        syncAiGuidanceSection();
       }
 
       async function load() {
@@ -462,11 +942,82 @@ function renderHtml({ deferLaunch = false } = {}) {
       nextBtn.addEventListener("click", () => {
         current = Math.min(steps.length - 1, current + 1);
         renderStep();
+        runAiStepGuidance().catch((error) => {
+          appendAiLog("assistant", "Step guidance unavailable: " + (error.message || String(error)));
+        });
       });
 
       foundryMode.addEventListener("change", syncFoundrySections);
       installType.addEventListener("change", syncTlsSection);
       useExternalBlastdoorApi.addEventListener("change", syncApiSection);
+      installGuidance.addEventListener("change", () => {
+        syncAiGuidanceSection();
+        if (installGuidance.value === "ai-guided") {
+          appendAiLog("assistant", "AI-guided install enabled. Click 'Analyze + Recommend' to start the core workflow.");
+          runAiStepGuidance().catch((error) => {
+            appendAiLog("assistant", "Step guidance unavailable: " + (error.message || String(error)));
+          });
+        }
+      });
+
+      aiAnalyzeBtn.addEventListener("click", () => {
+        runAiAnalyzeAndRecommend().catch((error) => {
+          appendAiLog("assistant", "Analyze failed: " + (error.message || String(error)));
+        });
+      });
+
+      aiApplyBtn.addEventListener("click", () => {
+        if (!aiSuggestedPatch || Object.keys(aiSuggestedPatch).length === 0) {
+          appendAiLog("assistant", "No AI patch is available to apply yet.");
+          return;
+        }
+        applyInstallPatch(aiSuggestedPatch);
+        appendAiLog("assistant", "Applied suggested values: " + JSON.stringify(aiSuggestedPatch));
+      });
+
+      aiValidateBtn.addEventListener("click", () => {
+        postAi("/api/core-workflow/validate", {
+          config: formData(),
+        })
+          .then((payload) => {
+            const checks = Array.isArray(payload?.checks) ? payload.checks : [];
+            const lines = [
+              "Validation ready: " + (payload.ready ? "yes" : "no"),
+              ...checks.map((entry) => "[" + (entry.status || "info") + "] " + entry.title + ": " + entry.detail),
+            ];
+            appendAiLog("assistant", lines.join("\n"));
+          })
+          .catch((error) => {
+            appendAiLog("assistant", "Validate failed: " + (error.message || String(error)));
+          });
+      });
+
+      aiAskBtn.addEventListener("click", () => {
+        const question = aiQuestion.value.trim();
+        if (!question) {
+          return;
+        }
+        appendAiLog("you", question);
+        aiQuestion.value = "";
+        postAi("/api/core-workflow/chat", {
+          config: formData(),
+          stepIndex: current,
+          question,
+        })
+          .then((payload) => {
+            if (payload?.reply) {
+              appendAiLog("assistant", payload.reply);
+            }
+            if (payload?.recommendedPatch && Object.keys(payload.recommendedPatch).length > 0) {
+              aiSuggestedPatch = payload.recommendedPatch;
+              aiApplyBtn.disabled = false;
+              appendAiLog("assistant", "Suggested patch available: " + JSON.stringify(aiSuggestedPatch));
+            }
+          })
+          .catch((error) => {
+            appendAiLog("assistant", "Chat failed: " + (error.message || String(error)));
+          });
+      });
 
       saveBtn.addEventListener("click", async () => {
         const payload = formData();
@@ -546,6 +1097,7 @@ function renderHtml({ deferLaunch = false } = {}) {
       });
       syncApiSection();
       syncTlsSection();
+      syncAiGuidanceSection();
       if (${deferLaunch ? "true" : "false"}) {
         launchExitBtn.textContent = "Launch and Exit (Terminal)";
       }
@@ -596,6 +1148,123 @@ export function createInstallerApp({
           envPath,
           dockerEnvPath,
         },
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/api/core-workflow/analyze", async (req, res) => {
+    try {
+      const existing = await readInstallationConfig(configPath);
+      const analysis = await buildCoreInstallAnalysis({
+        rawConfig: req.body?.config || {},
+        existingConfig: existing,
+      });
+      res.json({
+        ok: true,
+        analysis,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/api/core-workflow/step", async (req, res) => {
+    try {
+      const existing = await readInstallationConfig(configPath);
+      const analysis = await buildCoreInstallAnalysis({
+        rawConfig: req.body?.config || {},
+        existingConfig: existing,
+      });
+      const stepIndex = Number.parseInt(String(req.body?.stepIndex ?? "0"), 10);
+      const prompt = buildCoreStepPrompt({ stepIndex, analysis });
+      res.json({
+        ok: true,
+        stepIndex,
+        prompt,
+        recommendedPatch: analysis.recommendedPatch || {},
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/api/core-workflow/chat", async (req, res) => {
+    try {
+      const existing = await readInstallationConfig(configPath);
+      const question = normalizeString(req.body?.question, "");
+      const analysis = await buildCoreInstallAnalysis({
+        rawConfig: req.body?.config || {},
+        existingConfig: existing,
+        userMessage: question,
+      });
+      const fallbackReply = [
+        question ? `Question: ${question}` : "",
+        buildCoreStepPrompt({
+          stepIndex: Number.parseInt(String(req.body?.stepIndex ?? "0"), 10),
+          analysis,
+        }),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const reply = normalizeString(analysis.assistantChatReply, "") || fallbackReply;
+      res.json({
+        ok: true,
+        reply,
+        recommendedPatch: analysis.recommendedPatch || {},
+        analysis: {
+          checklist: analysis.checklist || [],
+          coreRecommendations: analysis.coreRecommendations || {},
+        },
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/api/core-workflow/validate", async (req, res) => {
+    try {
+      const existing = await readInstallationConfig(configPath);
+      const analysis = await buildCoreInstallAnalysis({
+        rawConfig: req.body?.config || {},
+        existingConfig: existing,
+      });
+      const checks = [];
+      const errors = Array.isArray(analysis.coreRecommendations?.errors) ? analysis.coreRecommendations.errors : [];
+      const warnings = Array.isArray(analysis.coreRecommendations?.warnings)
+        ? analysis.coreRecommendations.warnings
+        : [];
+      for (const entry of analysis.checklist || []) {
+        checks.push(entry);
+      }
+      for (const entry of errors) {
+        checks.push({
+          status: "error",
+          title: "Blocking issue",
+          detail: entry,
+        });
+      }
+      for (const entry of warnings) {
+        checks.push({
+          status: "warn",
+          title: "Warning",
+          detail: entry,
+        });
+      }
+      res.json({
+        ok: true,
+        ready: errors.length === 0,
+        checks,
+        recommendedPatch: analysis.recommendedPatch || {},
       });
     } catch (error) {
       res.status(400).json({

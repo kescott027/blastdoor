@@ -95,6 +95,7 @@ test("installer API returns defaults when no installation profile exists", async
       assert.equal(response.body.ok, true);
       assert.equal(response.body.exists, false);
       assert.equal(response.body.config.installType, "local");
+      assert.equal(response.body.config.installGuidance, "standard");
       assert.equal(response.body.config.database, "sqlite");
       assert.equal(response.body.config.objectStorage, "local");
     } finally {
@@ -117,6 +118,7 @@ test("installer API saves profile and generates local/docker env files", async (
     try {
       const payload = {
         installType: "container",
+        installGuidance: "ai-guided",
         platform: "linux",
         database: "postgres",
         objectStorage: "s3",
@@ -145,12 +147,14 @@ test("installer API saves profile and generates local/docker env files", async (
       assert.equal(saveResponse.status, 200);
       assert.equal(saveResponse.body.ok, true);
       assert.equal(saveResponse.body.config.installType, "container");
+      assert.equal(saveResponse.body.config.installGuidance, "ai-guided");
       assert.equal(saveResponse.body.config.database, "postgres");
       assert.equal(saveResponse.body.config.objectStorage, "s3");
       assert.equal(saveResponse.body.config.useExternalBlastdoorApi, true);
 
       const persistedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
       assert.equal(persistedConfig.installType, "container");
+      assert.equal(persistedConfig.installGuidance, "ai-guided");
       assert.equal(persistedConfig.gatewayPort, 8181);
       assert.equal(persistedConfig.foundryExternalIp, "203.0.113.77");
       assert.equal(persistedConfig.publicDomain, "games.example.test");
@@ -177,6 +181,93 @@ test("installer API saves profile and generates local/docker env files", async (
       assert.equal(fetchResponse.status, 200);
       assert.equal(fetchResponse.body.exists, true);
       assert.equal(fetchResponse.body.config.installType, "container");
+      assert.equal(fetchResponse.body.config.installGuidance, "ai-guided");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("installer core workflow endpoints provide analysis, step prompts, and validation", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const configPath = path.join(workspaceDir, "data", "installation_config.json");
+    const envPath = path.join(workspaceDir, ".env");
+    const dockerEnvPath = path.join(workspaceDir, "docker", "blastdoor.env");
+
+    const app = createInstallerApp({ configPath, envPath, dockerEnvPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const baseConfig = {
+        installGuidance: "ai-guided",
+        installType: "local",
+        platform: "linux",
+        database: "sqlite",
+        objectStorage: "local",
+        foundryMode: "local",
+        foundryLocalHost: "127.0.0.1",
+        foundryLocalPort: 30000,
+        gatewayHost: "0.0.0.0",
+        gatewayPort: 8080,
+        managerHost: "127.0.0.1",
+        managerPort: 8090,
+        apiHost: "127.0.0.1",
+        apiPort: 8070,
+        useExternalBlastdoorApi: false,
+      };
+
+      const analyze = await request(port, {
+        method: "POST",
+        pathname: "/api/core-workflow/analyze",
+        body: {
+          config: baseConfig,
+          stepIndex: 0,
+        },
+      });
+      assert.equal(analyze.status, 200);
+      assert.equal(analyze.body.ok, true);
+      assert.equal(typeof analyze.body.analysis?.environment?.platform, "string");
+      assert.equal(Array.isArray(analyze.body.analysis?.checklist), true);
+
+      const step = await request(port, {
+        method: "POST",
+        pathname: "/api/core-workflow/step",
+        body: {
+          config: baseConfig,
+          stepIndex: 2,
+        },
+      });
+      assert.equal(step.status, 200);
+      assert.equal(step.body.ok, true);
+      assert.match(String(step.body.prompt || ""), /Step 3\/7/i);
+
+      const chat = await request(port, {
+        method: "POST",
+        pathname: "/api/core-workflow/chat",
+        body: {
+          config: baseConfig,
+          stepIndex: 2,
+          question: "What install mode should I use?",
+        },
+      });
+      assert.equal(chat.status, 200);
+      assert.equal(chat.body.ok, true);
+      assert.equal(typeof chat.body.reply, "string");
+      assert.equal(chat.body.reply.length > 0, true);
+
+      const validate = await request(port, {
+        method: "POST",
+        pathname: "/api/core-workflow/validate",
+        body: {
+          config: baseConfig,
+        },
+      });
+      assert.equal(validate.status, 200);
+      assert.equal(validate.body.ok, true);
+      assert.equal(Array.isArray(validate.body.checks), true);
+      assert.equal(typeof validate.body.ready, "boolean");
     } finally {
       await closeServer(server);
     }
