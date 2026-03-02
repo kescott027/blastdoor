@@ -55,6 +55,19 @@ function validateAssistantConfig(config) {
   }
 }
 
+function normalizeExternalAssistantToken(req) {
+  const headerToken = String(req.get("x-blastdoor-assistant-token") || req.get("x-assistant-token") || "").trim();
+  if (headerToken) {
+    return headerToken;
+  }
+  const authHeader = String(req.get("authorization") || "").trim();
+  const bearerPrefix = "bearer ";
+  if (authHeader.toLowerCase().startsWith(bearerPrefix)) {
+    return authHeader.slice(bearerPrefix.length).trim();
+  }
+  return "";
+}
+
 function ensureIntelligenceNamespace(api) {
   if (!api.plugins || typeof api.plugins !== "object") {
     api.plugins = {};
@@ -79,6 +92,8 @@ function getIntelligenceEnvFieldDefaults({ forDocker = false, existing = {} } = 
     ASSISTANT_ALLOW_WEB_SEARCH: String(existing.ASSISTANT_ALLOW_WEB_SEARCH || "false"),
     ASSISTANT_AUTO_LOCK_ON_THREAT: String(existing.ASSISTANT_AUTO_LOCK_ON_THREAT || "false"),
     ASSISTANT_THREAT_SCORE_THRESHOLD: String(existing.ASSISTANT_THREAT_SCORE_THRESHOLD || "80"),
+    ASSISTANT_EXTERNAL_API_ENABLED: String(existing.ASSISTANT_EXTERNAL_API_ENABLED || "false"),
+    ASSISTANT_EXTERNAL_API_TOKEN: String(existing.ASSISTANT_EXTERNAL_API_TOKEN || ""),
     ASSISTANT_HOST: String(existing.ASSISTANT_HOST || "0.0.0.0"),
     ASSISTANT_PORT: String(existing.ASSISTANT_PORT || "8060"),
   };
@@ -251,6 +266,8 @@ export function createIntelligencePlugin() {
         "ASSISTANT_ALLOW_WEB_SEARCH",
         "ASSISTANT_AUTO_LOCK_ON_THREAT",
         "ASSISTANT_THREAT_SCORE_THRESHOLD",
+        "ASSISTANT_EXTERNAL_API_ENABLED",
+        "ASSISTANT_EXTERNAL_API_TOKEN",
       ],
       defaults: {
         ASSISTANT_ENABLED: "true",
@@ -265,13 +282,16 @@ export function createIntelligencePlugin() {
         ASSISTANT_ALLOW_WEB_SEARCH: "false",
         ASSISTANT_AUTO_LOCK_ON_THREAT: "false",
         ASSISTANT_THREAT_SCORE_THRESHOLD: "80",
+        ASSISTANT_EXTERNAL_API_ENABLED: "false",
+        ASSISTANT_EXTERNAL_API_TOKEN: "",
       },
-      sensitiveKeys: ["ASSISTANT_TOKEN"],
+      sensitiveKeys: ["ASSISTANT_TOKEN", "ASSISTANT_EXTERNAL_API_TOKEN"],
       diagnosticsSummaryLines(config) {
         return [
           `Assistant: ${config.ASSISTANT_ENABLED === "true" ? "enabled" : "disabled"} (${normalizeAssistantProvider(config.ASSISTANT_PROVIDER)})`,
           `Assistant RAG/Web: ${config.ASSISTANT_RAG_ENABLED || "false"} / ${config.ASSISTANT_ALLOW_WEB_SEARCH || "false"}`,
           `Assistant Auto-Lock: ${config.ASSISTANT_AUTO_LOCK_ON_THREAT || "false"} (threshold: ${config.ASSISTANT_THREAT_SCORE_THRESHOLD || "80"})`,
+          `Assistant External API: ${config.ASSISTANT_EXTERNAL_API_ENABLED || "false"}`,
         ];
       },
       uiAssets() {
@@ -299,6 +319,8 @@ export function createIntelligencePlugin() {
         "ASSISTANT_ALLOW_WEB_SEARCH",
         "ASSISTANT_AUTO_LOCK_ON_THREAT",
         "ASSISTANT_THREAT_SCORE_THRESHOLD",
+        "ASSISTANT_EXTERNAL_API_ENABLED",
+        "ASSISTANT_EXTERNAL_API_TOKEN",
         "ASSISTANT_HOST",
         "ASSISTANT_PORT",
       ],
@@ -328,6 +350,8 @@ export function createIntelligencePlugin() {
           ASSISTANT_ALLOW_WEB_SEARCH: String(Boolean(config.assistantAllowWebSearch)),
           ASSISTANT_AUTO_LOCK_ON_THREAT: String(Boolean(config.assistantAutoLockOnThreat)),
           ASSISTANT_THREAT_SCORE_THRESHOLD: String(config.assistantThreatScoreThreshold || 80),
+          ASSISTANT_EXTERNAL_API_ENABLED: String(Boolean(config.assistantExternalApiEnabled)),
+          ASSISTANT_EXTERNAL_API_TOKEN: String(config.assistantExternalApiToken || ""),
         };
       },
     },
@@ -660,6 +684,141 @@ export function createIntelligencePlugin() {
           };
         }
 
+        function findAgentByLookup(agents = [], lookupValue = "") {
+          const normalizedLookup = normalizeManagerString(lookupValue, "").toLowerCase();
+          if (!normalizedLookup) {
+            return null;
+          }
+          return (
+            agents.find((agent) => normalizeManagerString(agent?.id, "").toLowerCase() === normalizedLookup) ||
+            agents.find((agent) => normalizeManagerString(agent?.name, "").toLowerCase() === normalizedLookup) ||
+            null
+          );
+        }
+
+        async function resolveAgentRunDetails(blastdoorApi, agent, limit = 40) {
+          const runSummaries = await blastdoorApi.plugins?.intelligence?.listPlanRuns({ limit: Math.max(1, limit * 3) });
+          const details = [];
+          for (const summary of Array.isArray(runSummaries) ? runSummaries : []) {
+            const runId = normalizeManagerString(summary?.runId, "");
+            if (!runId) {
+              continue;
+            }
+            const run = await blastdoorApi.plugins?.intelligence?.getPlanRun({ runId });
+            if (!run) {
+              continue;
+            }
+            const agentId = normalizeManagerString(agent?.id, "");
+            const agentName = normalizeManagerString(agent?.name, "");
+            const workflowId = normalizeManagerString(agent?.workflow?.id, "");
+            const matches =
+              normalizeManagerString(run?.meta?.agentId, "") === agentId ||
+              normalizeManagerString(run?.meta?.agentName, "").toLowerCase() === agentName.toLowerCase() ||
+              normalizeManagerString(run?.workflowId, "") === workflowId;
+            if (matches) {
+              details.push(run);
+            }
+          }
+          return details
+            .sort((a, b) => normalizeManagerString(b?.updatedAt, "").localeCompare(normalizeManagerString(a?.updatedAt, "")))
+            .slice(0, limit);
+        }
+
+        function summarizeAgentRuntime(agent, runDetails = []) {
+          const diagnostics = [];
+          const troubleshoot = [];
+          const errors = [];
+          const humanInteractions = [];
+
+          for (const run of runDetails) {
+            const evidence = Array.isArray(run?.evidence) ? run.evidence : [];
+            for (const entry of evidence) {
+              const type = normalizeManagerString(entry?.type, "");
+              if (type === "diagnostics-report") {
+                diagnostics.push({
+                  runId: run.runId,
+                  collectedAt: entry?.collectedAt || null,
+                  payload: entry?.payload || {},
+                });
+              }
+              if (type === "troubleshoot-report") {
+                const payload = entry?.payload || {};
+                troubleshoot.push({
+                  runId: run.runId,
+                  collectedAt: entry?.collectedAt || null,
+                  payload,
+                });
+                const checks = Array.isArray(payload?.checks) ? payload.checks : [];
+                for (const check of checks) {
+                  const status = normalizeManagerString(check?.status, "").toLowerCase();
+                  if (status === "error" || status === "fail") {
+                    errors.push({
+                      runId: run.runId,
+                      title: normalizeManagerString(check?.title, "Troubleshooting check"),
+                      detail: normalizeManagerString(check?.detail || check?.recommendation, ""),
+                    });
+                  }
+                }
+              }
+              if (type === "operator-note") {
+                humanInteractions.push({
+                  runId: run.runId,
+                  ts: entry?.collectedAt || null,
+                  type: "operator-note",
+                  message: normalizeManagerString(entry?.summary, ""),
+                });
+              }
+            }
+          }
+
+          const latestRun = runDetails[0] || null;
+          const latestLayer = latestRun && Array.isArray(latestRun.layers) && latestRun.layers.length > 0
+            ? latestRun.layers[latestRun.layers.length - 1]
+            : null;
+          const latestSteps = Array.isArray(latestLayer?.plan?.steps) ? latestLayer.plan.steps : [];
+          const currentStepIndex = latestSteps.findIndex((step) => normalizeManagerString(step?.status, "pending") !== "completed");
+          const resolvedCurrentIndex = currentStepIndex >= 0 ? currentStepIndex : latestSteps.length > 0 ? 0 : -1;
+          const currentStep = resolvedCurrentIndex >= 0 ? latestSteps[resolvedCurrentIndex] : null;
+          const nextSteps = resolvedCurrentIndex >= 0 ? latestSteps.slice(resolvedCurrentIndex + 1) : [];
+
+          return {
+            generatedAt: new Date().toISOString(),
+            agent: {
+              id: agent.id,
+              name: agent.name,
+              intent: agent.intent || "",
+              workflowId: agent.workflow?.id || "",
+            },
+            summary: {
+              runCount: runDetails.length,
+              diagnosticsCount: diagnostics.length,
+              troubleshootCount: troubleshoot.length,
+              errorCount: errors.length,
+              interactionCount: humanInteractions.length,
+            },
+            progress: {
+              currentRunId: latestRun?.runId || null,
+              currentLayer: latestLayer?.layer ?? null,
+              currentStep: currentStep || null,
+              nextSteps,
+            },
+            diagnostics,
+            troubleshoot,
+            errors,
+            humanInteractions,
+            planRuns: runDetails.map((run) => ({
+              runId: run.runId,
+              goal: run.goal,
+              status: run.status,
+              workflowId: run.workflowId,
+              createdAt: run.createdAt,
+              updatedAt: run.updatedAt,
+              layerCount: Array.isArray(run.layers) ? run.layers.length : 0,
+              evidenceCount: Array.isArray(run.evidence) ? run.evidence.length : 0,
+            })),
+          };
+        }
+
         registerApiGet("/assistant/status", async (_req, res) => {
           try {
             const config = await readEnvConfig(envPath);
@@ -712,6 +871,16 @@ export function createIntelligencePlugin() {
                   config.ASSISTANT_THREAT_SCORE_THRESHOLD,
                   CONFIG_DEFAULTS.ASSISTANT_THREAT_SCORE_THRESHOLD,
                 ),
+                ASSISTANT_EXTERNAL_API_ENABLED: normalizeManagerString(
+                  config.ASSISTANT_EXTERNAL_API_ENABLED,
+                  CONFIG_DEFAULTS.ASSISTANT_EXTERNAL_API_ENABLED,
+                ),
+                ASSISTANT_EXTERNAL_API_TOKEN: normalizeManagerString(
+                  config.ASSISTANT_EXTERNAL_API_TOKEN,
+                  CONFIG_DEFAULTS.ASSISTANT_EXTERNAL_API_TOKEN,
+                )
+                  ? "[REDACTED]"
+                  : "",
               },
             });
           } catch (error) {
@@ -1002,6 +1171,104 @@ export function createIntelligencePlugin() {
             });
           } catch (error) {
             res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiGet("/assistant/agents/external", async (req, res) => {
+          try {
+            const config = await readEnvConfig(envPath);
+            const enabled = parseBooleanLike(
+              config.ASSISTANT_EXTERNAL_API_ENABLED,
+              parseBooleanLike(CONFIG_DEFAULTS.ASSISTANT_EXTERNAL_API_ENABLED, false),
+            );
+            if (!enabled) {
+              return res.status(404).json({
+                error: "Assistant external API is disabled.",
+              });
+            }
+
+            const expectedToken = normalizeManagerString(config.ASSISTANT_EXTERNAL_API_TOKEN, "");
+            if (!expectedToken) {
+              return res.status(503).json({
+                error: "Assistant external API token is not configured.",
+              });
+            }
+            const suppliedToken = normalizeExternalAssistantToken(req);
+            if (!suppliedToken || suppliedToken !== expectedToken) {
+              return res.status(401).json({
+                error: "Unauthorized assistant external API request.",
+              });
+            }
+
+            const store = await readIntelligenceAgentStore(agentStorePath);
+            return res.json({
+              ok: true,
+              agents: (store.agents || []).map((agent) => ({
+                id: agent.id,
+                name: agent.name,
+                workflowId: normalizeManagerString(agent?.workflow?.id, ""),
+                intent: normalizeManagerString(agent?.intent, ""),
+              })),
+            });
+          } catch (error) {
+            return res.status(500).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiGet("/assistant/agents/external/:agentName", async (req, res) => {
+          try {
+            const config = await readEnvConfig(envPath);
+            const enabled = parseBooleanLike(
+              config.ASSISTANT_EXTERNAL_API_ENABLED,
+              parseBooleanLike(CONFIG_DEFAULTS.ASSISTANT_EXTERNAL_API_ENABLED, false),
+            );
+            if (!enabled) {
+              return res.status(404).json({
+                error: "Assistant external API is disabled.",
+              });
+            }
+
+            const expectedToken = normalizeManagerString(config.ASSISTANT_EXTERNAL_API_TOKEN, "");
+            if (!expectedToken) {
+              return res.status(503).json({
+                error: "Assistant external API token is not configured.",
+              });
+            }
+            const suppliedToken = normalizeExternalAssistantToken(req);
+            if (!suppliedToken || suppliedToken !== expectedToken) {
+              return res.status(401).json({
+                error: "Unauthorized assistant external API request.",
+              });
+            }
+
+            const store = await readIntelligenceAgentStore(agentStorePath);
+            const agentName = normalizeManagerString(req.params?.agentName, "");
+            const agent = findAgentByLookup(store.agents || [], agentName);
+            if (!agent) {
+              return res.status(404).json({
+                error: "Agent not found.",
+              });
+            }
+
+            const limit = Number.parseInt(normalizeManagerString(req.query?.limit, "40"), 10);
+            const response = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              const runDetails = await resolveAgentRunDetails(
+                blastdoorApi,
+                agent,
+                Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 40,
+              );
+              return summarizeAgentRuntime(agent, runDetails);
+            });
+            return res.json({
+              ok: true,
+              report: response,
+            });
+          } catch (error) {
+            return res.status(500).json({
               error: error instanceof Error ? error.message : String(error),
             });
           }

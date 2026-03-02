@@ -11,6 +11,8 @@ const DEFAULTS = {
   ASSISTANT_ALLOW_WEB_SEARCH: "false",
   ASSISTANT_AUTO_LOCK_ON_THREAT: "false",
   ASSISTANT_THREAT_SCORE_THRESHOLD: "80",
+  ASSISTANT_EXTERNAL_API_ENABLED: "false",
+  ASSISTANT_EXTERNAL_API_TOKEN: "",
 };
 
 function normalizeAssistantProvider(value) {
@@ -62,6 +64,8 @@ function toConfigPatch(state) {
     ASSISTANT_ALLOW_WEB_SEARCH: state.assistantAllowWebSearch.checked ? "true" : "false",
     ASSISTANT_AUTO_LOCK_ON_THREAT: state.assistantAutoLockOnThreat.checked ? "true" : "false",
     ASSISTANT_THREAT_SCORE_THRESHOLD: asIntegerString(state.assistantThreatScoreThreshold.value, 80),
+    ASSISTANT_EXTERNAL_API_ENABLED: state.assistantExternalApiEnabled.checked ? "true" : "false",
+    ASSISTANT_EXTERNAL_API_TOKEN: asString(state.assistantExternalApiToken.value, ""),
   };
 }
 
@@ -87,6 +91,9 @@ function applyConfigValues(state, config = {}) {
     config.ASSISTANT_THREAT_SCORE_THRESHOLD,
     DEFAULTS.ASSISTANT_THREAT_SCORE_THRESHOLD,
   );
+  state.assistantExternalApiEnabled.checked =
+    asBooleanString(config.ASSISTANT_EXTERNAL_API_ENABLED, DEFAULTS.ASSISTANT_EXTERNAL_API_ENABLED) === "true";
+  state.assistantExternalApiToken.value = "";
 }
 
 function renderOutput(state, payload) {
@@ -204,6 +211,8 @@ function createState(root) {
     assistantAllowWebSearch: root.querySelector("[data-intel-assistant-web-search]"),
     assistantAutoLockOnThreat: root.querySelector("[data-intel-assistant-auto-lock]"),
     assistantThreatScoreThreshold: root.querySelector("[data-intel-assistant-threat-threshold]"),
+    assistantExternalApiEnabled: root.querySelector("[data-intel-assistant-external-enabled]"),
+    assistantExternalApiToken: root.querySelector("[data-intel-assistant-external-token]"),
     configureButton: root.querySelector("[data-intel-open-config]"),
     planButton: root.querySelector("[data-intel-open-plan]"),
     workflowsButton: root.querySelector("[data-intel-open-workflows]"),
@@ -280,6 +289,8 @@ function validateState(state) {
     "assistantAllowWebSearch",
     "assistantAutoLockOnThreat",
     "assistantThreatScoreThreshold",
+    "assistantExternalApiEnabled",
+    "assistantExternalApiToken",
     "configureButton",
     "planButton",
     "workflowsButton",
@@ -416,6 +427,13 @@ function createPanelMarkup() {
           <label class="checkbox-label">
             <input type="checkbox" data-intel-assistant-auto-lock />
             Auto-lock Blastdoors on Threat
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" data-intel-assistant-external-enabled />
+            Enable External Agent API (read-only)
+          </label>
+          <label>External Agent API Token
+            <input type="password" data-intel-assistant-external-token />
           </label>
         </div>
         <div class="button-row">

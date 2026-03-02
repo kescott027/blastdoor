@@ -2867,6 +2867,184 @@ test("manager intelligence agent scaffold endpoints support catalog, generate, s
   });
 });
 
+test("manager assistant external agent API is gated and returns agent runtime report", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const databaseFile = path.join(workspaceDir, "data", "blastdoor.sqlite");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=ollama",
+        "ASSISTANT_URL=",
+        "ASSISTANT_EXTERNAL_API_ENABLED=true",
+        "ASSISTANT_EXTERNAL_API_TOKEN=test-external-token",
+        "CONFIG_STORE_MODE=sqlite",
+        `DATABASE_FILE=${databaseFile}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const workflowSaved = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/workflows/save",
+        body: {
+          workflow: {
+            id: "tls-setup-agent-workflow",
+            name: "TLS Setup Agent Workflow",
+            type: "custom",
+            description: "Custom workflow for TLS setup agent reporting.",
+            systemPrompt: "Return concise operational guidance.",
+            seedPrompt: "Provide TLS setup guidance.",
+            inputPlaceholder: "Describe TLS request.",
+            ragEnabled: false,
+            allowWebSearch: false,
+            autoLockOnThreat: false,
+            threatScoreThreshold: 80,
+            config: {},
+          },
+        },
+      });
+      assert.equal(workflowSaved.status, 200);
+      assert.equal(workflowSaved.body.ok, true);
+
+      const agentSaved = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/agents/save",
+        body: {
+          agent: {
+            id: "tls-setup-agent",
+            name: "TLS Setup Agent",
+            intent: "Collect diagnostics and track TLS rollout plan state.",
+            scaffoldIds: ["gather-diagnostics", "recommend-remediation", "request-human-approval"],
+            approvals: {
+              required: true,
+            },
+            workflow: {
+              id: "tls-setup-agent-workflow",
+              name: "TLS Setup Agent Workflow",
+              type: "custom",
+              config: {},
+            },
+            meta: {},
+          },
+        },
+      });
+      assert.equal(agentSaved.status, 200);
+      assert.equal(agentSaved.body.ok, true);
+
+      const created = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/plans/create",
+        body: {
+          goal: "Prepare TLS rollout with verification checkpoints.",
+          workflowId: "tls-setup-agent-workflow",
+        },
+      });
+      assert.equal(created.status, 200);
+      assert.equal(created.body.ok, true);
+      const runId = String(created.body.run?.runId || "");
+      assert.ok(runId);
+
+      const collected = await request(port, {
+        method: "POST",
+        pathname: `/api/assistant/plans/${encodeURIComponent(runId)}/collect-evidence`,
+        body: {
+          note: "Operator confirmed cert path and DNS propagation checks.",
+        },
+      });
+      assert.equal(collected.status, 200);
+      assert.equal(collected.body.ok, true);
+
+      const unauthorized = await request(port, {
+        pathname: "/api/assistant/agents/external/TLS%20Setup%20Agent",
+      });
+      assert.equal(unauthorized.status, 401);
+
+      const list = await request(port, {
+        pathname: "/api/assistant/agents/external",
+        headers: {
+          "x-blastdoor-assistant-token": "test-external-token",
+        },
+      });
+      assert.equal(list.status, 200);
+      assert.equal(list.body.ok, true);
+      assert.equal(Array.isArray(list.body.agents), true);
+      assert.equal(list.body.agents.some((entry) => entry.name === "TLS Setup Agent"), true);
+
+      const report = await request(port, {
+        pathname: "/api/assistant/agents/external/TLS%20Setup%20Agent",
+        headers: {
+          "x-blastdoor-assistant-token": "test-external-token",
+        },
+      });
+      assert.equal(report.status, 200);
+      assert.equal(report.body.ok, true);
+      assert.equal(report.body.report.agent.name, "TLS Setup Agent");
+      assert.equal(report.body.report.summary.runCount >= 1, true);
+      assert.equal(Array.isArray(report.body.report.diagnostics), true);
+      assert.equal(Array.isArray(report.body.report.troubleshoot), true);
+      assert.equal(Array.isArray(report.body.report.humanInteractions), true);
+      assert.equal(Boolean(report.body.report.progress), true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager assistant external agent API returns 404 when disabled", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=ollama",
+        "ASSISTANT_URL=",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const result = await request(port, {
+        pathname: "/api/assistant/agents/external",
+      });
+      assert.equal(result.status, 404);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager assistant phase0 plan endpoints create, collect evidence, and refine", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");
