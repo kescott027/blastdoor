@@ -427,6 +427,17 @@ label {
   color: var(--muted);
 }
 
+.input-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.42rem;
+  align-items: center;
+}
+
+.input-action-row button {
+  white-space: nowrap;
+}
+
 input {
   width: 100%;
   border-radius: 7px;

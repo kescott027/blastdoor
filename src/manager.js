@@ -1364,6 +1364,121 @@ async function checkFoundryTargetHealth(config) {
   }
 }
 
+function summarizeFoundryApiResponseBody(bodyText) {
+  const raw = normalizeString(bodyText, "");
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      const status =
+        normalizeString(parsed.status, "") ||
+        normalizeString(parsed.serverStatus, "") ||
+        normalizeString(parsed.message, "");
+      if (status) {
+        return status.slice(0, 120);
+      }
+    }
+    return String(typeof parsed === "string" ? parsed : JSON.stringify(parsed)).replace(/\s+/g, " ").slice(0, 120);
+  } catch {
+    return raw.replace(/\s+/g, " ").slice(0, 120);
+  }
+}
+
+async function probeFoundryApiStatus(config, timeoutMs = 1500) {
+  const rawTarget = normalizeString(config.FOUNDRY_TARGET, "");
+  if (!rawTarget) {
+    return {
+      ok: false,
+      reachable: false,
+      statusCode: null,
+      url: "",
+      endpointPath: "/api/status",
+      responseSummary: "",
+      error: "FOUNDRY_TARGET is not configured.",
+    };
+  }
+
+  let targetUrl;
+  try {
+    targetUrl = new URL(rawTarget);
+  } catch (error) {
+    return {
+      ok: false,
+      reachable: false,
+      statusCode: null,
+      url: rawTarget,
+      endpointPath: "/api/status",
+      responseSummary: "",
+      error: `Invalid FOUNDRY_TARGET URL: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const candidatePaths = ["/api/status", "/API/Status"];
+  let fallbackResult = null;
+
+  for (const endpointPath of candidatePaths) {
+    const endpointUrl = new URL(targetUrl.toString());
+    endpointUrl.pathname = endpointPath;
+    endpointUrl.search = "";
+    endpointUrl.hash = "";
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(endpointUrl, {
+        method: "GET",
+        headers: {
+          accept: "application/json,text/plain,*/*",
+        },
+        signal: controller.signal,
+      });
+      const rawBody = await response.text();
+      const responseSummary = summarizeFoundryApiResponseBody(rawBody);
+      const result = {
+        ok: response.ok,
+        reachable: true,
+        statusCode: response.status,
+        url: endpointUrl.toString(),
+        endpointPath,
+        responseSummary,
+        error: response.ok ? null : responseSummary || `HTTP ${response.status}`,
+      };
+
+      if (response.status !== 404) {
+        return result;
+      }
+      fallbackResult = result;
+    } catch (error) {
+      return {
+        ok: false,
+        reachable: false,
+        statusCode: null,
+        url: endpointUrl.toString(),
+        endpointPath,
+        responseSummary: "",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return (
+    fallbackResult || {
+      ok: false,
+      reachable: false,
+      statusCode: null,
+      url: rawTarget,
+      endpointPath: "/api/status",
+      responseSummary: "",
+      error: "No Foundry API status endpoint response.",
+    }
+  );
+}
+
 function elapsedSeconds(startedAt) {
   const startedMs = new Date(startedAt).getTime();
   if (!Number.isFinite(startedMs)) {
@@ -1924,6 +2039,12 @@ function buildSafeActions(environment) {
       destructive: false,
       description: "Runs read-only checks for Windows portproxy and firewall rule visibility from WSL.",
     });
+    actions.push({
+      id: "fix.wsl-foundry-target",
+      title: "Auto-fix WSL Foundry target",
+      destructive: false,
+      description: "Detects Windows host gateway IP and updates FOUNDRY_TARGET in .env for WSL reachability.",
+    });
   }
 
   return actions;
@@ -2076,7 +2197,46 @@ async function runGatewayLocalChecks(config) {
   return checks;
 }
 
-async function runTroubleshootAction({ actionId, config, environment, workspaceDir, commandRunner }) {
+function parseDefaultGatewayIpFromRouteOutput(raw) {
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const match = trimmed.match(/\bdefault\s+via\s+((?:\d{1,3}\.){3}\d{1,3})\b/i);
+    if (!match) {
+      continue;
+    }
+    const ip = normalizeString(match[1], "");
+    if (net.isIP(ip) === 4) {
+      return ip;
+    }
+  }
+  return "";
+}
+
+function buildWslFoundryTarget(config, gatewayIp) {
+  const rawTarget = normalizeString(config.FOUNDRY_TARGET, CONFIG_DEFAULTS.FOUNDRY_TARGET);
+  let protocol = "http:";
+  let port = "30000";
+  let pathname = "";
+
+  try {
+    const parsed = new URL(rawTarget);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      protocol = parsed.protocol;
+    }
+    port = normalizeString(parsed.port, "") || port;
+    pathname = normalizeString(parsed.pathname, "");
+  } catch {
+    // Keep defaults.
+  }
+
+  const safePathname = pathname && pathname !== "/" ? pathname : "";
+  return `${protocol}//${gatewayIp}:${port}${safePathname}`;
+}
+
+async function runTroubleshootAction({ actionId, config, environment, workspaceDir, commandRunner, envPath }) {
   if (actionId === "snapshot.network") {
     const outputs = await runCommandBatch(
       commandRunner,
@@ -2143,6 +2303,71 @@ async function runTroubleshootAction({ actionId, config, environment, workspaceD
       destructive: false,
       generatedAt: new Date().toISOString(),
       outputs,
+    };
+  }
+
+  if (actionId === "fix.wsl-foundry-target") {
+    if (!environment.isWsl) {
+      throw new Error("fix.wsl-foundry-target is only available when running inside WSL.");
+    }
+    if (!envPath) {
+      throw new Error("envPath is required for fix.wsl-foundry-target.");
+    }
+
+    const routeResult = await commandRunner({
+      command: "ip",
+      args: ["route", "show", "default"],
+      cwd: workspaceDir,
+      timeoutMs: 4000,
+    });
+    if (!routeResult.ok) {
+      throw new Error(
+        `Unable to detect WSL default gateway via 'ip route show default' (${routeResult.error || "command failed"}).`,
+      );
+    }
+
+    const gatewayIp = parseDefaultGatewayIpFromRouteOutput(routeResult.stdout);
+    if (!gatewayIp) {
+      throw new Error("Unable to parse a default gateway IPv4 address from 'ip route show default' output.");
+    }
+
+    const previousFoundryTarget = normalizeString(config.FOUNDRY_TARGET, CONFIG_DEFAULTS.FOUNDRY_TARGET);
+    const newFoundryTarget = buildWslFoundryTarget(config, gatewayIp);
+    const changedConfig = previousFoundryTarget !== newFoundryTarget;
+    if (changedConfig) {
+      const nextConfig = {
+        ...config,
+        FOUNDRY_TARGET: newFoundryTarget,
+      };
+      validateConfig(loadConfigFromEnv(nextConfig));
+      await writeEnvConfig(envPath, nextConfig);
+    }
+
+    return {
+      actionId,
+      title: "WSL Foundry target auto-fix",
+      destructive: false,
+      generatedAt: new Date().toISOString(),
+      changedConfig,
+      requiresRestart: changedConfig,
+      previousFoundryTarget,
+      newFoundryTarget,
+      outputs: [
+        {
+          label: "WSL default gateway detection",
+          command: "ip route show default",
+          ok: true,
+          stdout: String(routeResult.stdout || "").trim(),
+          stderr: String(routeResult.stderr || "").trim(),
+        },
+        {
+          label: "FOUNDRY_TARGET update",
+          ok: true,
+          stdout: changedConfig
+            ? `Updated FOUNDRY_TARGET\nfrom: ${previousFoundryTarget}\nto:   ${newFoundryTarget}\nRestart required: yes`
+            : `No change needed. FOUNDRY_TARGET already set to ${newFoundryTarget}`,
+        },
+      ],
     };
   }
 
@@ -3033,10 +3258,15 @@ export function createManagerApp(options = {}) {
       readInstallationConfig(installationConfigPath),
     ]);
 
+    const environment = detectEnvironmentInfo({ workspaceDir, envPath });
     const installationConfig = installationConfigRaw || null;
     const installType = normalizeString(installationConfig?.installType, "local").toLowerCase();
     const portal = processState.getStatus();
-    const portalHealth = await checkBlastdoorHealth(config);
+    const [portalHealth, foundryHealth, foundryApiStatus] = await Promise.all([
+      checkBlastdoorHealth(config),
+      checkFoundryTargetHealth(config),
+      probeFoundryApiStatus(config, 1500),
+    ]);
     const adminUptimeSeconds = Math.max(0, Math.floor((Date.now() - managerStartedAtMs) / 1000));
     const objectStore = await buildObjectStoreStatus(config, installationConfig);
     const [failureStore, enabledPlugins] = await Promise.all([
@@ -3051,6 +3281,11 @@ export function createManagerApp(options = {}) {
       installation: {
         profile: installType === "container" ? "container" : "local",
       },
+      environment: {
+        isWsl: Boolean(environment.isWsl),
+        wslDistro: normalizeString(environment.wslDistro, ""),
+        isContainer: Boolean(environment.isContainer),
+      },
       admin: {
         running: true,
         pid: process.pid,
@@ -3062,6 +3297,12 @@ export function createManagerApp(options = {}) {
         pid: portal.pid,
         uptimeSeconds: portal.uptimeSeconds || 0,
         health: portalHealth,
+      },
+      foundry: {
+        target: normalizeString(config.FOUNDRY_TARGET, ""),
+        reachable: Boolean(foundryApiStatus.reachable || foundryHealth.ok || foundryHealth.tcp?.ok),
+        health: foundryHealth,
+        apiStatus: foundryApiStatus,
       },
       api: {
         running: false,
@@ -3643,6 +3884,55 @@ export function createManagerApp(options = {}) {
       });
     } catch (error) {
       res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/config/foundry-target-autodetect", async (_req, res) => {
+    try {
+      const config = await readEnvConfig(envPath);
+      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+      if (!environment.isWsl) {
+        throw new Error("FOUNDRY_TARGET autodetect is currently available only in WSL.");
+      }
+
+      const routeResult = await commandRunner({
+        command: "ip",
+        args: ["route", "show", "default"],
+        cwd: workspaceDir,
+        timeoutMs: 4000,
+      });
+      if (!routeResult.ok) {
+        throw new Error(
+          `Unable to detect WSL default gateway via 'ip route show default' (${routeResult.error || "command failed"}).`,
+        );
+      }
+
+      const gatewayIp = parseDefaultGatewayIpFromRouteOutput(routeResult.stdout);
+      if (!gatewayIp) {
+        throw new Error("Unable to parse a default gateway IPv4 address from 'ip route show default' output.");
+      }
+
+      const foundryTarget = buildWslFoundryTarget(config, gatewayIp);
+      const suggestedConfig = {
+        ...config,
+        FOUNDRY_TARGET: foundryTarget,
+      };
+      const [health, apiStatus] = await Promise.all([
+        checkFoundryTargetHealth(suggestedConfig),
+        probeFoundryApiStatus(suggestedConfig, 1500),
+      ]);
+
+      res.json({
+        ok: true,
+        foundryTarget,
+        gatewayIp,
+        health,
+        apiStatus,
+      });
+    } catch (error) {
+      res.status(400).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -4789,7 +5079,12 @@ export function createManagerApp(options = {}) {
         environment,
         workspaceDir,
         commandRunner,
+        envPath,
       });
+      if (result && result.changedConfig) {
+        controlPlaneCache.payload = null;
+        controlPlaneCache.updatedAtMs = 0;
+      }
 
       res.json({
         ok: true,

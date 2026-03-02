@@ -2,6 +2,8 @@ import { formatUnexpectedPayload, getApiBaseCandidates, resolveApiBasePath, reso
 
 const statusMessage = document.getElementById("statusMessage");
 const form = document.getElementById("configForm");
+const foundryTargetInput = form?.querySelector("input[name='FOUNDRY_TARGET']") || null;
+const foundryTargetAutodetectBtn = document.getElementById("foundryTargetAutodetectBtn");
 const diagStatusMessage = document.getElementById("diagStatusMessage");
 const diagSummary = document.getElementById("diagSummary");
 const diagJson = document.getElementById("diagJson");
@@ -23,6 +25,8 @@ const apiRunningValue = document.getElementById("apiRunningValue");
 const apiPidValue = document.getElementById("apiPidValue");
 const apiUptimeValue = document.getElementById("apiUptimeValue");
 const apiHealthValue = document.getElementById("apiHealthValue");
+const foundryReachableValue = document.getElementById("foundryReachableValue");
+const foundryApiResponseValue = document.getElementById("foundryApiResponseValue");
 const postgresRunningValue = document.getElementById("postgresRunningValue");
 const postgresPidValue = document.getElementById("postgresPidValue");
 const postgresUptimeValue = document.getElementById("postgresUptimeValue");
@@ -515,6 +519,28 @@ function healthLabel(health = {}) {
   return "Unknown";
 }
 
+function setFoundryTargetAutodetectVisibility(isWsl) {
+  if (!foundryTargetAutodetectBtn) {
+    return;
+  }
+  const show = Boolean(isWsl);
+  foundryTargetAutodetectBtn.hidden = !show;
+  foundryTargetAutodetectBtn.classList.toggle("hidden", !show);
+  foundryTargetAutodetectBtn.disabled = !show;
+  foundryTargetAutodetectBtn.title = show ? "Detect reachable Foundry target for WSL" : "Available only in WSL";
+}
+
+function foundryApiResponseLabel(apiStatus = {}) {
+  if (apiStatus.statusCode) {
+    const summary = String(apiStatus.responseSummary || "").trim();
+    return summary ? `${apiStatus.statusCode} (${summary})` : String(apiStatus.statusCode);
+  }
+  if (apiStatus.error) {
+    return `Unavailable (${apiStatus.error})`;
+  }
+  return "Unknown";
+}
+
 function updateFailuresAlertIndicator(summary = {}) {
   if (!failuresAlertBtn || !failuresAlertCount) {
     return;
@@ -915,6 +941,8 @@ function updateControlPlaneCards(payload = {}) {
   const admin = payload.admin || {};
   const portal = payload.portal || {};
   const apiStatus = payload.api || {};
+  const foundry = payload.foundry || {};
+  const environment = payload.environment || {};
   const postgres = payload.postgres || {};
   const objectStore = payload.objectStore || {};
   const plugins = Array.isArray(payload.plugins) ? payload.plugins : [];
@@ -939,6 +967,14 @@ function updateControlPlaneCards(payload = {}) {
     apiUptimeValue.textContent = toSecondsLabel(apiStatus.uptimeSeconds || 0);
     apiHealthValue.textContent = healthLabel(apiStatus.health || {});
   }
+
+  if (foundryReachableValue) {
+    foundryReachableValue.textContent = yesNoLabel(Boolean(foundry.reachable));
+  }
+  if (foundryApiResponseValue) {
+    foundryApiResponseValue.textContent = foundryApiResponseLabel(foundry.apiStatus || {});
+  }
+  setFoundryTargetAutodetectVisibility(Boolean(environment.isWsl));
 
   if (postgresRunningValue) {
     postgresRunningValue.textContent = yesNoLabel(Boolean(postgres.running));
@@ -1315,8 +1351,12 @@ function formatGuidedActionLine(action) {
 function setPortproxyButtonState(report) {
   const isWsl = Boolean(report?.environment?.isWsl);
   const detectBtn = document.getElementById("tsPortproxyDetectBtn");
+  const fixFoundryBtn = document.getElementById("tsFoundryWslFixBtn");
   const scriptBtn = document.getElementById("tsPortproxyScriptBtn");
   detectBtn.disabled = !isWsl;
+  if (fixFoundryBtn) {
+    fixFoundryBtn.disabled = !isWsl;
+  }
   scriptBtn.disabled = !isWsl;
 }
 
@@ -2614,6 +2654,33 @@ bindClick("refreshBtn", async () => {
   setMessage("Status refreshed.");
 });
 
+bindClick("foundryTargetAutodetectBtn", async () => {
+  try {
+    const payload = await api("POST", "/config/foundry-target-autodetect", {});
+    const detectedTarget = String(payload?.foundryTarget || "").trim();
+    if (!detectedTarget) {
+      throw new Error("Autodetect did not return a Foundry target.");
+    }
+
+    if (foundryTargetInput) {
+      foundryTargetInput.value = detectedTarget;
+    }
+
+    const apiStatus = payload?.apiStatus || {};
+    const checkState = apiStatus.statusCode
+      ? `HTTP ${apiStatus.statusCode}`
+      : apiStatus.error
+        ? `unreachable (${apiStatus.error})`
+        : "unknown";
+
+    setMessage(
+      `Autodetected FOUNDRY_TARGET=${detectedTarget} (${checkState}). Click Save Config to persist, then restart Blastdoor.`,
+    );
+  } catch (error) {
+    setMessage(error.message || String(error), true);
+  }
+});
+
 bindClick("openPortalBtn", async () => {
   try {
     let config = buildConfigPayloadFromForm();
@@ -3057,7 +3124,17 @@ bindClick("tsAiBtn", async () => {
 async function runTroubleshootAction(actionId, successMessage) {
   try {
     const payload = await api("POST", "/troubleshoot/run", { actionId });
-    renderTroubleshootActionResult(payload.result || {});
+    const result = payload.result || {};
+    renderTroubleshootActionResult(result);
+    if (result.changedConfig) {
+      await refreshAll();
+      if (result.requiresRestart) {
+        setTsMessage(
+          `${successMessage} Updated FOUNDRY_TARGET to ${result.newFoundryTarget || "detected target"}. Restart Blastdoor service to apply.`,
+        );
+        return;
+      }
+    }
     setTsMessage(successMessage);
   } catch (error) {
     setTsMessage(error.message || String(error), true);
@@ -3074,6 +3151,10 @@ bindClick("tsGatewayBtn", async () => {
 
 bindClick("tsPortproxyDetectBtn", async () => {
   await runTroubleshootAction("detect.wsl-portproxy", "WSL2 portproxy detection complete.");
+});
+
+bindClick("tsFoundryWslFixBtn", async () => {
+  await runTroubleshootAction("fix.wsl-foundry-target", "WSL Foundry target auto-fix complete.");
 });
 
 bindClick("tsPortproxyScriptBtn", async () => {

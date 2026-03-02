@@ -330,13 +330,26 @@ test("manager control-plane endpoint returns local status summary", async () => 
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");
     const graphicsDir = path.join(workspaceDir, "graphics");
+    const foundryServer = http.createServer((req, res) => {
+      if (req.url === "/api/status") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", mode: "mock" }));
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not-found" }));
+    });
+    foundryServer.listen(0, "127.0.0.1");
+    await once(foundryServer, "listening");
+    const foundryPort = foundryServer.address().port;
+
     await fs.mkdir(graphicsDir, { recursive: true });
     await fs.writeFile(
       envPath,
       [
         "HOST=127.0.0.1",
         "PORT=8080",
-        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        `FOUNDRY_TARGET=http://127.0.0.1:${foundryPort}`,
         "PASSWORD_STORE_MODE=env",
         "CONFIG_STORE_MODE=env",
         "OBJECT_STORAGE_MODE=local",
@@ -358,15 +371,147 @@ test("manager control-plane endpoint returns local status summary", async () => 
       const result = await request(port, { pathname: "/api/control-plane-status" });
       assert.equal(result.status, 200);
       assert.equal(result.body.ok, true);
+      assert.equal(typeof result.body.environment, "object");
+      assert.equal(typeof result.body.environment.isWsl, "boolean");
       assert.equal(result.body.admin.running, true);
       assert.equal(typeof result.body.admin.pid, "number");
       assert.equal(typeof result.body.portal.running, "boolean");
+      assert.equal(typeof result.body.foundry, "object");
+      assert.equal(result.body.foundry.reachable, true);
+      assert.equal(result.body.foundry.apiStatus.statusCode, 200);
+      assert.match(String(result.body.foundry.apiStatus.url || ""), /\/api\/status$/);
       assert.equal(typeof result.body.api.running, "boolean");
       assert.equal(typeof result.body.postgres.running, "boolean");
       assert.equal(result.body.objectStore.type, "local");
       assert.equal(result.body.objectStore.reachable, true);
       assert.equal(Array.isArray(result.body.plugins), true);
     } finally {
+      await closeServer(server);
+      await closeServer(foundryServer);
+    }
+  });
+});
+
+test("manager config foundry target autodetect suggests WSL gateway target", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    const foundryServer = http.createServer((req, res) => {
+      if (req.url === "/api/status") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end("ok");
+    });
+    foundryServer.listen(0, "127.0.0.1");
+    await once(foundryServer, "listening");
+    const foundryPort = foundryServer.address().port;
+
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=0.0.0.0",
+        "PORT=8080",
+        `FOUNDRY_TARGET=http://127.0.0.1:${foundryPort}`,
+        "PASSWORD_STORE_MODE=env",
+        "CONFIG_STORE_MODE=env",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const commandRunner = async ({ command, args }) => {
+      if (command === "ip" && Array.isArray(args) && args.join(" ") === "route show default") {
+        return {
+          ok: true,
+          command,
+          args,
+          exitCode: 0,
+          stdout: "default via 127.0.0.1 dev eth0 proto kernel\n",
+          stderr: "",
+        };
+      }
+      return {
+        ok: false,
+        command,
+        args,
+        exitCode: 1,
+        stdout: "",
+        stderr: "unexpected command",
+        error: "unexpected command",
+      };
+    };
+
+    const previousDistro = process.env.WSL_DISTRO_NAME;
+    process.env.WSL_DISTRO_NAME = "Ubuntu-24.04";
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+      commandRunner,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const result = await request(port, {
+        method: "POST",
+        pathname: "/api/config/foundry-target-autodetect",
+        body: {},
+      });
+      assert.equal(result.status, 200);
+      assert.equal(result.body.ok, true);
+      assert.equal(result.body.gatewayIp, "127.0.0.1");
+      assert.equal(result.body.foundryTarget, `http://127.0.0.1:${foundryPort}`);
+      assert.equal(typeof result.body.health, "object");
+      assert.equal(typeof result.body.apiStatus, "object");
+      assert.equal(result.body.apiStatus.statusCode, 200);
+    } finally {
+      if (previousDistro === undefined) {
+        delete process.env.WSL_DISTRO_NAME;
+      } else {
+        process.env.WSL_DISTRO_NAME = previousDistro;
+      }
+      await closeServer(server);
+      await closeServer(foundryServer);
+    }
+  });
+});
+
+test("manager config foundry target autodetect rejects non-WSL runtime", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      ["HOST=0.0.0.0", "PORT=8080", "FOUNDRY_TARGET=http://127.0.0.1:30000", "PASSWORD_STORE_MODE=env", ""].join("\n"),
+      "utf8",
+    );
+
+    const previousDistro = process.env.WSL_DISTRO_NAME;
+    delete process.env.WSL_DISTRO_NAME;
+
+    const { app } = createManagerApp({
+      workspaceDir,
+      envPath,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const result = await request(port, {
+        method: "POST",
+        pathname: "/api/config/foundry-target-autodetect",
+        body: {},
+      });
+      assert.equal(result.status, 400);
+      assert.match(String(result.body.error || ""), /only in WSL/i);
+    } finally {
+      if (previousDistro !== undefined) {
+        process.env.WSL_DISTRO_NAME = previousDistro;
+      }
       await closeServer(server);
     }
   });
@@ -457,6 +602,8 @@ test("manager control-plane endpoint maps container service states", async () =>
       assert.equal(result.body.installation.profile, "container");
       assert.equal(result.body.portal.running, true);
       assert.equal(result.body.portal.pid, 1111);
+      assert.equal(typeof result.body.foundry, "object");
+      assert.equal(typeof result.body.foundry.reachable, "boolean");
       assert.equal(result.body.api.running, true);
       assert.equal(result.body.api.pid, 2222);
       assert.equal(result.body.postgres.running, true);
@@ -1642,6 +1789,7 @@ test("manager troubleshooting report includes WSL guidance when running in WSL",
       assert.ok(report.checks.find((check) => check.id === "proxy.foundry-loopback-runtime"));
       assert.ok(report.checks.find((check) => String(check.id || "").startsWith("login-theme.")));
       assert.ok(report.safeActions.find((action) => action.id === "detect.wsl-portproxy"));
+      assert.ok(report.safeActions.find((action) => action.id === "fix.wsl-foundry-target"));
       assert.equal(typeof report.loginAppearance, "object");
       assert.equal(typeof report.loginAppearance.copyPasteText, "string");
 
@@ -1751,6 +1899,79 @@ test("manager troubleshooting runs non-destructive action with injected runner",
       assert.ok(calls.find((entry) => entry.command === "ss"));
       assert.ok(calls.find((entry) => entry.command === "ip"));
     } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test("manager troubleshooting can auto-fix WSL Foundry target", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=0.0.0.0",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$x$y",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const commandRunner = async ({ command, args }) => {
+      if (command === "ip" && Array.isArray(args) && args.join(" ") === "route show default") {
+        return {
+          ok: true,
+          command,
+          args,
+          exitCode: 0,
+          stdout: "default via 172.30.240.1 dev eth0 proto kernel\n",
+          stderr: "",
+        };
+      }
+      return {
+        ok: true,
+        command,
+        args,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      };
+    };
+
+    const previousDistro = process.env.WSL_DISTRO_NAME;
+    process.env.WSL_DISTRO_NAME = "Ubuntu-24.04";
+
+    const { app } = createManagerApp({ workspaceDir, envPath, commandRunner });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const response = await request(port, {
+        method: "POST",
+        pathname: "/api/troubleshoot/run",
+        body: { actionId: "fix.wsl-foundry-target" },
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+      assert.equal(response.body.result.actionId, "fix.wsl-foundry-target");
+      assert.equal(response.body.result.changedConfig, true);
+      assert.equal(response.body.result.requiresRestart, true);
+      assert.equal(response.body.result.newFoundryTarget, "http://172.30.240.1:30000");
+
+      const saved = dotenv.parse(await fs.readFile(envPath, "utf8"));
+      assert.equal(saved.FOUNDRY_TARGET, "http://172.30.240.1:30000");
+    } finally {
+      if (previousDistro === undefined) {
+        delete process.env.WSL_DISTRO_NAME;
+      } else {
+        process.env.WSL_DISTRO_NAME = previousDistro;
+      }
       await closeServer(server);
     }
   });

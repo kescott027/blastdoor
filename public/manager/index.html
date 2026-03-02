@@ -41,6 +41,11 @@
         <p>Health: <strong id="apiHealthValue">Unknown</strong></p>
       </div>
       <div class="status-card">
+        <h3>Foundry VTT</h3>
+        <p>Reachable: <strong id="foundryReachableValue">Unknown</strong></p>
+        <p>API Response: <strong id="foundryApiResponseValue">Unknown</strong></p>
+      </div>
+      <div class="status-card">
         <h3>PostgreSQL</h3>
         <p>Running: <strong id="postgresRunningValue">Unknown</strong></p>
         <p>PID: <strong id="postgresPidValue">-</strong></p>
@@ -149,7 +154,12 @@
           <div class="grid">
             <label>HOST <input name="HOST" required /></label>
             <label>PORT <input name="PORT" required /></label>
-            <label>FOUNDRY_TARGET <input name="FOUNDRY_TARGET" required /></label>
+            <label>FOUNDRY_TARGET
+              <div class="input-action-row">
+                <input name="FOUNDRY_TARGET" required />
+                <button id="foundryTargetAutodetectBtn" type="button" class="ghost-btn hidden" hidden>Autodetect</button>
+              </div>
+            </label>
             <label>PASSWORD_STORE_MODE <input name="PASSWORD_STORE_MODE" required /></label>
             <label>PASSWORD_STORE_FILE <input name="PASSWORD_STORE_FILE" /></label>
             <label>CONFIG_STORE_MODE <input name="CONFIG_STORE_MODE" required /></label>
@@ -251,6 +261,7 @@
           <button id="tsSnapshotBtn" type="button">Gather Snapshot</button>
           <button id="tsGatewayBtn" type="button">Test Gateway Access</button>
           <button id="tsPortproxyDetectBtn" type="button">Detect WSL Portproxy</button>
+          <button id="tsFoundryWslFixBtn" type="button">Auto-fix WSL Foundry Target</button>
           <button id="tsPortproxyScriptBtn" type="button">Show Portproxy Script</button>
           <button id="tsCopyScriptBtn" type="button">Copy Script</button>
         </div>
