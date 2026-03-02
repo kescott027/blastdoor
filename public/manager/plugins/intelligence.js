@@ -140,6 +140,106 @@ function renderWizardOutput(state, payload) {
   state.wizardOutput.textContent = JSON.stringify(payload || {}, null, 2);
 }
 
+function renderWizardQuestion(state, question = null, run = null) {
+  const current = question && typeof question === "object" ? question : null;
+  const answers = Array.isArray(run?.wizard?.clarification?.answers) ? run.wizard.clarification.answers : [];
+  if (!current) {
+    state.wizardQuestion.value = "";
+    state.wizardQuestion.setAttribute("data-intel-wizard-question-id", "");
+    state.wizardAnswerOption.textContent = "";
+    state.wizardAnswerOptionWrap.hidden = true;
+    state.wizardAnswerOptionWrap.classList.add("hidden");
+    return;
+  }
+  const options = Array.isArray(current.options) ? current.options.filter(Boolean) : [];
+  const promptText = options.length > 0 ? `${asString(current.prompt, "")}\nOptions: ${options.join(" | ")}` : asString(current.prompt, "");
+  state.wizardQuestion.value = promptText;
+  state.wizardQuestion.setAttribute("data-intel-wizard-question-id", asString(current.id, ""));
+
+  const priorAnswer =
+    answers.find((entry) => asString(entry?.questionId, "") === asString(current.id, ""))?.answer || "";
+  state.wizardAnswer.value = priorAnswer;
+
+  if (options.length > 0) {
+    state.wizardAnswerOption.textContent = "";
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "Select an option...";
+    state.wizardAnswerOption.append(blank);
+    for (const optionValue of options) {
+      const option = document.createElement("option");
+      option.value = optionValue;
+      option.textContent = optionValue;
+      state.wizardAnswerOption.append(option);
+    }
+    state.wizardAnswerOption.value = options.includes(priorAnswer) ? priorAnswer : "";
+    state.wizardAnswerOptionWrap.hidden = false;
+    state.wizardAnswerOptionWrap.classList.remove("hidden");
+  } else {
+    state.wizardAnswerOption.textContent = "";
+    state.wizardAnswerOptionWrap.hidden = true;
+    state.wizardAnswerOptionWrap.classList.add("hidden");
+  }
+}
+
+function renderWizardExecutionSteps(state, run = null) {
+  state.wizardExecList.textContent = "";
+  const steps = Array.isArray(run?.wizard?.execution?.steps) ? run.wizard.execution.steps : [];
+  if (steps.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "Execution steps will appear after Execution Prep.";
+    state.wizardExecList.append(empty);
+    return;
+  }
+
+  const firstIncomplete = steps.find((entry) => entry && entry.completed !== true) || null;
+  for (const step of steps) {
+    const card = document.createElement("div");
+    card.className = "intel-wizard-exec-card";
+    if (step.completed) {
+      card.classList.add("wizard-exec-complete");
+    } else if (firstIncomplete && asString(firstIncomplete.id, "") === asString(step.id, "")) {
+      card.classList.add("wizard-exec-current");
+    } else {
+      card.classList.add("wizard-exec-pending");
+    }
+
+    const title = document.createElement("div");
+    title.className = "intel-wizard-exec-title";
+    title.textContent = `${asString(step.title, step.id)} [${asString(step.mode, "manual")}]`;
+    card.append(title);
+
+    const instructions = document.createElement("div");
+    instructions.className = "intel-wizard-exec-instructions";
+    instructions.textContent = asString(step.instructions, "");
+    card.append(instructions);
+
+    if (asString(step.completionCriteria, "")) {
+      const criteria = document.createElement("div");
+      criteria.className = "muted";
+      criteria.textContent = `Completion: ${asString(step.completionCriteria, "")}`;
+      card.append(criteria);
+    }
+
+    if (asString(step.actionId, "")) {
+      const action = document.createElement("div");
+      action.className = "muted";
+      action.textContent = `Action: ${asString(step.actionId, "")}`;
+      card.append(action);
+    }
+
+    if (step.completed && asString(step.result, "")) {
+      const result = document.createElement("pre");
+      result.className = "intel-wizard-exec-result";
+      result.textContent = asString(step.result, "");
+      card.append(result);
+    }
+
+    state.wizardExecList.append(card);
+  }
+}
+
 function renderWizardRuns(state, runs, selectedRunId = "") {
   state.wizardRunSelect.textContent = "";
   for (const run of runs) {
@@ -210,6 +310,39 @@ function showWizardSafeCard(state, requiredAction = null) {
   const description = asString(requiredAction.description, "");
   const commandSummary = asString(requiredAction.commandSummary, "");
   state.wizardSafeSummary.textContent = [title, description, commandSummary].filter(Boolean).join(" ");
+}
+
+function setWizardEntryVisibility(state, run = null) {
+  const step = asString(run?.wizard?.currentStep, "define_name");
+  const steps = Array.isArray(run?.wizard?.execution?.steps) ? run.wizard.execution.steps : [];
+  const firstIncomplete = steps.find((entry) => entry && entry.completed !== true) || null;
+
+  const showName = step === "define_name";
+  const showGoal = step === "define_goal";
+  const showQuestion = step === "clarify_round";
+  const showManual =
+    step === "execute_steps" &&
+    firstIncomplete &&
+    ["manual", "manual-risky"].includes(asString(firstIncomplete.mode, "manual"));
+  const showExec = step === "execute_steps" || step === "execution_prep" || step === "completed";
+
+  showSection(state.wizardEntryName, showName);
+  showSection(state.wizardEntryGoal, showGoal);
+  showSection(state.wizardEntryQuestion, showQuestion);
+  showSection(state.wizardEntryManual, Boolean(showManual));
+  showSection(state.wizardEntryExec, Boolean(showExec));
+
+  const infoByStep = {
+    create_initial_plan: "Next will generate the initial plan and first clarification round.",
+    sufficiency_gate: "Next evaluates whether confidence is sufficient to proceed.",
+    collect_evidence: "Next captures diagnostics/troubleshooting evidence for this run.",
+    refine_layer: "Next asks the assistant to refine the next planning layer.",
+    execution_prep: "Next generates explicit execution steps.",
+    completed: "Workflow run is completed.",
+  };
+  const infoText = infoByStep[step] || "";
+  showSection(state.wizardEntryInfo, Boolean(infoText));
+  state.wizardStepInfo.textContent = infoText;
 }
 
 function showSection(section, show) {
@@ -337,13 +470,24 @@ function createState(root) {
     closeWizardButton: root.querySelector("[data-intel-close-wizard]"),
     wizardPrompt: root.querySelector("[data-intel-wizard-prompt]"),
     wizardSteps: root.querySelector("[data-intel-wizard-steps]"),
+    wizardEntry: root.querySelector("[data-intel-wizard-entry]"),
+    wizardEntryName: root.querySelector("[data-intel-wizard-entry-name]"),
+    wizardEntryGoal: root.querySelector("[data-intel-wizard-entry-goal]"),
+    wizardEntryQuestion: root.querySelector("[data-intel-wizard-entry-question]"),
+    wizardEntryManual: root.querySelector("[data-intel-wizard-entry-manual]"),
+    wizardEntryExec: root.querySelector("[data-intel-wizard-entry-exec]"),
+    wizardEntryInfo: root.querySelector("[data-intel-wizard-entry-info]"),
+    wizardStepInfo: root.querySelector("[data-intel-wizard-step-info]"),
     wizardRunSelect: root.querySelector("[data-intel-wizard-run-select]"),
     wizardRefresh: root.querySelector("[data-intel-wizard-refresh]"),
     wizardName: root.querySelector("[data-intel-wizard-name]"),
     wizardGoal: root.querySelector("[data-intel-wizard-goal]"),
     wizardQuestion: root.querySelector("[data-intel-wizard-question]"),
+    wizardAnswerOptionWrap: root.querySelector("[data-intel-wizard-answer-option-wrap]"),
+    wizardAnswerOption: root.querySelector("[data-intel-wizard-answer-option]"),
     wizardAnswer: root.querySelector("[data-intel-wizard-answer]"),
     wizardStepResult: root.querySelector("[data-intel-wizard-step-result]"),
+    wizardExecList: root.querySelector("[data-intel-wizard-exec-list]"),
     wizardBack: root.querySelector("[data-intel-wizard-back]"),
     wizardSave: root.querySelector("[data-intel-wizard-save]"),
     wizardNext: root.querySelector("[data-intel-wizard-next]"),
@@ -446,13 +590,24 @@ function validateState(state) {
     "closeWizardButton",
     "wizardPrompt",
     "wizardSteps",
+    "wizardEntry",
+    "wizardEntryName",
+    "wizardEntryGoal",
+    "wizardEntryQuestion",
+    "wizardEntryManual",
+    "wizardEntryExec",
+    "wizardEntryInfo",
+    "wizardStepInfo",
     "wizardRunSelect",
     "wizardRefresh",
     "wizardName",
     "wizardGoal",
     "wizardQuestion",
+    "wizardAnswerOptionWrap",
+    "wizardAnswerOption",
     "wizardAnswer",
     "wizardStepResult",
+    "wizardExecList",
     "wizardBack",
     "wizardSave",
     "wizardNext",
@@ -561,45 +716,65 @@ function createPanelMarkup() {
       <div class="intel-wizard-banner" data-intel-wizard-prompt>
         Select Create Agent Workflow or Modify Existing Workflow to begin.
       </div>
-      <ol class="intel-step-rail" data-intel-wizard-steps>
-        <li data-intel-wizard-step-item="define_name">1. Define Name</li>
-        <li data-intel-wizard-step-item="define_goal">2. Define Goal</li>
-        <li data-intel-wizard-step-item="create_initial_plan">3. Create Initial Plan</li>
-        <li data-intel-wizard-step-item="clarify_round">4. Clarify Round</li>
-        <li data-intel-wizard-step-item="sufficiency_gate">5. Sufficiency Gate</li>
-        <li data-intel-wizard-step-item="collect_evidence">6. Collect Evidence</li>
-        <li data-intel-wizard-step-item="refine_layer">7. Refine Layer</li>
-        <li data-intel-wizard-step-item="execution_prep">8. Execution Prep</li>
-        <li data-intel-wizard-step-item="execute_steps">9. Execute Steps</li>
-        <li data-intel-wizard-step-item="completed">10. Completed</li>
-      </ol>
-      <div class="grid">
-        <label>Saved Workflow Runs
-          <select data-intel-wizard-run-select></select>
-        </label>
-        <div class="intel-workflow-launch-cell">
-          <button type="button" class="secondary" data-intel-wizard-refresh>Refresh Runs</button>
-        </div>
+      <div class="intel-wizard-layout">
+        <section class="intel-wizard-rail-pane">
+          <ol class="intel-step-rail" data-intel-wizard-steps>
+            <li data-intel-wizard-step-item="define_name">1. Define Name</li>
+            <li data-intel-wizard-step-item="define_goal">2. Define Goal</li>
+            <li data-intel-wizard-step-item="create_initial_plan">3. Create Initial Plan</li>
+            <li data-intel-wizard-step-item="clarify_round">4. Clarify Round</li>
+            <li data-intel-wizard-step-item="sufficiency_gate">5. Sufficiency Gate</li>
+            <li data-intel-wizard-step-item="collect_evidence">6. Collect Evidence</li>
+            <li data-intel-wizard-step-item="refine_layer">7. Refine Layer</li>
+            <li data-intel-wizard-step-item="execution_prep">8. Execution Prep</li>
+            <li data-intel-wizard-step-item="execute_steps">9. Execute Steps</li>
+            <li data-intel-wizard-step-item="completed">10. Completed</li>
+          </ol>
+          <div class="grid">
+            <label>Saved Workflow Runs
+              <select data-intel-wizard-run-select></select>
+            </label>
+            <div class="intel-workflow-launch-cell">
+              <button type="button" class="secondary" data-intel-wizard-refresh>Refresh Runs</button>
+            </div>
+          </div>
+        </section>
+        <section class="intel-wizard-entry-pane" data-intel-wizard-entry>
+          <div class="intel-wizard-entry-block" data-intel-wizard-entry-name>
+            <label>Workflow Name
+              <input type="text" data-intel-wizard-name placeholder="TLS rollout workflow" />
+            </label>
+          </div>
+          <div class="intel-wizard-entry-block hidden" data-intel-wizard-entry-goal hidden>
+            <label>Workflow Goal
+              <textarea data-intel-wizard-goal placeholder="Describe the workflow objective and expected outcome."></textarea>
+            </label>
+          </div>
+          <div class="intel-wizard-entry-block hidden" data-intel-wizard-entry-question hidden>
+            <label>Clarifying Question
+              <textarea data-intel-wizard-question readonly placeholder="Questions from the assistant will appear here."></textarea>
+            </label>
+            <label class="hidden" data-intel-wizard-answer-option-wrap hidden>Suggested Answers
+              <select data-intel-wizard-answer-option></select>
+            </label>
+            <label>Answer
+              <textarea data-intel-wizard-answer placeholder="Enter answer for the current clarifying question."></textarea>
+            </label>
+          </div>
+          <div class="intel-wizard-entry-block hidden" data-intel-wizard-entry-manual hidden>
+            <label>Manual Step Result
+              <textarea data-intel-wizard-step-result placeholder="For manual steps, paste results before clicking Next."></textarea>
+            </label>
+          </div>
+          <div class="intel-wizard-entry-block hidden" data-intel-wizard-entry-exec hidden>
+            <h4>Execution Steps</h4>
+            <div class="intel-wizard-exec-list" data-intel-wizard-exec-list></div>
+          </div>
+          <div class="intel-wizard-entry-block hidden" data-intel-wizard-entry-info hidden>
+            <div class="muted" data-intel-wizard-step-info></div>
+          </div>
+        </section>
       </div>
-      <div class="grid">
-        <label>Workflow Name
-          <input type="text" data-intel-wizard-name placeholder="TLS rollout workflow" />
-        </label>
-      </div>
-      <label>Workflow Goal
-        <textarea data-intel-wizard-goal placeholder="Describe the workflow objective and expected outcome."></textarea>
-      </label>
-      <div class="grid">
-        <label>Clarifying Question
-          <textarea data-intel-wizard-question readonly placeholder="Questions from the assistant will appear here."></textarea>
-        </label>
-        <label>Answer
-          <textarea data-intel-wizard-answer placeholder="Enter answer for the current clarifying question."></textarea>
-        </label>
-      </div>
-      <label>Manual Step Result
-        <textarea data-intel-wizard-step-result placeholder="For manual steps, paste results before clicking Next."></textarea>
-      </label>
       <section class="intel-safe-action-card hidden" data-intel-wizard-safe-card hidden>
         <h4>Safe Action Approval Required</h4>
         <div class="muted" data-intel-wizard-safe-summary></div>
@@ -1081,13 +1256,9 @@ export async function registerManagerPlugin(context) {
     renderWizardStepRail(state, wizard);
     state.wizardPrompt.textContent = asString(wizard.nextPrompt, "Select the next step to continue.");
     const pendingQuestion = findPendingQuestion(runtime.currentWizardRun);
-    if (pendingQuestion) {
-      state.wizardQuestion.value = asString(pendingQuestion.prompt, "");
-      state.wizardQuestion.setAttribute("data-intel-wizard-question-id", asString(pendingQuestion.id, ""));
-    } else {
-      state.wizardQuestion.value = "";
-      state.wizardQuestion.setAttribute("data-intel-wizard-question-id", "");
-    }
+    renderWizardQuestion(state, pendingQuestion, runtime.currentWizardRun);
+    renderWizardExecutionSteps(state, runtime.currentWizardRun);
+    setWizardEntryVisibility(state, runtime.currentWizardRun);
     showWizardSafeCard(state, payload.requiredAction || null);
     runtime.pendingSafeAction = payload.requiredAction || null;
     renderWizardOutput(state, payload && Object.keys(payload).length > 0 ? payload : { ok: true, run: runtime.currentWizardRun });
@@ -1148,7 +1319,9 @@ export async function registerManagerPlugin(context) {
 
   async function submitPendingWizardAnswer(runId) {
     const questionId = asString(state.wizardQuestion.getAttribute("data-intel-wizard-question-id"), "");
-    const answer = asString(state.wizardAnswer.value, "").trim();
+    const typedAnswer = asString(state.wizardAnswer.value, "").trim();
+    const selectedOption = asString(state.wizardAnswerOption.value, "").trim();
+    const answer = typedAnswer || selectedOption;
     if (!questionId || !answer) {
       return;
     }
@@ -1194,16 +1367,23 @@ export async function registerManagerPlugin(context) {
 
     await submitPendingWizardAnswer(runId);
     const completionPatch = buildExecutionCompletionPayload(runtime.currentWizardRun);
+    const operatorMessage = asString(state.wizardStepResult.value, "").trim();
     const payload = await context.apiPost(`/assistant/wizard/${encodeURIComponent(runId)}/next`, {
       runName: asString(state.wizardName.value, "").trim(),
       goal: asString(state.wizardGoal.value, "").trim(),
       workflowId: asString(state.menuWorkflowSelect.value, "").trim(),
-      message: asString(state.planNote?.value, "").trim(),
-      note: asString(state.planNote?.value, "").trim(),
+      message: operatorMessage,
+      note: operatorMessage,
       ...completionPatch,
     });
     state.wizardStepResult.value = "";
     if (payload.awaitingAction) {
+      if (payload.requiredStep && !payload.requiredAction) {
+        panel.setStatus(
+          `Manual action required: ${asString(payload.requiredStep.title, "step")}. Paste result, then click Next.`,
+          true,
+        );
+      }
       applyWizardRun(payload.run || runtime.currentWizardRun, payload);
       panel.setStatus("Action required before continuing.", true);
       return;
@@ -1725,6 +1905,13 @@ export async function registerManagerPlugin(context) {
       await approveWizardSafeAction();
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.wizardAnswerOption.addEventListener("change", () => {
+    const selected = asString(state.wizardAnswerOption.value, "");
+    if (selected) {
+      state.wizardAnswer.value = selected;
     }
   });
 

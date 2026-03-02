@@ -3314,14 +3314,45 @@ test("manager assistant wizard endpoints support step flow, save/resume, and saf
         assert.equal(answered.body.ok, true);
       }
 
-      const stepClarify = await request(port, {
+      let stepClarify = await request(port, {
         method: "POST",
         pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
         body: {},
       });
       assert.equal(stepClarify.status, 200);
       assert.equal(stepClarify.body.ok, true);
-      assert.equal(stepClarify.body.run?.wizard?.currentStep, "sufficiency_gate");
+      let clarifyStep = String(stepClarify.body.run?.wizard?.currentStep || "");
+      let clarifyAttempts = 0;
+      while (clarifyStep === "clarify_round" && clarifyAttempts < 3) {
+        const nextQuestions = Array.isArray(stepClarify.body.run?.wizard?.clarification?.questions)
+          ? stepClarify.body.run.wizard.clarification.questions
+          : [];
+        for (const question of nextQuestions) {
+          if (question.required === false) {
+            continue;
+          }
+          const answered = await request(port, {
+            method: "POST",
+            pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/answer`,
+            body: {
+              questionId: question.id,
+              answer: `answer for ${question.id}`,
+            },
+          });
+          assert.equal(answered.status, 200);
+          assert.equal(answered.body.ok, true);
+        }
+        stepClarify = await request(port, {
+          method: "POST",
+          pathname: `/api/assistant/wizard/${encodeURIComponent(runId)}/next`,
+          body: {},
+        });
+        assert.equal(stepClarify.status, 200);
+        assert.equal(stepClarify.body.ok, true);
+        clarifyStep = String(stepClarify.body.run?.wizard?.currentStep || "");
+        clarifyAttempts += 1;
+      }
+      assert.equal(clarifyStep, "sufficiency_gate");
 
       const stepSufficiency = await request(port, {
         method: "POST",

@@ -109,7 +109,36 @@ function buildWizardClarificationResult({ context = {} } = {}) {
   const runName = normalizeString(context?.runName, "");
   const existingQuestions = normalizeWizardClarificationQuestions(context?.existingQuestions);
   const answers = normalizeWizardClarificationAnswers(context?.answers);
+  const diagnostics = context?.diagnosticsReport && typeof context.diagnosticsReport === "object" ? context.diagnosticsReport : {};
+  const envInfo = diagnostics?.environment && typeof diagnostics.environment === "object" ? diagnostics.environment : {};
+  const envConfig = diagnostics?.config && typeof diagnostics.config === "object" ? diagnostics.config : {};
+  const foundryTarget = normalizeString(envConfig.FOUNDRY_TARGET, "").toLowerCase();
+  const isLocalFoundry = foundryTarget.includes("127.0.0.1") || foundryTarget.includes("localhost");
+  const tlsEnabled = normalizeString(envConfig.TLS_ENABLED, "false") === "true";
+  const hasTlsCert = Boolean(normalizeString(envConfig.TLS_CERT_FILE, ""));
+  const hasDomain = Boolean(normalizeString(envConfig.TLS_DOMAIN, "") || normalizeString(envConfig.PUBLIC_BASE_URL, ""));
   const answeredCount = answers.length;
+  const answerMap = new Map();
+  for (const entry of answers) {
+    answerMap.set(entry.questionId, normalizeString(entry.answer, ""));
+  }
+
+  function maybePushQuestion(list, question) {
+    const id = normalizeString(question?.id, "");
+    if (!id) {
+      return;
+    }
+    if (list.some((entry) => entry.id === id)) {
+      return;
+    }
+    list.push({
+      id,
+      prompt: normalizeString(question?.prompt, ""),
+      type: normalizeString(question?.type, "single-choice"),
+      required: question?.required !== false,
+      options: Array.isArray(question?.options) ? question.options.map((entry) => normalizeString(entry, "")).filter(Boolean) : [],
+    });
+  }
 
   let confidence = 35;
   if (runName) {
@@ -121,31 +150,98 @@ function buildWizardClarificationResult({ context = {} } = {}) {
   confidence += Math.min(35, answeredCount * 10);
   confidence = clampInteger(confidence, 35, 0, 100);
 
-  let questions = existingQuestions;
-  if (questions.length === 0) {
-    questions = [
-      {
-        id: "scope-boundary",
-        prompt: "What is explicitly out of scope for this workflow?",
-        type: "text",
+  let questions = [];
+  if (existingQuestions.length > 0 && round > 1) {
+    questions = existingQuestions;
+  } else {
+    maybePushQuestion(questions, {
+      id: "deployment-scope",
+      prompt: "Which access scope should this workflow optimize for?",
+      type: "single-choice",
+      required: true,
+      options: ["Local machine only", "Internal LAN users", "Public internet users"],
+    });
+
+    maybePushQuestion(questions, {
+      id: "tls-objective",
+      prompt: "What TLS outcome do you want this workflow to reach?",
+      type: "single-choice",
+      required: true,
+      options: [
+        "Set up new Let's Encrypt certificate",
+        "Use existing certificate files",
+        "TLS is terminated upstream (Caddy/Nginx)",
+      ],
+    });
+
+    if (envInfo.isWsl) {
+      maybePushQuestion(questions, {
+        id: "wsl-routing",
+        prompt: "Because WSL is detected, should this workflow include Windows portproxy/firewall validation?",
+        type: "single-choice",
         required: true,
-        options: [],
-      },
-      {
-        id: "success-signal",
-        prompt: "What concrete result proves this workflow succeeded?",
-        type: "text",
+        options: ["Yes include WSL routing checks", "No skip WSL routing checks"],
+      });
+      confidence += 5;
+    }
+
+    maybePushQuestion(questions, {
+      id: "domain-ready",
+      prompt: "Is a domain already pointed to this Blastdoor host?",
+      type: "single-choice",
+      required: true,
+      options: hasDomain ? ["Yes", "No", "Not sure"] : ["No", "Yes", "Not sure"],
+    });
+
+    maybePushQuestion(questions, {
+      id: "foundry-reachability",
+      prompt: "How should this workflow validate Foundry target reachability?",
+      type: "single-choice",
+      required: true,
+      options: isLocalFoundry
+        ? [
+            "Use runtime-local checks only",
+            "Validate host/WSL/container network path too",
+          ]
+        : ["Validate remote endpoint only", "Validate remote endpoint + DNS/TCP checks"],
+    });
+  }
+
+  if (round >= 2) {
+    if (!answerMap.has("rollback-plan")) {
+      maybePushQuestion(questions, {
+        id: "rollback-plan",
+        prompt: "If a step fails, what rollback behavior should the workflow prioritize?",
+        type: "single-choice",
         required: true,
-        options: [],
-      },
-      {
-        id: "constraints",
-        prompt: "List constraints (time, tools, risk tolerance, permissions).",
-        type: "text",
-        required: false,
-        options: [],
-      },
-    ];
+        options: [
+          "Stop and report only",
+          "Revert changed config values",
+          "Revert and restart managed services",
+        ],
+      });
+    }
+    if (!answerMap.has("maintenance-window")) {
+      maybePushQuestion(questions, {
+        id: "maintenance-window",
+        prompt: "Can this workflow perform restart-required actions now?",
+        type: "single-choice",
+        required: true,
+        options: ["Yes, restarts allowed now", "No, report restart-required steps only"],
+      });
+    }
+  }
+
+  if (tlsEnabled || hasTlsCert) {
+    confidence += 10;
+  }
+
+  if (answerMap.has("domain-ready")) {
+    confidence += 10;
+  }
+
+  if (answerMap.has("tls-objective")) {
+    confidence += 10;
   }
 
   const hasOutstandingQuestions = questions.some(
@@ -160,7 +256,7 @@ function buildWizardClarificationResult({ context = {} } = {}) {
     needsMoreInfo,
     questions: questions.slice(0, 5),
     summary: needsMoreInfo
-      ? "More input is needed before proceeding."
+      ? "Specific clarifications are still needed before proceeding."
       : "Clarification appears sufficient for the 80/20 threshold.",
   };
 }
