@@ -274,16 +274,7 @@ const managedMainSections = [
   resolveSection("runtimeLogsSection", ".runtime-panel"),
   resolveSection("debugLogsSection", ".debug-panel"),
 ].filter(Boolean);
-const mainPanelGroups = {
-  default: [],
-  service: ["configSection", "runtimeLogsSection", "debugLogsSection"],
-  tls: ["tlsManagementSection"],
-  login: ["loginManagementSection"],
-  user: ["userManagementSection"],
-  backup: ["backupManagementSection"],
-  diagnostics: ["diagnosticsSection", "troubleshootingSection"],
-  modules: ["modulesSection", "pluginPanels"],
-};
+const mainPanelDefaultVisibleIds = new Set(["serviceControlSection"]);
 
 function bindClick(id, handler) {
   const element = document.getElementById(id);
@@ -3032,27 +3023,56 @@ function scrollToSection(id) {
   element.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function setMainPanelGroup(groupName, options = {}) {
-  const { scroll = true } = options;
-  const group = mainPanelGroups[groupName] || mainPanelGroups.default;
-  const visibleIds = new Set(["serviceControlSection", ...group]);
-
-  for (const section of managedMainSections) {
-    const visible = visibleIds.has(section.id);
-    section.hidden = !visible;
-    section.classList.toggle("hidden", !visible);
+function isSectionVisible(section) {
+  if (!section) {
+    return false;
   }
+  return !section.hidden && !section.classList.contains("hidden");
+}
 
-  if (!scroll) {
+function setSectionVisible(section, visible) {
+  if (!section) {
+    return;
+  }
+  section.hidden = !visible;
+  section.classList.toggle("hidden", !visible);
+}
+
+function setMainPanelDefaultVisibility() {
+  for (const section of managedMainSections) {
+    setSectionVisible(section, mainPanelDefaultVisibleIds.has(section.id));
+  }
+}
+
+function toggleMainPanelSections(sectionIds, options = {}) {
+  const { scroll = true } = options;
+  const ids = Array.isArray(sectionIds) ? sectionIds : [sectionIds];
+  const sections = ids
+    .map((id) => managedMainSections.find((section) => section.id === id) || null)
+    .filter(Boolean);
+
+  if (!sections.length) {
     return;
   }
 
-  const targetId = group[0] || "serviceControlSection";
-  scrollToSection(targetId);
+  const nextVisible = !sections.some(isSectionVisible);
+  for (const section of sections) {
+    setSectionVisible(section, nextVisible);
+  }
+
+  if (!scroll || !nextVisible) {
+    return;
+  }
+
+  scrollToSection(sections[0].id);
 }
 
 bindClick("navServiceBtn", () => {
-  setMainPanelGroup("service");
+  toggleMainPanelSections("serviceControlSection");
+});
+
+bindClick("navConfigBtn", () => {
+  toggleMainPanelSections("configSection");
 });
 
 bindClick("navSessionBtn", () => {
@@ -3066,19 +3086,19 @@ bindClick("navLayoutBtn", () => {
 });
 
 bindClick("navTlsBtn", () => {
-  setMainPanelGroup("tls");
+  toggleMainPanelSections("tlsManagementSection");
 });
 
 bindClick("navLoginBtn", () => {
-  setMainPanelGroup("login");
+  toggleMainPanelSections("loginManagementSection");
 });
 
 bindClick("navUserBtn", () => {
-  setMainPanelGroup("user");
+  toggleMainPanelSections("userManagementSection");
 });
 
 bindClick("navBackupBtn", () => {
-  setMainPanelGroup("backup");
+  toggleMainPanelSections("backupManagementSection");
 });
 
 bindClick("navFailuresBtn", async () => {
@@ -3091,11 +3111,11 @@ bindClick("navFailuresBtn", async () => {
 });
 
 bindClick("navDiagBtn", () => {
-  setMainPanelGroup("diagnostics");
+  toggleMainPanelSections(["diagnosticsSection", "troubleshootingSection"]);
 });
 
 bindClick("navModulesBtn", () => {
-  setMainPanelGroup("modules");
+  toggleMainPanelSections(["modulesSection", "pluginPanels"]);
 });
 
 bindClick("openTlsFromPanelBtn", () => {
@@ -3626,7 +3646,7 @@ closeFailuresModal();
 closeSessionModal();
 closeLayoutModal();
 selectSession({});
-setMainPanelGroup("default", { scroll: false });
+setMainPanelDefaultVisibility();
 
 loadManagerPlugins()
   .catch((error) => {
