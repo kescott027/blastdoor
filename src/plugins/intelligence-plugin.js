@@ -1,5 +1,12 @@
 import { createAssistantClient, loadAssistantRuntimeConfig } from "../assistant-client.js";
+import path from "node:path";
 import { readInstallationConfig } from "../installation-config.js";
+import {
+  deleteIntelligenceWorkflow,
+  readIntelligenceWorkflowStore,
+  summarizeWorkflowForList,
+  upsertIntelligenceWorkflow,
+} from "../intelligence-workflow-store.js";
 
 function validateAssistantConfig(config) {
   const assistantProvider = String(config.assistantProvider || "heuristic").toLowerCase();
@@ -213,6 +220,9 @@ export function createIntelligencePlugin() {
         intelligence.runGrimoire = async (payload = {}) => {
           return await getAssistantClient().runGrimoireWorkflow(payload);
         };
+        intelligence.runWorkflowChat = async (payload = {}) => {
+          return await getAssistantClient().runWorkflowChat(payload);
+        };
 
         const previousClose = api.close;
         api.close = async () => {
@@ -267,6 +277,13 @@ export function createIntelligencePlugin() {
           });
           return body.result || {};
         };
+        intelligence.runWorkflowChat = async (payload = {}) => {
+          const body = await request("/internal/plugins/intelligence/workflows/chat", {
+            method: "POST",
+            payload,
+          });
+          return body.result || {};
+        };
       },
 
       registerApiServerRoutes({ registerRead, registerWrite, api }) {
@@ -294,6 +311,10 @@ export function createIntelligencePlugin() {
           const result = await api.plugins?.intelligence?.runGrimoire(req.body || {});
           res.json({ ok: true, result: result || {} });
         });
+        registerWrite("/internal/plugins/intelligence/workflows/chat", async (req, res) => {
+          const result = await api.plugins?.intelligence?.runWorkflowChat(req.body || {});
+          res.json({ ok: true, result: result || {} });
+        });
       },
     },
 
@@ -319,6 +340,8 @@ export function createIntelligencePlugin() {
         CONFIG_DEFAULTS,
         installationConfigPath,
       }) {
+        const workflowStorePath = path.join(workspaceDir, "data", "intelligence-workflows.json");
+
         registerApiGet("/assistant/status", async (_req, res) => {
           try {
             const config = await readEnvConfig(envPath);
@@ -444,7 +467,7 @@ export function createIntelligencePlugin() {
           try {
             const config = await readEnvConfig(envPath);
             const blastDoorsClosed = parseBooleanLike(config.BLAST_DOORS_CLOSED, false);
-            const debugPath = `${workspaceDir}/${config.DEBUG_LOG_FILE || CONFIG_DEFAULTS.DEBUG_LOG_FILE}`;
+            const debugPath = path.join(workspaceDir, config.DEBUG_LOG_FILE || CONFIG_DEFAULTS.DEBUG_LOG_FILE);
             const debugLogLines = await tailFile(debugPath, 400);
             const runtimeLogLines = processState.recentRuntimeLogs(400);
             const logLines = [...runtimeLogLines, ...debugLogLines];
@@ -513,6 +536,177 @@ export function createIntelligencePlugin() {
             res.json({
               ok: true,
               result: result || {},
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiGet("/assistant/workflows", async (_req, res) => {
+          try {
+            const store = await readIntelligenceWorkflowStore(workflowStorePath);
+            res.json({
+              ok: true,
+              workflows: (store.workflows || []).map(summarizeWorkflowForList),
+              workflowConfigs: store.workflows || [],
+            });
+          } catch (error) {
+            res.status(500).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/workflows/save", async (req, res) => {
+          try {
+            const draft = req.body?.workflow && typeof req.body.workflow === "object" ? req.body.workflow : req.body || {};
+            const saved = await upsertIntelligenceWorkflow(workflowStorePath, draft);
+            res.json({
+              ok: true,
+              workflow: saved.workflow || null,
+              workflows: (saved.store?.workflows || []).map(summarizeWorkflowForList),
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/workflows/delete", async (req, res) => {
+          try {
+            const workflowId = normalizeManagerString(req.body?.workflowId, "");
+            const saved = await deleteIntelligenceWorkflow(workflowStorePath, workflowId);
+            res.json({
+              ok: true,
+              deletedWorkflowId: workflowId,
+              workflows: (saved.workflows || []).map(summarizeWorkflowForList),
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/workflows/generate-config", async (req, res) => {
+          try {
+            const description = normalizeManagerString(req.body?.description, "");
+            if (!description) {
+              throw new Error("description is required.");
+            }
+
+            const result = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.runWorkflowChat({
+                workflow: {
+                  id: "workflow-config-builder",
+                  name: "Workflow Config Builder",
+                  type: "workflow-config-builder",
+                },
+                message: description,
+                context: {
+                  requestSource: "manager-ui",
+                },
+              });
+            });
+
+            res.json({
+              ok: true,
+              result: result || {},
+              suggestedWorkflow: result?.suggestedWorkflow || null,
+            });
+          } catch (error) {
+            res.status(400).json({
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+
+        registerApiPost("/assistant/workflows/chat", async (req, res) => {
+          try {
+            const workflowId = normalizeManagerString(req.body?.workflowId, "");
+            const message = normalizeManagerString(req.body?.message, "");
+            const draftWorkflow = req.body?.workflow && typeof req.body.workflow === "object" ? req.body.workflow : null;
+            const applyLockdown = parseBooleanLikeBody(req.body?.applyLockdown ?? true);
+
+            const workflowStore = await readIntelligenceWorkflowStore(workflowStorePath);
+            const selectedWorkflow =
+              draftWorkflow ||
+              workflowStore.workflows.find((workflow) => workflow.id === workflowId) ||
+              workflowStore.workflows.find((workflow) => workflow.id === "troubleshoot-recommendation") ||
+              null;
+            if (!selectedWorkflow) {
+              throw new Error("No workflow is available to run.");
+            }
+
+            const config = await readEnvConfig(envPath);
+            const serviceStatus = processState.getStatus();
+            const [health, foundryHealth] = await Promise.all([
+              checkBlastdoorHealth(config),
+              checkFoundryTargetHealth(config),
+            ]);
+            const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+            const diagnosticsReport = {
+              generatedAt: new Date().toISOString(),
+              serviceStatus,
+              health,
+              environment,
+              config: sanitizeConfigForDiagnostics(config),
+            };
+            const troubleshootReport = createTroubleshootReport({
+              config,
+              health,
+              foundryHealth,
+              environment,
+              serviceStatus,
+            });
+            const installationConfig = await readInstallationConfig(installationConfigPath);
+
+            const debugPath = `${workspaceDir}/${config.DEBUG_LOG_FILE || CONFIG_DEFAULTS.DEBUG_LOG_FILE}`;
+            const debugLogLines = await tailFile(debugPath, 400);
+            const runtimeLogLines = processState.recentRuntimeLogs(400);
+            const logLines = [...runtimeLogLines, ...debugLogLines];
+            const blastDoorsClosed = parseBooleanLike(config.BLAST_DOORS_CLOSED, false);
+
+            const chatResult = await withBlastdoorApi(async ({ blastdoorApi }) => {
+              return await blastdoorApi.plugins?.intelligence?.runWorkflowChat({
+                workflow: selectedWorkflow,
+                message,
+                context: {
+                  diagnosticsReport,
+                  troubleshootReport,
+                  installationConfig: installationConfig || {},
+                  apiDocs: makeApiDocSnapshot(),
+                  logLines,
+                  blastDoorsClosed,
+                  threatScoreThreshold: selectedWorkflow?.threatScoreThreshold || 80,
+                },
+              });
+            });
+
+            let lockdown = {
+              applied: false,
+              serviceRestarted: false,
+              sessionSecretRotated: false,
+            };
+
+            const workflowAutoLock = Boolean(selectedWorkflow?.autoLockOnThreat);
+            if (workflowAutoLock && applyLockdown && chatResult?.shouldLockdown && !blastDoorsClosed) {
+              const lockResult = await applyThreatLockdown(config);
+              lockdown = {
+                applied: true,
+                serviceRestarted: Boolean(lockResult.serviceRestarted),
+                sessionSecretRotated: Boolean(lockResult.sessionSecretRotated),
+              };
+            }
+
+            res.json({
+              ok: true,
+              workflow: summarizeWorkflowForList(selectedWorkflow),
+              result: chatResult || {},
+              lockdown,
             });
           } catch (error) {
             res.status(400).json({

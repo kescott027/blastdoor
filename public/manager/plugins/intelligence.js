@@ -33,6 +33,16 @@ function asIntegerString(value, fallback) {
   return String(parsed);
 }
 
+function slugifyName(name) {
+  return asString(name, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "")
+    .slice(0, 64);
+}
+
 function toConfigPatch(state) {
   return {
     ASSISTANT_ENABLED: state.assistantEnabled.checked ? "true" : "false",
@@ -51,44 +61,23 @@ function toConfigPatch(state) {
 }
 
 function applyConfigValues(state, config = {}) {
-  state.assistantEnabled.checked = asBooleanString(
-    config.ASSISTANT_ENABLED,
-    DEFAULTS.ASSISTANT_ENABLED,
-  ) === "true";
-  state.assistantProvider.value = asString(
-    config.ASSISTANT_PROVIDER,
-    DEFAULTS.ASSISTANT_PROVIDER,
-  );
+  state.assistantEnabled.checked = asBooleanString(config.ASSISTANT_ENABLED, DEFAULTS.ASSISTANT_ENABLED) === "true";
+  state.assistantProvider.value = asString(config.ASSISTANT_PROVIDER, DEFAULTS.ASSISTANT_PROVIDER);
   state.assistantUrl.value = asString(config.ASSISTANT_URL, DEFAULTS.ASSISTANT_URL);
   state.assistantToken.value = "";
-  state.assistantOllamaUrl.value = asString(
-    config.ASSISTANT_OLLAMA_URL,
-    DEFAULTS.ASSISTANT_OLLAMA_URL,
-  );
-  state.assistantOllamaModel.value = asString(
-    config.ASSISTANT_OLLAMA_MODEL,
-    DEFAULTS.ASSISTANT_OLLAMA_MODEL,
-  );
-  state.assistantTimeoutMs.value = asIntegerString(
-    config.ASSISTANT_TIMEOUT_MS,
-    DEFAULTS.ASSISTANT_TIMEOUT_MS,
-  );
+  state.assistantOllamaUrl.value = asString(config.ASSISTANT_OLLAMA_URL, DEFAULTS.ASSISTANT_OLLAMA_URL);
+  state.assistantOllamaModel.value = asString(config.ASSISTANT_OLLAMA_MODEL, DEFAULTS.ASSISTANT_OLLAMA_MODEL);
+  state.assistantTimeoutMs.value = asIntegerString(config.ASSISTANT_TIMEOUT_MS, DEFAULTS.ASSISTANT_TIMEOUT_MS);
   state.assistantRetryMaxAttempts.value = asIntegerString(
     config.ASSISTANT_RETRY_MAX_ATTEMPTS,
     DEFAULTS.ASSISTANT_RETRY_MAX_ATTEMPTS,
   );
-  state.assistantRagEnabled.checked = asBooleanString(
-    config.ASSISTANT_RAG_ENABLED,
-    DEFAULTS.ASSISTANT_RAG_ENABLED,
-  ) === "true";
-  state.assistantAllowWebSearch.checked = asBooleanString(
-    config.ASSISTANT_ALLOW_WEB_SEARCH,
-    DEFAULTS.ASSISTANT_ALLOW_WEB_SEARCH,
-  ) === "true";
-  state.assistantAutoLockOnThreat.checked = asBooleanString(
-    config.ASSISTANT_AUTO_LOCK_ON_THREAT,
-    DEFAULTS.ASSISTANT_AUTO_LOCK_ON_THREAT,
-  ) === "true";
+  state.assistantRagEnabled.checked =
+    asBooleanString(config.ASSISTANT_RAG_ENABLED, DEFAULTS.ASSISTANT_RAG_ENABLED) === "true";
+  state.assistantAllowWebSearch.checked =
+    asBooleanString(config.ASSISTANT_ALLOW_WEB_SEARCH, DEFAULTS.ASSISTANT_ALLOW_WEB_SEARCH) === "true";
+  state.assistantAutoLockOnThreat.checked =
+    asBooleanString(config.ASSISTANT_AUTO_LOCK_ON_THREAT, DEFAULTS.ASSISTANT_AUTO_LOCK_ON_THREAT) === "true";
   state.assistantThreatScoreThreshold.value = asIntegerString(
     config.ASSISTANT_THREAT_SCORE_THRESHOLD,
     DEFAULTS.ASSISTANT_THREAT_SCORE_THRESHOLD,
@@ -97,6 +86,101 @@ function applyConfigValues(state, config = {}) {
 
 function renderOutput(state, payload) {
   state.output.textContent = JSON.stringify(payload || {}, null, 2);
+}
+
+function showSection(section, show) {
+  if (!section) {
+    return;
+  }
+  section.hidden = !show;
+  section.classList.toggle("hidden", !show);
+}
+
+function pushChatMessage(state, role, text) {
+  const safeRole = role === "user" ? "user" : "assistant";
+  const line = document.createElement("div");
+  line.className = `intel-chat-line intel-chat-line-${safeRole}`;
+  const label = document.createElement("span");
+  label.className = "intel-chat-role";
+  label.textContent = safeRole === "user" ? "You" : "Assistant";
+  const content = document.createElement("span");
+  content.className = "intel-chat-text";
+  content.textContent = asString(text, "");
+  line.append(label);
+  line.append(content);
+  state.chatLog.append(line);
+  state.chatLog.scrollTop = state.chatLog.scrollHeight;
+}
+
+function clearChat(state) {
+  state.chatLog.textContent = "";
+}
+
+function normalizeWorkflowDraft(input = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  const id = asString(source.id, "").trim();
+  const name = asString(source.name, "").trim();
+  return {
+    id,
+    name,
+    type: asString(source.type, "custom").trim() || "custom",
+    description: asString(source.description, "").trim(),
+    systemPrompt: asString(source.systemPrompt, "").trim(),
+    seedPrompt: asString(source.seedPrompt, "").trim(),
+    inputPlaceholder: asString(source.inputPlaceholder, "").trim(),
+    ragEnabled: Boolean(source.ragEnabled),
+    allowWebSearch: Boolean(source.allowWebSearch),
+    autoLockOnThreat: Boolean(source.autoLockOnThreat),
+    threatScoreThreshold: Number.parseInt(asString(source.threatScoreThreshold, "80"), 10) || 80,
+    config: source.config && typeof source.config === "object" && !Array.isArray(source.config) ? source.config : {},
+    builtIn: Boolean(source.builtIn),
+  };
+}
+
+function draftFromForm(state) {
+  const id = asString(state.workflowId.value, "").trim();
+  const name = asString(state.workflowName.value, "").trim();
+  const configRaw = asString(state.workflowConfigJson.value, "").trim();
+  let config = {};
+  if (configRaw) {
+    config = JSON.parse(configRaw);
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      throw new Error("Workflow config JSON must be an object.");
+    }
+  }
+
+  return {
+    id,
+    name,
+    type: asString(state.workflowType.value, "custom").trim() || "custom",
+    description: asString(state.workflowDescription.value, "").trim(),
+    systemPrompt: asString(state.workflowSystemPrompt.value, "").trim(),
+    seedPrompt: asString(state.workflowSeedPrompt.value, "").trim(),
+    inputPlaceholder: asString(state.workflowInputPlaceholder.value, "").trim(),
+    ragEnabled: Boolean(state.workflowRagEnabled.checked),
+    allowWebSearch: Boolean(state.workflowAllowWebSearch.checked),
+    autoLockOnThreat: Boolean(state.workflowAutoLock.checked),
+    threatScoreThreshold: Number.parseInt(asString(state.workflowThreatThreshold.value, "80"), 10) || 80,
+    config,
+  };
+}
+
+function populateWorkflowForm(state, workflow = null) {
+  const current = normalizeWorkflowDraft(workflow || {});
+  state.workflowId.value = current.id || "";
+  state.workflowName.value = current.name || "";
+  state.workflowType.value = current.type || "custom";
+  state.workflowDescription.value = current.description || "";
+  state.workflowSystemPrompt.value = current.systemPrompt || "";
+  state.workflowSeedPrompt.value = current.seedPrompt || "";
+  state.workflowInputPlaceholder.value = current.inputPlaceholder || "";
+  state.workflowRagEnabled.checked = Boolean(current.ragEnabled);
+  state.workflowAllowWebSearch.checked = Boolean(current.allowWebSearch);
+  state.workflowAutoLock.checked = Boolean(current.autoLockOnThreat);
+  state.workflowThreatThreshold.value = String(current.threatScoreThreshold || 80);
+  state.workflowConfigJson.value = JSON.stringify(current.config || {}, null, 2);
+  state.workflowType.disabled = Boolean(current.builtIn);
+  state.workflowDelete.disabled = !current.id || Boolean(current.builtIn);
 }
 
 function createState(root) {
@@ -114,14 +198,33 @@ function createState(root) {
     assistantAllowWebSearch: root.querySelector("[data-intel-assistant-web-search]"),
     assistantAutoLockOnThreat: root.querySelector("[data-intel-assistant-auto-lock]"),
     assistantThreatScoreThreshold: root.querySelector("[data-intel-assistant-threat-threshold]"),
+    configureButton: root.querySelector("[data-intel-open-config]"),
+    workflowsButton: root.querySelector("[data-intel-open-workflows]"),
+    configSection: root.querySelector("[data-intel-config-section]"),
+    workflowsSection: root.querySelector("[data-intel-workflow-section]"),
+    closeConfigButton: root.querySelector("[data-intel-close-config]"),
+    closeWorkflowButton: root.querySelector("[data-intel-close-workflow]"),
     refreshButton: root.querySelector("[data-intel-action-refresh]"),
-    workflowConfigButton: root.querySelector("[data-intel-action-config]"),
-    workflowTroubleshootButton: root.querySelector("[data-intel-action-troubleshoot]"),
-    workflowThreatButton: root.querySelector("[data-intel-action-threat]"),
-    workflowGrimoireButton: root.querySelector("[data-intel-action-grimoire]"),
-    errorText: root.querySelector("[data-intel-error-text]"),
-    intentText: root.querySelector("[data-intel-intent-text]"),
-    applyLockdown: root.querySelector("[data-intel-apply-lockdown]"),
+    workflowSelect: root.querySelector("[data-intel-workflow-select]"),
+    workflowNew: root.querySelector("[data-intel-workflow-new]"),
+    workflowSave: root.querySelector("[data-intel-workflow-save]"),
+    workflowDelete: root.querySelector("[data-intel-workflow-delete]"),
+    workflowGenerate: root.querySelector("[data-intel-workflow-generate]"),
+    workflowId: root.querySelector("[data-intel-workflow-id]"),
+    workflowName: root.querySelector("[data-intel-workflow-name]"),
+    workflowType: root.querySelector("[data-intel-workflow-type]"),
+    workflowDescription: root.querySelector("[data-intel-workflow-description]"),
+    workflowSystemPrompt: root.querySelector("[data-intel-workflow-system-prompt]"),
+    workflowSeedPrompt: root.querySelector("[data-intel-workflow-seed-prompt]"),
+    workflowInputPlaceholder: root.querySelector("[data-intel-workflow-input-placeholder]"),
+    workflowRagEnabled: root.querySelector("[data-intel-workflow-rag-enabled]"),
+    workflowAllowWebSearch: root.querySelector("[data-intel-workflow-web-search]"),
+    workflowAutoLock: root.querySelector("[data-intel-workflow-auto-lock]"),
+    workflowThreatThreshold: root.querySelector("[data-intel-workflow-threat-threshold]"),
+    workflowConfigJson: root.querySelector("[data-intel-workflow-config-json]"),
+    chatLog: root.querySelector("[data-intel-chat-log]"),
+    chatInput: root.querySelector("[data-intel-chat-input]"),
+    chatSend: root.querySelector("[data-intel-chat-send]"),
     output: root.querySelector("[data-intel-output]"),
   };
 }
@@ -141,14 +244,33 @@ function validateState(state) {
     "assistantAllowWebSearch",
     "assistantAutoLockOnThreat",
     "assistantThreatScoreThreshold",
+    "configureButton",
+    "workflowsButton",
+    "configSection",
+    "workflowsSection",
+    "closeConfigButton",
+    "closeWorkflowButton",
     "refreshButton",
-    "workflowConfigButton",
-    "workflowTroubleshootButton",
-    "workflowThreatButton",
-    "workflowGrimoireButton",
-    "errorText",
-    "intentText",
-    "applyLockdown",
+    "workflowSelect",
+    "workflowNew",
+    "workflowSave",
+    "workflowDelete",
+    "workflowGenerate",
+    "workflowId",
+    "workflowName",
+    "workflowType",
+    "workflowDescription",
+    "workflowSystemPrompt",
+    "workflowSeedPrompt",
+    "workflowInputPlaceholder",
+    "workflowRagEnabled",
+    "workflowAllowWebSearch",
+    "workflowAutoLock",
+    "workflowThreatThreshold",
+    "workflowConfigJson",
+    "chatLog",
+    "chatInput",
+    "chatSend",
     "output",
   ];
 
@@ -161,73 +283,151 @@ function validateState(state) {
 
 function createPanelMarkup() {
   return `
-    <form class="intel-config-form" data-intel-form>
+    <section class="intel-menu">
+      <div class="button-row">
+        <button type="button" data-intel-open-config>Configure Intelligence Module</button>
+        <button type="button" data-intel-open-workflows>Create Workflow</button>
+      </div>
+    </section>
+
+    <section class="intel-config-wrap hidden" data-intel-config-section hidden>
+      <div class="intel-section-header">
+        <h3>Configure Intelligence Module</h3>
+        <button type="button" class="secondary" data-intel-close-config>Close</button>
+      </div>
+      <form class="intel-config-form" data-intel-form>
+        <div class="grid">
+          <label class="checkbox-label">
+            <input type="checkbox" data-intel-assistant-enabled />
+            Enable Intelligence Module
+          </label>
+          <label>Provider (heuristic|ollama)
+            <input type="text" data-intel-assistant-provider />
+          </label>
+          <label>Assistant URL (empty = local workflow engine)
+            <input type="text" data-intel-assistant-url />
+          </label>
+          <label>Assistant Token (leave blank to keep current)
+            <input type="password" data-intel-assistant-token />
+          </label>
+          <label>Ollama URL
+            <input type="text" data-intel-assistant-ollama-url />
+          </label>
+          <label>Ollama Model
+            <input type="text" data-intel-assistant-ollama-model />
+          </label>
+          <label>Timeout (ms)
+            <input type="number" min="100" step="100" data-intel-assistant-timeout-ms />
+          </label>
+          <label>Retry Attempts
+            <input type="number" min="1" step="1" data-intel-assistant-retry-max-attempts />
+          </label>
+          <label>Threat Score Threshold
+            <input type="number" min="20" max="100" step="1" data-intel-assistant-threat-threshold />
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" data-intel-assistant-rag-enabled />
+            Enable RAG
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" data-intel-assistant-web-search />
+            Allow Web Search
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" data-intel-assistant-auto-lock />
+            Auto-lock Blastdoors on Threat
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="submit">Save Intelligence Config</button>
+          <button type="button" class="secondary" data-intel-action-refresh>Refresh Status</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="intel-workflow-wrap hidden" data-intel-workflow-section hidden>
+      <div class="intel-section-header">
+        <h3>Create / Manage Workflows</h3>
+        <button type="button" class="secondary" data-intel-close-workflow>Close</button>
+      </div>
+
+      <div class="grid">
+        <label>Workflow
+          <select data-intel-workflow-select></select>
+        </label>
+        <label>Workflow ID
+          <input type="text" data-intel-workflow-id readonly />
+        </label>
+      </div>
+
+      <div class="button-row">
+        <button type="button" data-intel-workflow-new>New Workflow</button>
+        <button type="button" data-intel-workflow-save>Save / Modify</button>
+        <button type="button" class="secondary" data-intel-workflow-delete>Delete</button>
+      </div>
+
+      <div class="grid">
+        <label>Workflow Name
+          <input type="text" data-intel-workflow-name />
+        </label>
+        <label>Workflow Type
+          <select data-intel-workflow-type>
+            <option value="config-recommendations">Config Recommendations</option>
+            <option value="troubleshoot-recommendation">Troubleshooting Recommendations</option>
+            <option value="threat-monitor">Threat Monitor</option>
+            <option value="grimoire">Grimoire</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+      </div>
+
+      <label>Describe what this workflow should do
+        <textarea data-intel-workflow-description placeholder="Describe workflow behavior, context needed, and expected output."></textarea>
+      </label>
+      <div class="button-row">
+        <button type="button" data-intel-workflow-generate>Generate Config With AI</button>
+      </div>
+
+      <label>System Prompt
+        <textarea data-intel-workflow-system-prompt></textarea>
+      </label>
+      <label>Seed Prompt
+        <textarea data-intel-workflow-seed-prompt></textarea>
+      </label>
+      <label>Input Placeholder
+        <input type="text" data-intel-workflow-input-placeholder />
+      </label>
+
       <div class="grid">
         <label class="checkbox-label">
-          <input type="checkbox" data-intel-assistant-enabled />
-          Enable Intelligence Module
-        </label>
-        <label>Provider (heuristic|ollama)
-          <input type="text" data-intel-assistant-provider />
-        </label>
-        <label>Assistant URL (empty = local workflow engine)
-          <input type="text" data-intel-assistant-url />
-        </label>
-        <label>Assistant Token (leave blank to keep current)
-          <input type="password" data-intel-assistant-token />
-        </label>
-        <label>Ollama URL
-          <input type="text" data-intel-assistant-ollama-url />
-        </label>
-        <label>Ollama Model
-          <input type="text" data-intel-assistant-ollama-model />
-        </label>
-        <label>Timeout (ms)
-          <input type="number" min="100" step="100" data-intel-assistant-timeout-ms />
-        </label>
-        <label>Retry Attempts
-          <input type="number" min="1" step="1" data-intel-assistant-retry-max-attempts />
-        </label>
-        <label>Threat Score Threshold
-          <input type="number" min="20" max="100" step="1" data-intel-assistant-threat-threshold />
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" data-intel-assistant-rag-enabled />
+          <input type="checkbox" data-intel-workflow-rag-enabled />
           Enable RAG
         </label>
         <label class="checkbox-label">
-          <input type="checkbox" data-intel-assistant-web-search />
-          Allow Web Search
+          <input type="checkbox" data-intel-workflow-web-search />
+          Enable Web Search
         </label>
         <label class="checkbox-label">
-          <input type="checkbox" data-intel-assistant-auto-lock />
-          Auto-lock Blastdoors on Threat
+          <input type="checkbox" data-intel-workflow-auto-lock />
+          Auto-lock on threat
+        </label>
+        <label>Threat Score Threshold
+          <input type="number" min="20" max="100" step="1" data-intel-workflow-threat-threshold />
         </label>
       </div>
-      <div class="button-row">
-        <button type="submit">Save Intelligence Config</button>
-      </div>
-    </form>
 
-    <section class="intel-workflows">
-      <h3>Workflows</h3>
-      <div class="button-row">
-        <button type="button" data-intel-action-refresh>Refresh Status</button>
-        <button type="button" data-intel-action-config>Config Recommendations</button>
-        <button type="button" data-intel-action-troubleshoot>Troubleshoot Recommendation</button>
-        <button type="button" data-intel-action-threat>Threat Monitor</button>
-        <button type="button" data-intel-action-grimoire>Grimoire</button>
-      </div>
-      <label>Error Context (for Troubleshoot Recommendation)
-        <textarea data-intel-error-text placeholder="Paste recent error logs or symptoms."></textarea>
+      <label>Workflow Specific Config (JSON object)
+        <textarea data-intel-workflow-config-json>{}</textarea>
       </label>
-      <label>Intent (for Grimoire)
-        <textarea data-intel-intent-text placeholder="Describe desired API workflow, e.g. create user and restart service."></textarea>
-      </label>
-      <label class="checkbox-label">
-        <input type="checkbox" data-intel-apply-lockdown checked />
-        Apply Lockdown automatically when threat workflow returns shouldLockdown=true
-      </label>
+
+      <section class="intel-chat-wrap">
+        <h3>Workflow Chat</h3>
+        <div class="intel-chat-log log-box" data-intel-chat-log></div>
+        <div class="button-row">
+          <input type="text" data-intel-chat-input placeholder="Send message to workflow assistant" />
+          <button type="button" data-intel-chat-send>Send</button>
+        </div>
+      </section>
     </section>
 
     <section class="intel-output-wrap">
@@ -235,6 +435,21 @@ function createPanelMarkup() {
       <pre class="log-box" data-intel-output></pre>
     </section>
   `;
+}
+
+function renderWorkflowSelect(state, workflows, selectedId = "") {
+  state.workflowSelect.textContent = "";
+  for (const workflow of workflows) {
+    const option = document.createElement("option");
+    option.value = workflow.id;
+    option.textContent = `${workflow.name} (${workflow.type})`;
+    state.workflowSelect.append(option);
+  }
+  if (selectedId && workflows.some((workflow) => workflow.id === selectedId)) {
+    state.workflowSelect.value = selectedId;
+  } else if (workflows[0]) {
+    state.workflowSelect.value = workflows[0].id;
+  }
 }
 
 export async function registerManagerPlugin(context) {
@@ -249,8 +464,58 @@ export async function registerManagerPlugin(context) {
   const state = createState(panel.root);
   validateState(state);
 
-  let refreshTick = 0;
-  let statusLoadedOnce = false;
+  const runtime = {
+    workflows: [],
+    workflowMap: new Map(),
+    selectedWorkflowId: "",
+    refreshTick: 0,
+    statusLoadedOnce: false,
+  };
+
+  function getWorkflowById(workflowId) {
+    return runtime.workflowMap.get(asString(workflowId, "")) || null;
+  }
+
+  function activeWorkflowFromForm() {
+    const draft = draftFromForm(state);
+    if (!draft.id && draft.name) {
+      draft.id = slugifyName(draft.name);
+    }
+    const existing = getWorkflowById(draft.id);
+    if (existing?.builtIn) {
+      draft.builtIn = true;
+      draft.type = existing.type;
+      draft.id = existing.id;
+    }
+    return draft;
+  }
+
+  function showConfigSection(forceVisible = null) {
+    const nextVisible = forceVisible === null ? state.configSection.hidden : Boolean(forceVisible);
+    showSection(state.configSection, nextVisible);
+  }
+
+  function showWorkflowSection(forceVisible = null) {
+    const nextVisible = forceVisible === null ? state.workflowsSection.hidden : Boolean(forceVisible);
+    showSection(state.workflowsSection, nextVisible);
+  }
+
+  function syncWorkflowSelection(selectedId = "") {
+    runtime.workflowMap = new Map(runtime.workflows.map((workflow) => [workflow.id, workflow]));
+    renderWorkflowSelect(state, runtime.workflows, selectedId || runtime.selectedWorkflowId);
+    runtime.selectedWorkflowId = asString(state.workflowSelect.value, "");
+    const selected = getWorkflowById(runtime.selectedWorkflowId);
+    if (selected) {
+      populateWorkflowForm(state, selected);
+      clearChat(state);
+      pushChatMessage(
+        state,
+        "assistant",
+        selected.seedPrompt ||
+          `Workflow '${selected.name}' is ready. Provide message/context and I will execute this workflow.`,
+      );
+    }
+  }
 
   async function loadStatus(showMessage = false) {
     const payload = await context.apiGet("/assistant/status");
@@ -258,16 +523,108 @@ export async function registerManagerPlugin(context) {
     applyConfigValues(state, payload.config || {});
     if (showMessage) {
       panel.setStatus("Assistant status loaded.");
-    } else if (!statusLoadedOnce) {
+    } else if (!runtime.statusLoadedOnce) {
       panel.setStatus("Assistant plugin ready.");
     }
-    statusLoadedOnce = true;
+    runtime.statusLoadedOnce = true;
   }
 
-  async function runWorkflow(routePath, payload, successMessage) {
-    const result = await context.apiPost(routePath, payload || {});
-    renderOutput(state, result);
-    panel.setStatus(successMessage);
+  async function loadWorkflows(showMessage = false, preferredWorkflowId = "") {
+    const payload = await context.apiGet("/assistant/workflows");
+    const workflows = Array.isArray(payload.workflowConfigs) ? payload.workflowConfigs : [];
+    runtime.workflows = workflows;
+    syncWorkflowSelection(preferredWorkflowId);
+    if (showMessage) {
+      panel.setStatus(`Loaded ${workflows.length} workflows.`);
+    }
+  }
+
+  async function saveWorkflow() {
+    const draft = activeWorkflowFromForm();
+    if (!draft.name) {
+      throw new Error("Workflow name is required.");
+    }
+    const payload = await context.apiPost("/assistant/workflows/save", {
+      workflow: draft,
+    });
+    const savedWorkflow = payload.workflow || null;
+    renderOutput(state, payload);
+    await loadWorkflows(false, savedWorkflow?.id || draft.id);
+    panel.setStatus(`Workflow '${savedWorkflow?.name || draft.name}' saved.`);
+  }
+
+  async function deleteWorkflow() {
+    const workflowId = asString(state.workflowId.value, "").trim();
+    const workflow = getWorkflowById(workflowId);
+    if (!workflowId) {
+      throw new Error("Select a workflow first.");
+    }
+    if (workflow?.builtIn) {
+      throw new Error("Built-in workflows cannot be deleted.");
+    }
+    const payload = await context.apiPost("/assistant/workflows/delete", {
+      workflowId,
+    });
+    renderOutput(state, payload);
+    await loadWorkflows(false);
+    panel.setStatus(`Workflow '${workflow?.name || workflowId}' deleted.`);
+  }
+
+  async function generateWorkflowConfig() {
+    const description = asString(state.workflowDescription.value, "").trim();
+    if (!description) {
+      throw new Error("Describe what the workflow should do before generating.");
+    }
+    const payload = await context.apiPost("/assistant/workflows/generate-config", {
+      description,
+    });
+    renderOutput(state, payload);
+    const suggested = payload.suggestedWorkflow || payload.result?.suggestedWorkflow || null;
+    if (!suggested) {
+      throw new Error("Assistant did not return a suggested workflow config.");
+    }
+    populateWorkflowForm(state, {
+      ...suggested,
+      id: "",
+      builtIn: false,
+    });
+    clearChat(state);
+    pushChatMessage(
+      state,
+      "assistant",
+      payload.result?.reply ||
+        "Workflow suggestion generated. Review prompts and settings, then click Save / Modify.",
+    );
+    panel.setStatus("Generated workflow configuration suggestion.");
+  }
+
+  async function sendChatMessage() {
+    const message = asString(state.chatInput.value, "").trim();
+    if (!message) {
+      return;
+    }
+    const workflow = activeWorkflowFromForm();
+    if (!workflow.name) {
+      throw new Error("Set workflow name before running chat.");
+    }
+
+    pushChatMessage(state, "user", message);
+    state.chatInput.value = "";
+
+    const payload = await context.apiPost("/assistant/workflows/chat", {
+      workflowId: workflow.id,
+      workflow,
+      message,
+      applyLockdown: true,
+    });
+    renderOutput(state, payload);
+    const replyText =
+      payload.result?.reply ||
+      payload.result?.summary ||
+      payload.result?.assistantNarrative ||
+      "Workflow completed. Check output for details.";
+    pushChatMessage(state, "assistant", replyText);
+    panel.setStatus("Workflow chat response received.");
     await context.refreshManager();
   }
 
@@ -282,76 +639,131 @@ export async function registerManagerPlugin(context) {
     }
   });
 
+  state.configureButton.addEventListener("click", () => {
+    showConfigSection();
+  });
+  state.workflowsButton.addEventListener("click", () => {
+    showWorkflowSection();
+  });
+  state.closeConfigButton.addEventListener("click", () => {
+    showConfigSection(false);
+  });
+  state.closeWorkflowButton.addEventListener("click", () => {
+    showWorkflowSection(false);
+  });
+
   state.refreshButton.addEventListener("click", async () => {
     try {
       await loadStatus(true);
+      await loadWorkflows(false);
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
   });
 
-  state.workflowConfigButton.addEventListener("click", async () => {
+  state.workflowSelect.addEventListener("change", () => {
+    runtime.selectedWorkflowId = asString(state.workflowSelect.value, "");
+    const selected = getWorkflowById(runtime.selectedWorkflowId);
+    if (!selected) {
+      return;
+    }
+    populateWorkflowForm(state, selected);
+    clearChat(state);
+    pushChatMessage(
+      state,
+      "assistant",
+      selected.seedPrompt ||
+        `Workflow '${selected.name}' is ready. Provide message/context and I will execute this workflow.`,
+    );
+  });
+
+  state.workflowNew.addEventListener("click", () => {
+    populateWorkflowForm(state, {
+      id: "",
+      name: "",
+      type: "custom",
+      description: "",
+      systemPrompt:
+        "You are a Blastdoor workflow assistant. Return concise, secure, operationally-safe guidance.",
+      seedPrompt: "Describe what you need this workflow to do.",
+      inputPlaceholder: "Enter workflow request details.",
+      ragEnabled: false,
+      allowWebSearch: false,
+      autoLockOnThreat: false,
+      threatScoreThreshold: 80,
+      config: {},
+      builtIn: false,
+    });
+    clearChat(state);
+    pushChatMessage(state, "assistant", "New workflow draft started. Configure, then save.");
+    panel.setStatus("Creating new workflow.");
+  });
+
+  state.workflowSave.addEventListener("click", async () => {
     try {
-      await runWorkflow(
-        "/assistant/workflow/config-recommendations",
-        {},
-        "Workflow 1 complete: configuration recommendations generated.",
-      );
+      await saveWorkflow();
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
   });
 
-  state.workflowTroubleshootButton.addEventListener("click", async () => {
+  state.workflowDelete.addEventListener("click", async () => {
     try {
-      await runWorkflow(
-        "/assistant/workflow/troubleshoot-recommendation",
-        { errorText: asString(state.errorText.value, "") },
-        "Workflow 2 complete: troubleshooting recommendations generated.",
-      );
+      await deleteWorkflow();
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
   });
 
-  state.workflowThreatButton.addEventListener("click", async () => {
+  state.workflowGenerate.addEventListener("click", async () => {
     try {
-      await runWorkflow(
-        "/assistant/workflow/threat-monitor",
-        { applyLockdown: Boolean(state.applyLockdown.checked) },
-        "Workflow 3 complete: threat monitoring analysis generated.",
-      );
+      await generateWorkflowConfig();
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }
   });
 
-  state.workflowGrimoireButton.addEventListener("click", async () => {
+  state.chatSend.addEventListener("click", async () => {
     try {
-      await runWorkflow(
-        "/assistant/workflow/grimoire",
-        { intent: asString(state.intentText.value, "") },
-        "Workflow 4 complete: Grimoire API blocks generated.",
-      );
+      await sendChatMessage();
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
+      pushChatMessage(state, "assistant", `Error: ${error?.message || String(error)}`);
     }
   });
+
+  state.chatInput.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    try {
+      await sendChatMessage();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+      pushChatMessage(state, "assistant", `Error: ${error?.message || String(error)}`);
+    }
+  });
+
+  showConfigSection(false);
+  showWorkflowSection(false);
 
   try {
     await loadStatus();
+    await loadWorkflows();
   } catch (error) {
     panel.setStatus(error?.message || String(error), true);
   }
 
   return {
     async onRefresh() {
-      refreshTick += 1;
-      if (!statusLoadedOnce) {
+      runtime.refreshTick += 1;
+      if (!runtime.statusLoadedOnce) {
         await loadStatus();
+        await loadWorkflows();
         return;
       }
-      if (refreshTick % 10 === 0) {
+      if (runtime.refreshTick % 10 === 0) {
         await loadStatus();
       }
     },

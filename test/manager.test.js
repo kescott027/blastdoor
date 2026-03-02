@@ -2531,6 +2531,99 @@ test("manager assistant workflows return status and grimoire blocks", async () =
   });
 });
 
+test("manager intelligence workflow endpoints support list, generate, save, chat, and delete", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=heuristic",
+        "ASSISTANT_URL=",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const listInitial = await request(port, {
+        pathname: "/api/assistant/workflows",
+      });
+      assert.equal(listInitial.status, 200);
+      assert.equal(listInitial.body.ok, true);
+      const initialWorkflows = Array.isArray(listInitial.body.workflows) ? listInitial.body.workflows : [];
+      assert.equal(initialWorkflows.length >= 4, true);
+      assert.equal(initialWorkflows.some((entry) => entry.id === "grimoire"), true);
+
+      const generated = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/workflows/generate-config",
+        body: {
+          description: "Create a workflow that checks auth errors and suggests remediation.",
+        },
+      });
+      assert.equal(generated.status, 200);
+      assert.equal(generated.body.ok, true);
+      assert.equal(Boolean(generated.body.suggestedWorkflow), true);
+
+      const save = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/workflows/save",
+        body: {
+          workflow: {
+            ...generated.body.suggestedWorkflow,
+            id: "custom-auth-remediation",
+            name: "Custom Auth Remediation",
+            type: "custom",
+          },
+        },
+      });
+      assert.equal(save.status, 200);
+      assert.equal(save.body.ok, true);
+      assert.equal(save.body.workflow.id, "custom-auth-remediation");
+
+      const chat = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/workflows/chat",
+        body: {
+          workflowId: "custom-auth-remediation",
+          message: "403 invalid origin during login from browser.",
+        },
+      });
+      assert.equal(chat.status, 200);
+      assert.equal(chat.body.ok, true);
+      assert.equal(chat.body.workflow.id, "custom-auth-remediation");
+      assert.equal(Boolean(chat.body.result.reply), true);
+
+      const deleted = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/workflows/delete",
+        body: {
+          workflowId: "custom-auth-remediation",
+        },
+      });
+      assert.equal(deleted.status, 200);
+      assert.equal(deleted.body.ok, true);
+      assert.equal(deleted.body.deletedWorkflowId, "custom-auth-remediation");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("manager exposes plugin UI manifest for enabled plugins", async () => {
   await withTempDir(async (workspaceDir) => {
     const envPath = path.join(workspaceDir, ".env");

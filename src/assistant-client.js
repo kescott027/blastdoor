@@ -31,6 +31,82 @@ function computeRetryDelayMs(baseDelayMs, attemptIndex) {
   return Math.min(5000, baseDelayMs * 2 ** Math.max(0, attemptIndex - 1));
 }
 
+function normalizeWorkflowType(value) {
+  const normalized = normalizeString(value, "").toLowerCase();
+  if (
+    [
+      "config-recommendations",
+      "troubleshoot-recommendation",
+      "threat-monitor",
+      "grimoire",
+      "custom",
+      "workflow-config-builder",
+    ].includes(normalized)
+  ) {
+    return normalized;
+  }
+  return "custom";
+}
+
+function inferWorkflowTypeFromDescription(description = "") {
+  const text = normalizeString(description, "").toLowerCase();
+  if (!text) {
+    return "custom";
+  }
+  if (text.includes("troubleshoot") || text.includes("error") || text.includes("diagnostic")) {
+    return "troubleshoot-recommendation";
+  }
+  if (text.includes("threat") || text.includes("attack") || text.includes("lockdown")) {
+    return "threat-monitor";
+  }
+  if (text.includes("api") || text.includes("automation") || text.includes("workflow chain")) {
+    return "grimoire";
+  }
+  if (text.includes("config") || text.includes("configure") || text.includes("environment")) {
+    return "config-recommendations";
+  }
+  return "custom";
+}
+
+function buildWorkflowConfigSuggestionFromDescription(description = "") {
+  const normalizedDescription = normalizeString(description, "");
+  const type = inferWorkflowTypeFromDescription(normalizedDescription);
+  const suggestedName = normalizedDescription
+    ? normalizedDescription
+        .replace(/\s+/g, " ")
+        .split(" ")
+        .slice(0, 5)
+        .join(" ")
+    : "Custom Workflow";
+
+  const seedByType = {
+    "config-recommendations":
+      "Ask for environment recommendations or describe deployment constraints for suggested defaults.",
+    "troubleshoot-recommendation":
+      "Paste error logs, request IDs, and symptoms. I will return prioritized troubleshooting steps.",
+    "threat-monitor":
+      "Ask for a threat scan of logs or suspicious behavior; I will return risk and mitigation steps.",
+    grimoire: "Describe the API workflow intent and I will produce execution blocks with safety checks.",
+    custom: "Describe the task and include any constraints, data sources, and desired output format.",
+  };
+
+  return {
+    name: suggestedName || "Custom Workflow",
+    type,
+    description:
+      normalizedDescription ||
+      "Custom Blastdoor workflow generated from operator intent. Review and tune prompts before production use.",
+    systemPrompt: `You are Blastdoor workflow assistant for '${suggestedName || "Custom Workflow"}'. Keep responses concise and operationally safe.`,
+    seedPrompt: seedByType[type] || seedByType.custom,
+    inputPlaceholder: "Provide request details, context, and constraints.",
+    ragEnabled: type === "troubleshoot-recommendation",
+    allowWebSearch: false,
+    autoLockOnThreat: type === "threat-monitor",
+    threatScoreThreshold: type === "threat-monitor" ? 80 : 80,
+    config: {},
+  };
+}
+
 function withTimeoutController(timeoutMs) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -137,11 +213,163 @@ function createDisabledAssistantClient() {
     async runGrimoireWorkflow() {
       return disabledResponse("grimoire-api-intent-block-builder");
     },
+    async runWorkflowChat(payload = {}) {
+      const workflow = payload?.workflow && typeof payload.workflow === "object" ? payload.workflow : {};
+      const workflowType = normalizeWorkflowType(workflow?.type || "");
+      return {
+        ...disabledResponse("workflow-chat"),
+        workflowId: normalizeString(workflow.id, "workflow-chat"),
+        workflowType,
+        reply: "Assistant is disabled (ASSISTANT_ENABLED=false).",
+      };
+    },
     async close() {},
   };
 }
 
 function createLocalAssistantClient(config) {
+  async function runWorkflowChat(payload = {}) {
+    const workflow = payload?.workflow && typeof payload.workflow === "object" ? payload.workflow : {};
+    const message = normalizeString(payload?.message, "");
+    const workflowType = normalizeWorkflowType(workflow?.type || "");
+    const workflowId = normalizeString(workflow?.id, workflowType || "workflow-chat");
+    const context = payload?.context && typeof payload.context === "object" ? payload.context : {};
+
+    if (workflowType === "workflow-config-builder") {
+      const suggestion = buildWorkflowConfigSuggestionFromDescription(message);
+      const result = {
+        workflowId,
+        workflowType,
+        generatedAt: new Date().toISOString(),
+        summary: "Generated workflow configuration suggestion from intent.",
+        suggestedWorkflow: suggestion,
+      };
+      const narrative = await maybeGenerateOllamaNarrative(
+        config,
+        [
+          "You are Blastdoor assistant.",
+          "Refine this generated workflow configuration suggestion into operator-ready guidance.",
+          JSON.stringify(result, null, 2),
+        ].join("\n"),
+      );
+      if (narrative) {
+        result.assistantNarrative = narrative;
+      }
+      return {
+        ...result,
+        reply:
+          narrative ||
+          `Suggested workflow '${suggestion.name}' (${suggestion.type}). Review prompts and save to activate this workflow.`,
+      };
+    }
+
+    if (workflowType === "config-recommendations") {
+      const result = inferEnvironmentConfigurationRecommendations({
+        diagnosticsReport: context.diagnosticsReport || payload?.diagnosticsReport || {},
+        installationConfig: context.installationConfig || payload?.installationConfig || {},
+      });
+      return {
+        workflowId,
+        workflowType,
+        generatedAt: new Date().toISOString(),
+        result,
+        reply:
+          result.assistantNarrative ||
+          result.summary ||
+          "Configuration recommendations generated. Review the structured recommendations.",
+      };
+    }
+
+    if (workflowType === "troubleshoot-recommendation") {
+      const result = await generateTroubleshootingRecommendation(
+        {
+          errorText: message || normalizeString(context.errorText, ""),
+          diagnosticsReport: context.diagnosticsReport || payload?.diagnosticsReport || {},
+          troubleshootReport: context.troubleshootReport || payload?.troubleshootReport || {},
+        },
+        {
+          ragEnabled: Boolean(workflow?.ragEnabled ?? config.assistantRagEnabled),
+          allowWebSearch: Boolean(workflow?.allowWebSearch ?? config.assistantAllowWebSearch),
+        },
+      );
+      return {
+        workflowId,
+        workflowType,
+        generatedAt: new Date().toISOString(),
+        result,
+        reply:
+          result.assistantNarrative ||
+          result.summary ||
+          "Troubleshooting recommendations generated. Follow actions in priority order.",
+      };
+    }
+
+    if (workflowType === "threat-monitor") {
+      const threshold =
+        payload?.threatScoreThreshold ??
+        workflow?.threatScoreThreshold ??
+        context?.threatScoreThreshold ??
+        config.assistantThreatScoreThreshold;
+      const result = monitorThreatSignals({
+        logLines: Array.isArray(context.logLines) ? context.logLines : Array.isArray(payload?.logLines) ? payload.logLines : [],
+        blastDoorsClosed: Boolean(context.blastDoorsClosed ?? payload?.blastDoorsClosed ?? false),
+        threatScoreThreshold: threshold,
+      });
+      return {
+        workflowId,
+        workflowType,
+        generatedAt: new Date().toISOString(),
+        result,
+        shouldLockdown: Boolean(result?.shouldLockdown),
+        reply:
+          result.summary ||
+          `Threat score ${result.threatScore || 0} analyzed${result.shouldLockdown ? "; lockdown recommended." : "."}`,
+      };
+    }
+
+    if (workflowType === "grimoire") {
+      const result = buildGrimoireWorkflow({
+        intent: message,
+        apiDocs: Array.isArray(context.apiDocs) ? context.apiDocs : Array.isArray(payload?.apiDocs) ? payload.apiDocs : [],
+      });
+      return {
+        workflowId,
+        workflowType,
+        generatedAt: new Date().toISOString(),
+        result,
+        reply:
+          result.assistantNarrative ||
+          result.summary ||
+          "Grimoire generated an API block chain for the provided intent.",
+      };
+    }
+
+    const customPrompt = [
+      normalizeString(workflow?.systemPrompt, ""),
+      normalizeString(workflow?.seedPrompt, ""),
+      `Workflow Name: ${normalizeString(workflow?.name, workflowId || "Custom Workflow")}`,
+      `Operator Message: ${message || "(none)"}`,
+      Object.keys(context || {}).length > 0 ? `Context:\n${JSON.stringify(context, null, 2)}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const narrative = await maybeGenerateOllamaNarrative(config, customPrompt);
+
+    return {
+      workflowId,
+      workflowType,
+      generatedAt: new Date().toISOString(),
+      reply:
+        narrative ||
+        "Custom workflow received your request. For richer responses, configure provider=ollama and tune prompts.",
+      result: {
+        workflowId,
+        workflowType,
+        message,
+      },
+    };
+  }
+
   return {
     async getStatus() {
       return {
@@ -212,6 +440,10 @@ function createLocalAssistantClient(config) {
         result.assistantNarrative = narrative;
       }
       return result;
+    },
+
+    async runWorkflowChat(payload = {}) {
+      return await runWorkflowChat(payload);
     },
 
     async close() {},
@@ -289,6 +521,10 @@ function createRemoteAssistantClient(config) {
     },
     async runGrimoireWorkflow(payload = {}) {
       const response = await request("/v1/workflows/grimoire", payload);
+      return response.result || {};
+    },
+    async runWorkflowChat(payload = {}) {
+      const response = await request("/v1/workflows/chat", payload);
       return response.result || {};
     },
     async close() {},

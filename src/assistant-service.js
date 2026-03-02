@@ -115,6 +115,16 @@ export function createAssistantApp(options = {}) {
     }),
   );
 
+  app.post(
+    "/v1/workflows/chat",
+    auth,
+    writeLimiter,
+    asyncHandler(async (req, res) => {
+      const result = await assistant.runWorkflowChat(req.body || {});
+      res.json({ ok: true, result });
+    }),
+  );
+
   return { app, assistant };
 }
 
