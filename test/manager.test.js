@@ -2629,6 +2629,10 @@ test("manager assistant workflows return status and grimoire blocks", async () =
         "ASSISTANT_ENABLED=true",
         "ASSISTANT_PROVIDER=ollama",
         "ASSISTANT_URL=",
+        "ASSISTANT_OLLAMA_URL=http://172.30.240.1:11434",
+        "ASSISTANT_OLLAMA_MODEL=llama3.1:latest",
+        "ASSISTANT_TIMEOUT_MS=20000",
+        "ASSISTANT_RETRY_MAX_ATTEMPTS=3",
         "",
       ].join("\n"),
       "utf8",
@@ -2644,6 +2648,10 @@ test("manager assistant workflows return status and grimoire blocks", async () =
       assert.equal(status.status, 200);
       assert.equal(status.body.ok, true);
       assert.equal(status.body.status.mode, "local");
+      assert.equal(status.body.config.ASSISTANT_OLLAMA_URL, "http://172.30.240.1:11434");
+      assert.equal(status.body.config.ASSISTANT_OLLAMA_MODEL, "llama3.1:latest");
+      assert.equal(status.body.config.ASSISTANT_TIMEOUT_MS, "20000");
+      assert.equal(status.body.config.ASSISTANT_RETRY_MAX_ATTEMPTS, "3");
 
       const grimoire = await request(port, {
         method: "POST",

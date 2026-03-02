@@ -370,6 +370,22 @@ export function createIntelligencePlugin() {
                   normalizeAssistantProvider(CONFIG_DEFAULTS.ASSISTANT_PROVIDER),
                 ),
                 ASSISTANT_URL: normalizeManagerString(config.ASSISTANT_URL, CONFIG_DEFAULTS.ASSISTANT_URL),
+                ASSISTANT_OLLAMA_URL: normalizeManagerString(
+                  config.ASSISTANT_OLLAMA_URL,
+                  CONFIG_DEFAULTS.ASSISTANT_OLLAMA_URL,
+                ),
+                ASSISTANT_OLLAMA_MODEL: normalizeManagerString(
+                  config.ASSISTANT_OLLAMA_MODEL,
+                  CONFIG_DEFAULTS.ASSISTANT_OLLAMA_MODEL,
+                ),
+                ASSISTANT_TIMEOUT_MS: normalizeManagerString(
+                  config.ASSISTANT_TIMEOUT_MS,
+                  CONFIG_DEFAULTS.ASSISTANT_TIMEOUT_MS,
+                ),
+                ASSISTANT_RETRY_MAX_ATTEMPTS: normalizeManagerString(
+                  config.ASSISTANT_RETRY_MAX_ATTEMPTS,
+                  CONFIG_DEFAULTS.ASSISTANT_RETRY_MAX_ATTEMPTS,
+                ),
                 ASSISTANT_RAG_ENABLED: normalizeManagerString(
                   config.ASSISTANT_RAG_ENABLED,
                   CONFIG_DEFAULTS.ASSISTANT_RAG_ENABLED,
