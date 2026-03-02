@@ -2886,7 +2886,9 @@ test("manager assistant external agent API is gated and returns agent runtime re
         "ASSISTANT_PROVIDER=ollama",
         "ASSISTANT_URL=",
         "ASSISTANT_EXTERNAL_API_ENABLED=true",
-        "ASSISTANT_EXTERNAL_API_TOKEN=test-external-token",
+        "ASSISTANT_EXTERNAL_API_SIGNED_TOKENS_ENABLED=true",
+        "ASSISTANT_EXTERNAL_API_SIGNING_SECRET=signing-secret-value-1234567890",
+        "ASSISTANT_EXTERNAL_API_SIGNED_TOKEN_TTL_SECONDS=900",
         "CONFIG_STORE_MODE=sqlite",
         `DATABASE_FILE=${databaseFile}`,
         "",
@@ -2948,6 +2950,22 @@ test("manager assistant external agent API is gated and returns agent runtime re
       assert.equal(agentSaved.status, 200);
       assert.equal(agentSaved.body.ok, true);
 
+      const scopedTokenCreate = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/agents/tokens/create",
+        body: {
+          agentId: "tls-setup-agent",
+          label: "integration-token",
+          expiresInHours: 24,
+        },
+      });
+      assert.equal(scopedTokenCreate.status, 200);
+      assert.equal(scopedTokenCreate.body.ok, true);
+      const scopedToken = String(scopedTokenCreate.body.token || "");
+      assert.ok(scopedToken.length > 20);
+      const createdTokenId = String(scopedTokenCreate.body.tokenMeta?.tokenId || "");
+      assert.ok(createdTokenId.length > 5);
+
       const created = await request(port, {
         method: "POST",
         pathname: "/api/assistant/plans/create",
@@ -2972,14 +2990,14 @@ test("manager assistant external agent API is gated and returns agent runtime re
       assert.equal(collected.body.ok, true);
 
       const unauthorized = await request(port, {
-        pathname: "/api/assistant/agents/external/TLS%20Setup%20Agent",
+        pathname: "/api/assistant/v1/agents/TLS%20Setup%20Agent/report",
       });
       assert.equal(unauthorized.status, 401);
 
       const list = await request(port, {
-        pathname: "/api/assistant/agents/external",
+        pathname: "/api/assistant/v1/agents",
         headers: {
-          "x-blastdoor-assistant-token": "test-external-token",
+          "x-blastdoor-assistant-token": scopedToken,
         },
       });
       assert.equal(list.status, 200);
@@ -2987,10 +3005,29 @@ test("manager assistant external agent API is gated and returns agent runtime re
       assert.equal(Array.isArray(list.body.agents), true);
       assert.equal(list.body.agents.some((entry) => entry.name === "TLS Setup Agent"), true);
 
-      const report = await request(port, {
-        pathname: "/api/assistant/agents/external/TLS%20Setup%20Agent",
+      const openapi = await request(port, {
+        pathname: "/api/assistant/v1/openapi.json",
+      });
+      assert.equal(openapi.status, 200);
+      assert.equal(openapi.body.openapi, "3.0.3");
+      assert.equal(Boolean(openapi.body.paths["/api/assistant/v1/agents/{agentName}/report"]), true);
+
+      const exchange = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/v1/auth/exchange",
         headers: {
-          "x-blastdoor-assistant-token": "test-external-token",
+          "x-blastdoor-assistant-token": scopedToken,
+        },
+      });
+      assert.equal(exchange.status, 200);
+      assert.equal(exchange.body.ok, true);
+      const signedToken = String(exchange.body.accessToken || "");
+      assert.match(signedToken, /^bdas1\./);
+
+      const report = await request(port, {
+        pathname: "/api/assistant/v1/agents/TLS%20Setup%20Agent/report",
+        headers: {
+          authorization: `Bearer ${signedToken}`,
         },
       });
       assert.equal(report.status, 200);
@@ -3001,6 +3038,34 @@ test("manager assistant external agent API is gated and returns agent runtime re
       assert.equal(Array.isArray(report.body.report.troubleshoot), true);
       assert.equal(Array.isArray(report.body.report.humanInteractions), true);
       assert.equal(Boolean(report.body.report.progress), true);
+
+      const legacyReport = await request(port, {
+        pathname: "/api/assistant/agents/external/TLS%20Setup%20Agent",
+        headers: {
+          "x-blastdoor-assistant-token": scopedToken,
+        },
+      });
+      assert.equal(legacyReport.status, 200);
+      assert.equal(legacyReport.body.ok, true);
+
+      const revoke = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/agents/tokens/revoke",
+        body: {
+          agentId: "tls-setup-agent",
+          tokenId: createdTokenId,
+        },
+      });
+      assert.equal(revoke.status, 200);
+      assert.equal(revoke.body.ok, true);
+
+      const revokedAccess = await request(port, {
+        pathname: "/api/assistant/v1/agents",
+        headers: {
+          "x-blastdoor-assistant-token": scopedToken,
+        },
+      });
+      assert.equal(revokedAccess.status, 401);
     } finally {
       await closeServer(server);
     }

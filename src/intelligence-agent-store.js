@@ -44,6 +44,25 @@ function normalizeAgent(input = {}) {
       createdAt: normalizeString(source.createdAt, now),
       updatedAt: now,
     }),
+    externalAccess: (() => {
+      const sourceExternal = normalizeObject(source.externalAccess);
+      const tokens = normalizeArray(sourceExternal.tokens)
+        .map((entry) => normalizeObject(entry))
+        .map((entry) => ({
+          tokenId: normalizeString(entry.tokenId, ""),
+          label: normalizeString(entry.label, ""),
+          tokenHash: normalizeString(entry.tokenHash, ""),
+          createdAt: normalizeString(entry.createdAt, now),
+          expiresAt: normalizeString(entry.expiresAt, ""),
+          lastUsedAt: normalizeString(entry.lastUsedAt, ""),
+          revokedAt: normalizeString(entry.revokedAt, ""),
+        }))
+        .filter((entry) => entry.tokenId && entry.tokenHash);
+      return {
+        enabled: sourceExternal.enabled !== false,
+        tokens,
+      };
+    })(),
     createdAt: normalizeString(source.createdAt, now),
     updatedAt: now,
   };

@@ -13,6 +13,9 @@ const DEFAULTS = {
   ASSISTANT_THREAT_SCORE_THRESHOLD: "80",
   ASSISTANT_EXTERNAL_API_ENABLED: "false",
   ASSISTANT_EXTERNAL_API_TOKEN: "",
+  ASSISTANT_EXTERNAL_API_SIGNED_TOKENS_ENABLED: "false",
+  ASSISTANT_EXTERNAL_API_SIGNING_SECRET: "",
+  ASSISTANT_EXTERNAL_API_SIGNED_TOKEN_TTL_SECONDS: "900",
 };
 
 function normalizeAssistantProvider(value) {
@@ -66,6 +69,12 @@ function toConfigPatch(state) {
     ASSISTANT_THREAT_SCORE_THRESHOLD: asIntegerString(state.assistantThreatScoreThreshold.value, 80),
     ASSISTANT_EXTERNAL_API_ENABLED: state.assistantExternalApiEnabled.checked ? "true" : "false",
     ASSISTANT_EXTERNAL_API_TOKEN: asString(state.assistantExternalApiToken.value, ""),
+    ASSISTANT_EXTERNAL_API_SIGNED_TOKENS_ENABLED: state.assistantExternalApiSignedTokensEnabled.checked ? "true" : "false",
+    ASSISTANT_EXTERNAL_API_SIGNING_SECRET: asString(state.assistantExternalApiSigningSecret.value, ""),
+    ASSISTANT_EXTERNAL_API_SIGNED_TOKEN_TTL_SECONDS: asIntegerString(
+      state.assistantExternalApiSignedTokenTtlSeconds.value,
+      900,
+    ),
   };
 }
 
@@ -94,6 +103,16 @@ function applyConfigValues(state, config = {}) {
   state.assistantExternalApiEnabled.checked =
     asBooleanString(config.ASSISTANT_EXTERNAL_API_ENABLED, DEFAULTS.ASSISTANT_EXTERNAL_API_ENABLED) === "true";
   state.assistantExternalApiToken.value = "";
+  state.assistantExternalApiSignedTokensEnabled.checked =
+    asBooleanString(
+      config.ASSISTANT_EXTERNAL_API_SIGNED_TOKENS_ENABLED,
+      DEFAULTS.ASSISTANT_EXTERNAL_API_SIGNED_TOKENS_ENABLED,
+    ) === "true";
+  state.assistantExternalApiSigningSecret.value = "";
+  state.assistantExternalApiSignedTokenTtlSeconds.value = asIntegerString(
+    config.ASSISTANT_EXTERNAL_API_SIGNED_TOKEN_TTL_SECONDS,
+    DEFAULTS.ASSISTANT_EXTERNAL_API_SIGNED_TOKEN_TTL_SECONDS,
+  );
 }
 
 function renderOutput(state, payload) {
@@ -213,6 +232,9 @@ function createState(root) {
     assistantThreatScoreThreshold: root.querySelector("[data-intel-assistant-threat-threshold]"),
     assistantExternalApiEnabled: root.querySelector("[data-intel-assistant-external-enabled]"),
     assistantExternalApiToken: root.querySelector("[data-intel-assistant-external-token]"),
+    assistantExternalApiSignedTokensEnabled: root.querySelector("[data-intel-assistant-external-signed-enabled]"),
+    assistantExternalApiSigningSecret: root.querySelector("[data-intel-assistant-external-signing-secret]"),
+    assistantExternalApiSignedTokenTtlSeconds: root.querySelector("[data-intel-assistant-external-signed-ttl]"),
     configureButton: root.querySelector("[data-intel-open-config]"),
     planButton: root.querySelector("[data-intel-open-plan]"),
     workflowsButton: root.querySelector("[data-intel-open-workflows]"),
@@ -242,6 +264,11 @@ function createState(root) {
     agentName: root.querySelector("[data-intel-agent-name]"),
     agentIntent: root.querySelector("[data-intel-agent-intent]"),
     agentScaffoldList: root.querySelector("[data-intel-agent-scaffolds]"),
+    agentTokenLabel: root.querySelector("[data-intel-agent-token-label]"),
+    agentTokenExpiryHours: root.querySelector("[data-intel-agent-token-expiry-hours]"),
+    agentTokenCreate: root.querySelector("[data-intel-agent-token-create]"),
+    agentTokenSelect: root.querySelector("[data-intel-agent-token-select]"),
+    agentTokenRevoke: root.querySelector("[data-intel-agent-token-revoke]"),
     agentGenerate: root.querySelector("[data-intel-agent-generate]"),
     agentValidate: root.querySelector("[data-intel-agent-validate]"),
     agentSave: root.querySelector("[data-intel-agent-save]"),
@@ -291,6 +318,9 @@ function validateState(state) {
     "assistantThreatScoreThreshold",
     "assistantExternalApiEnabled",
     "assistantExternalApiToken",
+    "assistantExternalApiSignedTokensEnabled",
+    "assistantExternalApiSigningSecret",
+    "assistantExternalApiSignedTokenTtlSeconds",
     "configureButton",
     "planButton",
     "workflowsButton",
@@ -320,6 +350,11 @@ function validateState(state) {
     "agentName",
     "agentIntent",
     "agentScaffoldList",
+    "agentTokenLabel",
+    "agentTokenExpiryHours",
+    "agentTokenCreate",
+    "agentTokenSelect",
+    "agentTokenRevoke",
     "agentGenerate",
     "agentValidate",
     "agentSave",
@@ -432,8 +467,18 @@ function createPanelMarkup() {
             <input type="checkbox" data-intel-assistant-external-enabled />
             Enable External Agent API (read-only)
           </label>
-          <label>External Agent API Token
+          <label>Legacy Shared API Token (optional compatibility)
             <input type="password" data-intel-assistant-external-token />
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" data-intel-assistant-external-signed-enabled />
+            Enable Signed Short-lived Tokens
+          </label>
+          <label>Signed Token Signing Secret
+            <input type="password" data-intel-assistant-external-signing-secret />
+          </label>
+          <label>Signed Token TTL (seconds)
+            <input type="number" min="60" step="60" data-intel-assistant-external-signed-ttl />
           </label>
         </div>
         <div class="button-row">
@@ -510,6 +555,25 @@ function createPanelMarkup() {
       <label>Scaffold Blocks
         <div class="intel-agent-scaffold-list" data-intel-agent-scaffolds></div>
       </label>
+      <div class="grid">
+        <label>New Scoped Token Label
+          <input type="text" data-intel-agent-token-label placeholder="Codex integration token" />
+        </label>
+        <label>Expires In Hours (optional)
+          <input type="number" min="1" step="1" data-intel-agent-token-expiry-hours placeholder="24" />
+        </label>
+      </div>
+      <div class="button-row">
+        <button type="button" class="secondary" data-intel-agent-token-create>Create Scoped Token</button>
+      </div>
+      <div class="grid">
+        <label>Scoped Tokens
+          <select data-intel-agent-token-select></select>
+        </label>
+        <div class="intel-workflow-launch-cell">
+          <button type="button" class="secondary" data-intel-agent-token-revoke>Revoke Selected Token</button>
+        </div>
+      </div>
       <div class="button-row">
         <button type="button" data-intel-agent-generate>Generate Draft From Scaffolds</button>
         <button type="button" class="secondary" data-intel-agent-validate>Validate Graph</button>
@@ -670,6 +734,25 @@ function renderAgentSelect(state, agents, selectedAgentId = "") {
     state.agentSelect.value = selectedAgentId;
   } else if (agents[0]) {
     state.agentSelect.value = agents[0].id;
+  }
+}
+
+function renderAgentTokenSelect(state, tokens, selectedTokenId = "") {
+  state.agentTokenSelect.textContent = "";
+  const list = Array.isArray(tokens) ? tokens : [];
+  for (const token of list) {
+    const option = document.createElement("option");
+    option.value = asString(token.tokenId, "");
+    const active = token.active === false ? "revoked/expired" : "active";
+    const label = asString(token.label, "token");
+    const expires = asString(token.expiresAt, "");
+    option.textContent = expires ? `${label} [${active}] exp:${expires}` : `${label} [${active}]`;
+    state.agentTokenSelect.append(option);
+  }
+  if (selectedTokenId && list.some((entry) => asString(entry.tokenId, "") === selectedTokenId)) {
+    state.agentTokenSelect.value = selectedTokenId;
+  } else if (list[0]) {
+    state.agentTokenSelect.value = asString(list[0].tokenId, "");
   }
 }
 
@@ -911,6 +994,7 @@ export async function registerManagerPlugin(context) {
       state.agentName.value = "";
       state.agentIntent.value = "";
       renderScaffoldChecklist(state, runtime.agentScaffolds, []);
+      renderAgentTokenSelect(state, []);
       state.agentOutput.textContent = JSON.stringify({ ok: true, draft: null }, null, 2);
       runtime.currentAgentDraft = null;
       return;
@@ -918,6 +1002,8 @@ export async function registerManagerPlugin(context) {
     state.agentName.value = asString(current.name, "");
     state.agentIntent.value = asString(current.intent, "");
     renderScaffoldChecklist(state, runtime.agentScaffolds, Array.isArray(current.scaffoldIds) ? current.scaffoldIds : []);
+    const tokenList = Array.isArray(current?.externalAccess?.tokens) ? current.externalAccess.tokens : [];
+    renderAgentTokenSelect(state, tokenList);
     state.agentOutput.textContent = JSON.stringify({ ok: true, draft: current }, null, 2);
     runtime.currentAgentDraft = current;
   }
@@ -1020,6 +1106,41 @@ export async function registerManagerPlugin(context) {
     runtime.currentAgentDraft = null;
     await loadAgents(false);
     panel.setStatus(`Deleted scaffold agent '${agentId}'.`);
+  }
+
+  async function createAgentScopedToken() {
+    const agentId = asString(state.agentSelect.value, "").trim() || asString(runtime.currentAgentDraft?.id, "").trim();
+    if (!agentId) {
+      throw new Error("Select an agent before creating a scoped token.");
+    }
+    const label = asString(state.agentTokenLabel.value, "").trim() || "Scoped token";
+    const expiresInHoursRaw = asString(state.agentTokenExpiryHours.value, "").trim();
+    const expiresInHours = expiresInHoursRaw ? Number.parseInt(expiresInHoursRaw, 10) : null;
+    const payload = await context.apiPost("/assistant/agents/tokens/create", {
+      agentId,
+      label,
+      expiresInHours: Number.isInteger(expiresInHours) ? expiresInHours : undefined,
+    });
+    state.agentOutput.textContent = JSON.stringify(payload || {}, null, 2);
+    state.agentTokenLabel.value = "";
+    state.agentTokenExpiryHours.value = "";
+    await loadAgents(false, agentId);
+    panel.setStatus("Created scoped token. Copy it now; it is shown only once.");
+  }
+
+  async function revokeAgentScopedToken() {
+    const agentId = asString(state.agentSelect.value, "").trim() || asString(runtime.currentAgentDraft?.id, "").trim();
+    const tokenId = asString(state.agentTokenSelect.value, "").trim();
+    if (!agentId || !tokenId) {
+      throw new Error("Select an agent and token to revoke.");
+    }
+    const payload = await context.apiPost("/assistant/agents/tokens/revoke", {
+      agentId,
+      tokenId,
+    });
+    state.agentOutput.textContent = JSON.stringify(payload || {}, null, 2);
+    await loadAgents(false, agentId);
+    panel.setStatus("Scoped token revoked.");
   }
 
   async function saveWorkflow() {
@@ -1220,6 +1341,22 @@ export async function registerManagerPlugin(context) {
     try {
       await loadAgentCatalog();
       await loadAgents(true);
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.agentTokenCreate.addEventListener("click", async () => {
+    try {
+      await createAgentScopedToken();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
+
+  state.agentTokenRevoke.addEventListener("click", async () => {
+    try {
+      await revokeAgentScopedToken();
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }

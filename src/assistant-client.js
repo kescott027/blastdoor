@@ -191,6 +191,11 @@ export function loadAssistantRuntimeConfig(env = process.env) {
     assistantAllowWebSearch: parseBoolean(env.ASSISTANT_ALLOW_WEB_SEARCH, false),
     assistantAutoLockOnThreat: parseBoolean(env.ASSISTANT_AUTO_LOCK_ON_THREAT, false),
     assistantThreatScoreThreshold: toPositiveInteger(env.ASSISTANT_THREAT_SCORE_THRESHOLD, 80),
+    assistantExternalApiEnabled: parseBoolean(env.ASSISTANT_EXTERNAL_API_ENABLED, false),
+    assistantExternalApiToken: normalizeString(env.ASSISTANT_EXTERNAL_API_TOKEN, ""),
+    assistantExternalApiSignedTokensEnabled: parseBoolean(env.ASSISTANT_EXTERNAL_API_SIGNED_TOKENS_ENABLED, false),
+    assistantExternalApiSigningSecret: normalizeString(env.ASSISTANT_EXTERNAL_API_SIGNING_SECRET, ""),
+    assistantExternalApiSignedTokenTtlSeconds: toPositiveInteger(env.ASSISTANT_EXTERNAL_API_SIGNED_TOKEN_TTL_SECONDS, 900),
   };
 }
 
