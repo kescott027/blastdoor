@@ -532,11 +532,10 @@ function setFoundryTargetAutodetectVisibility(isWsl) {
 
 function foundryApiResponseLabel(apiStatus = {}) {
   if (apiStatus.statusCode) {
-    const summary = String(apiStatus.responseSummary || "").trim();
-    return summary ? `${apiStatus.statusCode} (${summary})` : String(apiStatus.statusCode);
+    return String(apiStatus.statusCode);
   }
   if (apiStatus.error) {
-    return `Unavailable (${apiStatus.error})`;
+    return "Unavailable";
   }
   return "Unknown";
 }
