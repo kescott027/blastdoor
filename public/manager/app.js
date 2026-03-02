@@ -242,19 +242,37 @@ const managerPluginState = {
   refreshHandlers: [],
   styles: new Set(),
 };
+
+function resolveSection(id, fallbackSelector = "") {
+  const byId = document.getElementById(id);
+  if (byId) {
+    return byId;
+  }
+
+  if (!fallbackSelector) {
+    return null;
+  }
+
+  const fallback = document.querySelector(fallbackSelector);
+  if (fallback && !fallback.id) {
+    fallback.id = id;
+  }
+  return fallback;
+}
+
 const managedMainSections = [
-  document.getElementById("serviceControlSection"),
-  document.getElementById("configSection"),
-  document.getElementById("tlsManagementSection"),
-  document.getElementById("loginManagementSection"),
-  document.getElementById("userManagementSection"),
-  document.getElementById("backupManagementSection"),
-  document.getElementById("diagnosticsSection"),
-  document.getElementById("troubleshootingSection"),
-  document.getElementById("modulesSection"),
-  document.getElementById("pluginPanels"),
-  document.getElementById("runtimeLogsSection"),
-  document.getElementById("debugLogsSection"),
+  resolveSection("serviceControlSection", ".service-panel"),
+  resolveSection("configSection", ".config-panel"),
+  resolveSection("tlsManagementSection", "#tlsManagementSection"),
+  resolveSection("loginManagementSection", "#loginManagementSection"),
+  resolveSection("userManagementSection", "#userManagementSection"),
+  resolveSection("backupManagementSection", "#backupManagementSection"),
+  resolveSection("diagnosticsSection", "#diagnosticsSection"),
+  resolveSection("troubleshootingSection", ".troubleshooting-panel"),
+  resolveSection("modulesSection", "#modulesSection"),
+  resolveSection("pluginPanels", "#pluginPanels"),
+  resolveSection("runtimeLogsSection", ".runtime-panel"),
+  resolveSection("debugLogsSection", ".debug-panel"),
 ].filter(Boolean);
 const mainPanelGroups = {
   default: [],
