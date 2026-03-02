@@ -3,7 +3,7 @@ import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { isIP } from "node:net";
+import { createConnection, isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import {
   buildFoundryTarget,
@@ -158,26 +158,65 @@ async function probeUrl(url, timeoutMs = 2500) {
       url,
     };
   }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let parsed;
   try {
-    const response = await fetch(safeUrl, { signal: controller.signal });
-    return {
-      ok: response.ok,
-      statusCode: response.status,
-      error: "",
-      url: safeUrl,
-    };
-  } catch (error) {
+    parsed = new URL(safeUrl);
+  } catch {
     return {
       ok: false,
       statusCode: null,
-      error: error instanceof Error ? error.message : String(error),
+      error: "Probe skipped for invalid URL.",
+      url,
+    };
+  }
+
+  const port = Number.parseInt(parsed.port || (parsed.protocol === "https:" ? "443" : "80"), 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return {
+      ok: false,
+      statusCode: null,
+      error: "Probe skipped for invalid target port.",
       url: safeUrl,
     };
-  } finally {
-    clearTimeout(timeout);
   }
+
+  const startedAtMs = Date.now();
+  return await new Promise((resolve) => {
+    const socket = createConnection({ host: parsed.hostname, port });
+    const done = (payload) => {
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
+      resolve(payload);
+    };
+    socket.setTimeout(timeoutMs, () => {
+      done({
+        ok: false,
+        statusCode: null,
+        error: "TCP probe timed out.",
+        url: safeUrl,
+        durationMs: Date.now() - startedAtMs,
+      });
+    });
+    socket.once("connect", () => {
+      done({
+        ok: true,
+        statusCode: null,
+        error: "",
+        url: safeUrl,
+        durationMs: Date.now() - startedAtMs,
+      });
+    });
+    socket.once("error", (error) => {
+      done({
+        ok: false,
+        statusCode: null,
+        error: error instanceof Error ? error.message : String(error),
+        url: safeUrl,
+        durationMs: Date.now() - startedAtMs,
+      });
+    });
+  });
 }
 
 function buildInstallerDiagnostics({ config, environment, foundryProbe }) {
