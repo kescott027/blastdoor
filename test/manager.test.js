@@ -3648,9 +3648,9 @@ test("manager remote support API supports token-gated diagnostics and intelligen
       });
       assert.equal(tokenCreated.status, 200);
       assert.equal(tokenCreated.body.ok, true);
-      const supportToken = String(tokenCreated.body.token || "");
+      let supportToken = String(tokenCreated.body.token || "");
       assert.ok(supportToken.length > 20);
-      const supportTokenId = String(tokenCreated.body.tokenMeta?.tokenId || "");
+      let supportTokenId = String(tokenCreated.body.tokenMeta?.tokenId || "");
       assert.ok(supportTokenId.length > 6);
       assert.equal(Array.isArray(tokenCreated.body.examples), true);
       assert.equal(tokenCreated.body.examples.length >= 3, true);
@@ -3761,6 +3761,46 @@ test("manager remote support API supports token-gated diagnostics and intelligen
       assert.equal(agentCommand.status, 200);
       assert.equal(agentCommand.body.ok, true);
       assert.equal(agentCommand.body.agent.id, "remote-diag-agent");
+
+      const tokenRotated = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/tokens/rotate",
+        body: {
+          tokenId: supportTokenId,
+          label: "CI support token rotated",
+          ttlMinutes: 120,
+        },
+      });
+      assert.equal(tokenRotated.status, 200);
+      assert.equal(tokenRotated.body.ok, true);
+      assert.equal(tokenRotated.body.revokedTokenId, supportTokenId);
+      const rotatedToken = String(tokenRotated.body.token || "");
+      assert.ok(rotatedToken.length > 20);
+      const rotatedTokenId = String(tokenRotated.body.tokenMeta?.tokenId || "");
+      assert.ok(rotatedTokenId.length > 6);
+      assert.notEqual(rotatedTokenId, supportTokenId);
+      assert.equal(Array.isArray(tokenRotated.body.examples), true);
+      assert.equal(tokenRotated.body.examples.length >= 3, true);
+
+      const revokedAfterRotate = await request(port, {
+        pathname: "/api/remote-support/v1/diagnostics",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+      });
+      assert.equal(revokedAfterRotate.status, 401);
+
+      supportToken = rotatedToken;
+      supportTokenId = rotatedTokenId;
+
+      const diagnosticsAfterRotate = await request(port, {
+        pathname: "/api/remote-support/v1/diagnostics",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+      });
+      assert.equal(diagnosticsAfterRotate.status, 200);
+      assert.equal(diagnosticsAfterRotate.body.ok, true);
 
       const tokenRevoked = await request(port, {
         method: "POST",

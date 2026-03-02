@@ -18,6 +18,7 @@ const remoteSupportGenerateTokenBtn = document.getElementById("remoteSupportGene
 const remoteSupportCopyOutputBtn = document.getElementById("remoteSupportCopyOutputBtn");
 const remoteSupportTokenSelect = document.getElementById("remoteSupportTokenSelect");
 const remoteSupportRevokeBtn = document.getElementById("remoteSupportRevokeBtn");
+const remoteSupportRotateBtn = document.getElementById("remoteSupportRotateBtn");
 const remoteSupportStatusMessage = document.getElementById("remoteSupportStatusMessage");
 const remoteSupportOutput = document.getElementById("remoteSupportOutput");
 const remoteSupportStepHint = document.getElementById("remoteSupportStepHint");
@@ -1442,6 +1443,10 @@ function renderRemoteSupportConfig(payload) {
   if (remoteSupportRevokeBtn) {
     const selected = String(remoteSupportTokenSelect?.value || "");
     remoteSupportRevokeBtn.disabled = !enabled || !selected;
+  }
+  if (remoteSupportRotateBtn) {
+    const selected = String(remoteSupportTokenSelect?.value || "");
+    remoteSupportRotateBtn.disabled = !enabled || !selected;
   }
 
   if (remoteSupportTokenLabel) {
@@ -3257,8 +3262,12 @@ bindClick("diagCopyJsonBtn", async () => {
 
 if (remoteSupportTokenSelect) {
   remoteSupportTokenSelect.addEventListener("change", () => {
+    const enabled = latestRemoteSupportConfig?.enabled === true;
     if (remoteSupportRevokeBtn) {
-      remoteSupportRevokeBtn.disabled = !String(remoteSupportTokenSelect.value || "");
+      remoteSupportRevokeBtn.disabled = !enabled || !String(remoteSupportTokenSelect.value || "");
+    }
+    if (remoteSupportRotateBtn) {
+      remoteSupportRotateBtn.disabled = !enabled || !String(remoteSupportTokenSelect.value || "");
     }
   });
 }
@@ -3378,6 +3387,44 @@ bindClick("remoteSupportRevokeBtn", async () => {
     });
     renderRemoteSupportConfig({ config: { ...(latestRemoteSupportConfig || {}), tokens: payload.tokens || [] } });
     setRemoteSupportMessage("Token revoked.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportRotateBtn", async () => {
+  try {
+    const tokenId = String(remoteSupportTokenSelect?.value || "");
+    if (!tokenId) {
+      throw new Error("Select a token before rotating.");
+    }
+    const label = String(remoteSupportTokenLabel?.value || "").trim();
+    const ttlMinutes = Number.parseInt(String(remoteSupportTokenTtlMinutes?.value || "30"), 10);
+    const payload = await api("POST", "/remote-support/tokens/rotate", {
+      tokenId,
+      label,
+      ttlMinutes,
+    });
+    const token = String(payload?.token || "");
+    const tokenMeta = payload?.tokenMeta || {};
+    const examples = Array.isArray(payload?.examples) ? payload.examples : [];
+    const lines = [
+      `Rotated token (displayed once): ${token}`,
+      "",
+      `Revoked Token ID: ${String(payload?.revokedTokenId || "")}`,
+      `Token ID: ${tokenMeta.tokenId || ""}`,
+      `Label: ${tokenMeta.label || ""}`,
+      `Expires: ${tokenMeta.expiresAt || ""}`,
+      "",
+      "Example commands:",
+      ...examples,
+    ];
+    latestRemoteSupportOutputText = lines.join("\n");
+    if (remoteSupportOutput) {
+      remoteSupportOutput.textContent = latestRemoteSupportOutputText;
+    }
+    renderRemoteSupportConfig(payload);
+    setRemoteSupportMessage("Token rotated. Previous token is now revoked.");
   } catch (error) {
     setRemoteSupportMessage(error.message || String(error), true);
   }

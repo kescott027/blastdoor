@@ -5803,6 +5803,90 @@ export function createManagerApp(options = {}) {
     }
   });
 
+  registerApiPost("/remote-support/tokens/rotate", async (req, res) => {
+    try {
+      const tokenId = normalizeString(req.body?.tokenId, "");
+      if (!tokenId) {
+        throw new Error("tokenId is required.");
+      }
+
+      const current = await readConsoleSettings();
+      const currentRemoteSupport = current.remoteSupport || {};
+      if (currentRemoteSupport.enabled !== true) {
+        throw new Error("Remote support API is disabled. Enable and save config before rotating tokens.");
+      }
+
+      const currentTokens = Array.isArray(currentRemoteSupport.tokens) ? currentRemoteSupport.tokens : [];
+      const existingToken = currentTokens.find((entry) => normalizeString(entry?.tokenId, "") === tokenId);
+      if (!existingToken) {
+        throw new Error("Token not found.");
+      }
+
+      const ttlMinutes = clampRemoteSupportTokenTtlMinutes(
+        req.body?.ttlMinutes,
+        clampRemoteSupportTokenTtlMinutes(
+          currentRemoteSupport.defaultTokenTtlMinutes,
+          REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+        ),
+      );
+      const label = normalizeString(req.body?.label, normalizeString(existingToken?.label, REMOTE_SUPPORT_DEFAULT_TOKEN_LABEL));
+      const rawToken = randomBytes(24).toString("base64url");
+      const createdAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+      const rotatedTokenRecord = {
+        tokenId: randomUUID(),
+        label,
+        tokenHash: createPasswordHash(rawToken),
+        createdAt,
+        expiresAt,
+        lastUsedAt: "",
+        revokedAt: "",
+      };
+
+      const revokedAt = new Date().toISOString();
+      const nextTokens = currentTokens.map((entry) => {
+        if (normalizeString(entry?.tokenId, "") !== tokenId) {
+          return entry;
+        }
+        return {
+          ...entry,
+          revokedAt,
+        };
+      });
+      nextTokens.push(rotatedTokenRecord);
+
+      const next = await writeConsoleSettings({
+        ...current,
+        remoteSupport: {
+          ...currentRemoteSupport,
+          enabled: true,
+          defaultTokenTtlMinutes: clampRemoteSupportTokenTtlMinutes(
+            currentRemoteSupport.defaultTokenTtlMinutes,
+            REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+          ),
+          tokens: nextTokens,
+        },
+      });
+
+      res.json({
+        ok: true,
+        revokedTokenId: tokenId,
+        token: rawToken,
+        tokenMeta: summarizeRemoteSupportToken(rotatedTokenRecord),
+        config: {
+          enabled: next.remoteSupport.enabled === true,
+          defaultTokenTtlMinutes: next.remoteSupport.defaultTokenTtlMinutes,
+          tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
+        },
+        examples: buildRemoteSupportCurlExamples({ req, token: rawToken }),
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   registerRemoteSupportGet("/openapi.json", async (req, res) => {
     const baseUrl = buildRemoteSupportApiBasePath(req).replace(/\/+$/, "");
     res.json({
