@@ -3971,6 +3971,69 @@ test("manager remote support config reports WSL loopback bind remediation when m
   });
 });
 
+test("manager call-home pod generation requires call-home enablement", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const createDisabled = await request(port, {
+        method: "POST",
+        pathname: "/api/call-home/pods/generate",
+        body: {
+          label: "pod token",
+        },
+      });
+      assert.equal(createDisabled.status, 400);
+      assert.match(String(createDisabled.body.error || ""), /remote support api must be enabled/i);
+
+      const enableRemoteOnly = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/config",
+        body: {
+          enabled: true,
+          callHomeEnabled: false,
+          defaultTokenTtlMinutes: 30,
+        },
+      });
+      assert.equal(enableRemoteOnly.status, 200);
+      assert.equal(enableRemoteOnly.body.config.enabled, true);
+      assert.equal(enableRemoteOnly.body.config.callHomeEnabled, false);
+
+      const createCallHomeDisabled = await request(port, {
+        method: "POST",
+        pathname: "/api/call-home/pods/generate",
+        body: {
+          label: "pod token",
+        },
+      });
+      assert.equal(createCallHomeDisabled.status, 400);
+      assert.match(String(createCallHomeDisabled.body.error || ""), /call-home api must be enabled/i);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("formatManagerListenError explains when manager port is already in use", () => {
   const message = formatManagerListenError({ code: "EADDRINUSE" }, { host: "127.0.0.1", port: 8090 });
   assert.match(message, /already in use/);

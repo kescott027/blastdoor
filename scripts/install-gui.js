@@ -796,7 +796,7 @@ function renderHtml({ deferLaunch = false } = {}) {
 
       function appendAiLog(role, text) {
         const stamp = new Date().toISOString().replace("T", " ").replace("Z", "");
-        aiLog.textContent += "[" + stamp + "] " + role + ": " + text + "\n";
+        aiLog.textContent += "[" + stamp + "] " + role + ": " + text + "\\n";
         aiLog.scrollTop = aiLog.scrollHeight;
       }
 
@@ -870,7 +870,7 @@ function renderHtml({ deferLaunch = false } = {}) {
           ...warnings.map((entry) => "Warning: " + entry),
           ...errors.map((entry) => "Error: " + entry),
         ].filter(Boolean);
-        return lines.join("\n");
+        return lines.join("\\n");
       }
 
       async function runAiAnalyzeAndRecommend() {
@@ -985,7 +985,7 @@ function renderHtml({ deferLaunch = false } = {}) {
               "Validation ready: " + (payload.ready ? "yes" : "no"),
               ...checks.map((entry) => "[" + (entry.status || "info") + "] " + entry.title + ": " + entry.detail),
             ];
-            appendAiLog("assistant", lines.join("\n"));
+            appendAiLog("assistant", lines.join("\\n"));
           })
           .catch((error) => {
             appendAiLog("assistant", "Validate failed: " + (error.message || String(error)));
