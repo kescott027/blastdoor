@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blastdoor Workflow Chat</title>
+    <link rel="stylesheet" href="/manager/intelligence-chat.css" />
+  </head>
+  <body>
+    <main class="chat-shell">
+      <header class="chat-header">
+        <h1>Workflow Chat</h1>
+        <p>Run Intelligence workflows in a dedicated window while managing configuration in the admin console.</p>
+      </header>
+
+      <section class="chat-panel">
+        <div class="controls-grid">
+          <label>
+            Workflow
+            <select id="workflowSelect"></select>
+          </label>
+          <button id="launchWorkflowBtn" type="button">Launch Workflow</button>
+        </div>
+        <p id="statusMessage" class="status-message">Loading workflows...</p>
+      </section>
+
+      <section class="chat-panel">
+        <div id="chatLog" class="chat-log"></div>
+        <div class="chat-input-row">
+          <input id="chatInput" type="text" placeholder="Send message to workflow assistant" />
+          <button id="chatSendBtn" type="button">Send</button>
+        </div>
+      </section>
+
+      <section class="chat-panel">
+        <h2>Output</h2>
+        <pre id="outputLog" class="output-log"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="/manager/intelligence-chat.js"></script>
+  </body>
+</html>

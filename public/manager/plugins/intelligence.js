@@ -112,10 +112,6 @@ function pushChatMessage(state, role, text) {
   state.chatLog.scrollTop = state.chatLog.scrollHeight;
 }
 
-function clearChat(state) {
-  state.chatLog.textContent = "";
-}
-
 function normalizeWorkflowDraft(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const id = asString(source.id, "").trim();
@@ -200,6 +196,7 @@ function createState(root) {
     assistantThreatScoreThreshold: root.querySelector("[data-intel-assistant-threat-threshold]"),
     configureButton: root.querySelector("[data-intel-open-config]"),
     workflowsButton: root.querySelector("[data-intel-open-workflows]"),
+    openChatPopoutButton: root.querySelector("[data-intel-open-chat-popout]"),
     configSection: root.querySelector("[data-intel-config-section]"),
     workflowsSection: root.querySelector("[data-intel-workflow-section]"),
     closeConfigButton: root.querySelector("[data-intel-close-config]"),
@@ -248,6 +245,7 @@ function validateState(state) {
     "assistantThreatScoreThreshold",
     "configureButton",
     "workflowsButton",
+    "openChatPopoutButton",
     "configSection",
     "workflowsSection",
     "closeConfigButton",
@@ -291,6 +289,7 @@ function createPanelMarkup() {
       <div class="button-row">
         <button type="button" data-intel-open-config>Configure Intelligence Module</button>
         <button type="button" data-intel-open-workflows>Create Workflow</button>
+        <button type="button" data-intel-open-chat-popout>Launch Workflow</button>
       </div>
     </section>
 
@@ -365,7 +364,7 @@ function createPanelMarkup() {
           <select data-intel-workflow-select></select>
         </label>
         <div class="intel-workflow-launch-cell">
-          <button type="button" data-intel-workflow-launch>Launch Workflow</button>
+          <button type="button" data-intel-workflow-launch>Launch Workflow (Pop-out)</button>
         </div>
       </div>
 
@@ -516,22 +515,24 @@ export async function registerManagerPlugin(context) {
     runtime.launchedWorkflowId = "";
   }
 
-  function launchSelectedWorkflow(seedMessage = "") {
-    const selectedId = asString(state.workflowSelect.value, "");
-    const selected = getWorkflowById(selectedId);
-    if (!selected) {
-      throw new Error("Select a workflow to launch.");
+  function openWorkflowChatPopup(preferredWorkflowId = "") {
+    const selectedId = asString(preferredWorkflowId || state.workflowSelect.value || runtime.selectedWorkflowId, "");
+    const popupUrl = new URL(context.resolveAssetUrl("/manager/intelligence-chat.html"));
+    if (selectedId) {
+      popupUrl.searchParams.set("workflowId", selectedId);
+      popupUrl.searchParams.set("launch", "1");
     }
-    showSection(state.chatSection, true);
-    runtime.launchedWorkflowId = selected.id;
-    clearChat(state);
-    const intro =
-      seedMessage ||
-      selected.seedPrompt ||
-      `Workflow '${selected.name}' launched. Provide message/context and I will execute this workflow.`;
-    pushChatMessage(state, "assistant", intro);
-    state.chatInput.focus();
-    panel.setStatus(`Workflow '${selected.name}' launched.`);
+
+    const popup = window.open(
+      popupUrl.toString(),
+      "blastdoor-intelligence-chat",
+      "popup=yes,width=860,height=920,resizable=yes,scrollbars=yes",
+    );
+    if (!popup) {
+      throw new Error("Browser blocked the workflow chat popup. Allow popups for this site and retry.");
+    }
+    popup.focus();
+    panel.setStatus("Workflow chat opened in a separate window.");
   }
 
   function syncWorkflowSelection(selectedId = "") {
@@ -679,6 +680,13 @@ export async function registerManagerPlugin(context) {
     showWorkflowSection();
     hideChatSection();
   });
+  state.openChatPopoutButton.addEventListener("click", () => {
+    try {
+      openWorkflowChatPopup();
+    } catch (error) {
+      panel.setStatus(error?.message || String(error), true);
+    }
+  });
   state.closeConfigButton.addEventListener("click", () => {
     showConfigSection(false);
   });
@@ -709,7 +717,7 @@ export async function registerManagerPlugin(context) {
 
   state.workflowLaunch.addEventListener("click", () => {
     try {
-      launchSelectedWorkflow();
+      openWorkflowChatPopup(asString(state.workflowSelect.value, ""));
     } catch (error) {
       panel.setStatus(error?.message || String(error), true);
     }

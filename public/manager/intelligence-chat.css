@@ -1,0 +1,158 @@
+:root {
+  --bg-0: #0d1118;
+  --bg-1: #161f31;
+  --panel: rgba(14, 20, 34, 0.82);
+  --line: rgba(255, 255, 255, 0.14);
+  --ink: #e6eefb;
+  --muted: #a4b4cd;
+  --accent: #9be0ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(155, 224, 255, 0.1), transparent 38%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0));
+}
+
+.chat-shell {
+  width: min(980px, 96vw);
+  margin: 0.8rem auto 1.2rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.chat-header h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.2rem;
+}
+
+.chat-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.chat-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 0.8rem;
+}
+
+.chat-panel h2 {
+  margin: 0 0 0.45rem;
+  font-size: 0.95rem;
+  color: var(--accent);
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: end;
+}
+
+label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+select,
+input,
+button {
+  font: inherit;
+  color: var(--ink);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(9, 13, 22, 0.95);
+  padding: 0.5rem 0.6rem;
+}
+
+button {
+  background: linear-gradient(180deg, #2e5b92, #23456f);
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: rgba(155, 224, 255, 0.8);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.status-message {
+  margin: 0.55rem 0 0;
+  font-size: 0.9rem;
+  color: var(--accent);
+}
+
+.chat-log {
+  min-height: 260px;
+  max-height: 460px;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(7, 10, 17, 0.92);
+  padding: 0.6rem;
+}
+
+.chat-line {
+  display: grid;
+  gap: 0.15rem;
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+}
+
+.chat-line-user {
+  background: rgba(72, 154, 255, 0.22);
+  border: 1px solid rgba(93, 169, 255, 0.35);
+}
+
+.chat-line-assistant {
+  background: rgba(30, 43, 73, 0.56);
+  border: 1px solid rgba(166, 188, 230, 0.25);
+}
+
+.chat-role {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.chat-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-input-row {
+  margin-top: 0.6rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+}
+
+.output-log {
+  margin: 0;
+  min-height: 160px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(7, 10, 17, 0.92);
+  padding: 0.6rem;
+  color: #9be0ff;
+}
