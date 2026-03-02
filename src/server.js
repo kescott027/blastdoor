@@ -419,7 +419,7 @@ function renderThemeStyleVars(theme) {
   return vars.join(";");
 }
 
-function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
+function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme, pathPrefix = "" }) {
   const errorBlock = error
     ? `<p class="alert" role="alert">${escapeHtml(error)}</p>`
     : "";
@@ -429,15 +429,21 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
        <input id="totp" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="123456" required />`
     : "";
 
-  const logoMarkup = theme.logoUrl
-    ? `<img class="brand-logo" src="${escapeHtml(theme.logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
+  const styleHref = withPathPrefix("/assets/theme.css", pathPrefix);
+  const loginAction = withPathPrefix("/login", pathPrefix);
+  const logoUrl = withPathPrefix(theme.logoUrl || "", pathPrefix);
+  const closedBackgroundUrl = withPathPrefix(theme.closedBackgroundUrl || "", pathPrefix);
+  const openBackgroundUrl = withPathPrefix(theme.openBackgroundUrl || "", pathPrefix);
+
+  const logoMarkup = logoUrl
+    ? `<img class="brand-logo" src="${escapeHtml(logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
     : `<span class="brand-logo-fallback">BLASTDOOR</span>`;
 
-  const closedBgStyle = theme.closedBackgroundUrl
-    ? ` style="background-image: url('${escapeHtml(theme.closedBackgroundUrl)}');"`
+  const closedBgStyle = closedBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(closedBackgroundUrl)}');"`
     : "";
-  const openBgStyle = theme.openBackgroundUrl
-    ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
+  const openBgStyle = openBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(openBackgroundUrl)}');"`
     : "";
   const themeStyleVars = renderThemeStyleVars(theme);
   const loginBoxMode = normalizeLoginBoxMode(theme?.loginBoxMode);
@@ -448,7 +454,7 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Blastdoor Access</title>
-    <link rel="stylesheet" href="/assets/theme.css" />
+    <link rel="stylesheet" href="${escapeHtml(styleHref)}" />
   </head>
   <body data-login-box-mode="${loginBoxMode}" style="${themeStyleVars}">
     <div class="theme-stage" aria-hidden="true">
@@ -464,7 +470,7 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
         <h1>Blastdoor</h1>
         <p class="intro">Secure jump authorization for your campaign universe.</p>
         ${errorBlock}
-        <form method="post" action="/login" autocomplete="off" novalidate>
+        <form method="post" action="${escapeHtml(loginAction)}" autocomplete="off" novalidate>
           <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
           <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
 
@@ -484,16 +490,23 @@ function renderLoginPage({ error, csrfToken, nextPath, requireTotp, theme }) {
 </html>`;
 }
 
-function renderLoginSuccessPage({ nextPath, accountPath, theme, forcePasswordChange = false }) {
-  const logoMarkup = theme.logoUrl
-    ? `<img class="brand-logo" src="${escapeHtml(theme.logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
+function renderLoginSuccessPage({ nextPath, accountPath, theme, pathPrefix = "", forcePasswordChange = false }) {
+  const styleHref = withPathPrefix("/assets/theme.css", pathPrefix);
+  const logoUrl = withPathPrefix(theme.logoUrl || "", pathPrefix);
+  const closedBackgroundUrl = withPathPrefix(theme.closedBackgroundUrl || "", pathPrefix);
+  const openBackgroundUrl = withPathPrefix(theme.openBackgroundUrl || "", pathPrefix);
+  const continueHref = withPathPrefix(nextPath, pathPrefix);
+  const accountHref = withPathPrefix(accountPath, pathPrefix);
+
+  const logoMarkup = logoUrl
+    ? `<img class="brand-logo" src="${escapeHtml(logoUrl)}" alt="${escapeHtml(theme.name || "Blastdoor logo")}" />`
     : `<span class="brand-logo-fallback">BLASTDOOR</span>`;
 
-  const closedBgStyle = theme.closedBackgroundUrl
-    ? ` style="background-image: url('${escapeHtml(theme.closedBackgroundUrl)}');"`
+  const closedBgStyle = closedBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(closedBackgroundUrl)}');"`
     : "";
-  const openBgStyle = theme.openBackgroundUrl
-    ? ` style="background-image: url('${escapeHtml(theme.openBackgroundUrl)}');"`
+  const openBgStyle = openBackgroundUrl
+    ? ` style="background-image: url('${escapeHtml(openBackgroundUrl)}');"`
     : "";
   const themeStyleVars = renderThemeStyleVars(theme);
   const loginBoxMode = normalizeLoginBoxMode(theme?.loginBoxMode);
@@ -504,7 +517,7 @@ function renderLoginSuccessPage({ nextPath, accountPath, theme, forcePasswordCha
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Blastdoor Access Granted</title>
-    <link rel="stylesheet" href="/assets/theme.css" />
+    <link rel="stylesheet" href="${escapeHtml(styleHref)}" />
   </head>
   <body class="auth-success" data-login-box-mode="${loginBoxMode}" style="${themeStyleVars}">
     <div class="theme-stage" aria-hidden="true">
@@ -524,10 +537,10 @@ function renderLoginSuccessPage({ nextPath, accountPath, theme, forcePasswordCha
         }</p>
         <p class="success-note">If redirection does not start automatically, continue below.</p>
         <p class="success-links">
-          <a class="continue-link" href="${escapeHtml(nextPath)}" id="continueLink">${
+          <a class="continue-link" href="${escapeHtml(continueHref)}" id="continueLink">${
             forcePasswordChange ? "Continue to My Account" : "Continue to Foundry"
           }</a>
-          <a class="continue-link" href="${escapeHtml(accountPath)}" id="accountLink">My Account</a>
+          <a class="continue-link" href="${escapeHtml(accountHref)}" id="accountLink">My Account</a>
         </p>
         <p class="success-note" id="redirectHint">Auto-redirect in 7 seconds...</p>
       </section>
@@ -743,11 +756,54 @@ function makeAccountPath(nextPath = "/") {
   return `/account?next=${encodeURIComponent(safeNextPath(nextPath, "/"))}`;
 }
 
+function normalizePathPrefix(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  let candidate = raw;
+  if (candidate.includes("://")) {
+    try {
+      candidate = new URL(candidate).pathname || "";
+    } catch {
+      return "";
+    }
+  }
+
+  candidate = candidate.replaceAll("\\", "/").trim();
+  if (!candidate || candidate === "/") {
+    return "";
+  }
+  if (!candidate.startsWith("/")) {
+    candidate = `/${candidate}`;
+  }
+  candidate = candidate.replace(/\/+$/, "");
+  if (!candidate || candidate === "/" || candidate.includes("..")) {
+    return "";
+  }
+
+  return candidate;
+}
+
+function withPathPrefix(urlPath, pathPrefix = "") {
+  const prefix = normalizePathPrefix(pathPrefix);
+  const value = String(urlPath || "");
+  if (!prefix || !value.startsWith("/") || value.startsWith("//")) {
+    return value;
+  }
+  if (value === prefix || value.startsWith(`${prefix}/`)) {
+    return value;
+  }
+  return `${prefix}${value}`;
+}
+
 function renderAccountPage({
   nextPath,
   csrfToken,
   profile,
   username,
+  pathPrefix = "",
   forcePasswordChange = false,
   flashMessage = "",
   flashError = "",
@@ -755,6 +811,12 @@ function renderAccountPage({
   const statusClass = flashError ? "alert" : "success-note";
   const statusText = flashError || flashMessage;
   const continuePath = forcePasswordChange ? makeAccountPath(nextPath) : nextPath;
+  const styleHref = withPathPrefix("/assets/theme.css", pathPrefix);
+  const passwordAction = withPathPrefix("/account/password", pathPrefix);
+  const profileAction = withPathPrefix("/account/profile", pathPrefix);
+  const messageAction = withPathPrefix("/account/message-admin", pathPrefix);
+  const logoutPath = withPathPrefix("/logout", pathPrefix);
+  const continueHref = withPathPrefix(continuePath, pathPrefix);
 
   return `<!doctype html>
 <html lang="en">
@@ -762,7 +824,7 @@ function renderAccountPage({
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Blastdoor My Account</title>
-    <link rel="stylesheet" href="/assets/theme.css" />
+    <link rel="stylesheet" href="${escapeHtml(styleHref)}" />
   </head>
   <body>
     <div class="sky"></div>
@@ -780,7 +842,7 @@ function renderAccountPage({
         <div class="account-grid">
           <section>
             <h2>Password</h2>
-            <form method="post" action="/account/password">
+            <form method="post" action="${escapeHtml(passwordAction)}">
               <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
               <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
               <label for="currentPassword">Current Password${forcePasswordChange ? " (optional)" : ""}</label>
@@ -795,7 +857,7 @@ function renderAccountPage({
 
           <section>
             <h2>Profile</h2>
-            <form method="post" action="/account/profile">
+            <form method="post" action="${escapeHtml(profileAction)}">
               <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
               <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
               <label for="friendlyName">Friendly Name</label>
@@ -815,7 +877,7 @@ function renderAccountPage({
 
         <section class="account-message-panel">
           <h2>Message Admin</h2>
-          <form method="post" action="/account/message-admin">
+          <form method="post" action="${escapeHtml(messageAction)}">
             <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}" />
             <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
             <label for="adminSubject">Subject</label>
@@ -827,8 +889,8 @@ function renderAccountPage({
         </section>
 
         <p class="success-links">
-          <a class="continue-link" href="${escapeHtml(continuePath)}">Continue to Foundry</a>
-          <a class="continue-link" href="/logout">Log Out</a>
+          <a class="continue-link" href="${escapeHtml(continueHref)}">Continue to Foundry</a>
+          <a class="continue-link" href="${escapeHtml(logoutPath)}">Log Out</a>
         </p>
       </section>
     </main>
@@ -1056,6 +1118,14 @@ export function createApp(config, options = {}) {
     }
   }
 
+  const configuredPathPrefix = normalizePathPrefix(config.publicBaseUrl);
+  function resolveRequestPathPrefix(req) {
+    const forwardedPrefix = normalizePathPrefix(
+      req.get("x-forwarded-prefix") || req.get("x-forwarded-pathbase") || "",
+    );
+    return forwardedPrefix || configuredPathPrefix;
+  }
+
   const app = express();
   if (config.trustProxy !== false) {
     app.set("trust proxy", config.trustProxy);
@@ -1178,7 +1248,8 @@ export function createApp(config, options = {}) {
         req.session.destroy(() => {
           res.clearCookie("blastdoor.sid");
           if (wantsHtml) {
-            res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+            const loginPath = withPathPrefix("/login", resolveRequestPathPrefix(req));
+            res.redirect(`${loginPath}?next=${encodeURIComponent(nextPath)}`);
             return;
           }
           res.status(401).json({ error: "Authentication required" });
@@ -1205,7 +1276,8 @@ export function createApp(config, options = {}) {
           req.session.destroy(() => {
             res.clearCookie("blastdoor.sid");
             if (wantsHtml) {
-              res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+              const loginPath = withPathPrefix("/login", resolveRequestPathPrefix(req));
+              res.redirect(`${loginPath}?next=${encodeURIComponent(nextPath)}`);
               return;
             }
             res.status(401).json({ error: "Authentication required" });
@@ -1222,12 +1294,13 @@ export function createApp(config, options = {}) {
           requestPath.startsWith("/account") || requestPath.startsWith("/logout") || requestPath.startsWith("/login");
 
         if (requiresPasswordChange && !accountAllowed) {
+          const outwardAccountPath = withPathPrefix(accountPath, resolveRequestPathPrefix(req));
           if (wantsHtml) {
-            return res.redirect(accountPath);
+            return res.redirect(outwardAccountPath);
           }
           return res.status(428).json({
             error: "Password change required.",
-            accountPath,
+            accountPath: outwardAccountPath,
           });
         }
       } catch (error) {
@@ -1249,7 +1322,8 @@ export function createApp(config, options = {}) {
         logger.debug("auth.guard.redirect", collectRequestContext(req));
       }
 
-      return res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+      const loginPath = withPathPrefix("/login", resolveRequestPathPrefix(req));
+      return res.redirect(`${loginPath}?next=${encodeURIComponent(nextPath)}`);
     }
 
     if (logger.debugEnabled) {
@@ -1306,6 +1380,7 @@ export function createApp(config, options = {}) {
         csrfToken,
         profile,
         username: req.session.user,
+        pathPrefix: resolveRequestPathPrefix(req),
         forcePasswordChange,
         flashMessage: message,
         flashError: error,
@@ -1332,7 +1407,8 @@ export function createApp(config, options = {}) {
       const nextPath = safeNextPath(req.query.next, "/");
       return req.session.destroy(() => {
         res.clearCookie("blastdoor.sid");
-        res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
+        const prefixedLoginPath = withPathPrefix("/login", resolveRequestPathPrefix(req));
+        res.redirect(`${prefixedLoginPath}?next=${encodeURIComponent(nextPath)}`);
       });
     }
 
@@ -1371,6 +1447,7 @@ export function createApp(config, options = {}) {
           nextPath,
           accountPath,
           theme,
+          pathPrefix: resolveRequestPathPrefix(req),
           forcePasswordChange,
         }),
       );
@@ -1388,6 +1465,7 @@ export function createApp(config, options = {}) {
         nextPath,
         requireTotp: config.requireTotp,
         theme,
+        pathPrefix: resolveRequestPathPrefix(req),
       }),
     );
     },
@@ -1523,6 +1601,7 @@ export function createApp(config, options = {}) {
           nextPath,
           requireTotp: config.requireTotp,
           theme,
+          pathPrefix: resolveRequestPathPrefix(req),
         }),
       );
     }
@@ -1616,6 +1695,7 @@ export function createApp(config, options = {}) {
                 nextPath: transitionNextPath,
                 accountPath,
                 theme,
+                pathPrefix: resolveRequestPathPrefix(req),
                 forcePasswordChange: requirePasswordChange,
               }),
             );
@@ -1638,6 +1718,7 @@ export function createApp(config, options = {}) {
                   updatedAt: "",
                 },
                 accountPath,
+                pathPrefix: resolveRequestPathPrefix(req),
                 forcePasswordChange: requirePasswordChange,
               }),
             );
@@ -1803,7 +1884,7 @@ export function createApp(config, options = {}) {
       }
 
       res.clearCookie("blastdoor.sid");
-      res.redirect("/login");
+      res.redirect(withPathPrefix("/login", resolveRequestPathPrefix(req)));
     });
   }
 
