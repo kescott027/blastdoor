@@ -17,7 +17,7 @@ ALLOW_NULL_ORIGIN ?= false
 INSTALL_CONFIG_PATH ?= data/installation_config.json
 INSTALLER_AUTO_OPEN ?= true
 
-.PHONY: help install configure deps-install ensure-install-config ensure-deps ensure-dev-deps lint test coverage integration-test precommit-install setup-env launch launch-local launch-container launch-env manager-launch api-launch assistant-launch monitor monitor-local monitor-container debug debug-local debug-container troubleshoot troubleshoot-local troubleshoot-container mock-vtt test-launch debug-launch ensure-docker-env docker-build docker-up docker-down docker-logs basic-install basic-configure basic-launch basic-launch-env basic-monitor basic-troubleshoot resilient-install resilient-configure resilient-up resilient-down resilient-monitor resilient-troubleshoot
+.PHONY: help install configure deps-install ensure-install-config ensure-deps ensure-dev-deps lint test coverage integration-test ci-gate precommit-install setup-env launch launch-local launch-container launch-env manager-launch api-launch assistant-launch monitor monitor-local monitor-container debug debug-local debug-container troubleshoot troubleshoot-local troubleshoot-container mock-vtt test-launch debug-launch ensure-docker-env docker-build docker-up docker-down docker-logs basic-install basic-configure basic-launch basic-launch-env basic-monitor basic-troubleshoot resilient-install resilient-configure resilient-up resilient-down resilient-monitor resilient-troubleshoot
 
 help:
 	@echo "Targets:"
@@ -36,6 +36,7 @@ help:
 	@echo "  make test          Run unit/integration tests"
 	@echo "  make coverage      Run test coverage with minimum thresholds"
 	@echo "  make integration-test Run Playwright installer workflow integration tests"
+	@echo "  make ci-gate       Run blocking local CI gate (lint + coverage + Playwright integration)"
 	@echo "  make precommit-install  Install local git hooks (husky)"
 	@echo "  make setup-env     Interactive .env setup wizard"
 	@echo ""
@@ -102,6 +103,12 @@ coverage: ensure-dev-deps
 integration-test: ensure-dev-deps
 	npx playwright install chromium
 	npm run test:integration
+
+ci-gate: ensure-dev-deps
+	npm run lint
+	npm run test:coverage
+	npx playwright install chromium
+	npm run test:integration:ci
 
 precommit-install: ensure-dev-deps
 	npm run prepare
