@@ -9,6 +9,15 @@ const assistantOllamaAutodetectBtn = document.getElementById("assistantOllamaAut
 const diagStatusMessage = document.getElementById("diagStatusMessage");
 const diagSummary = document.getElementById("diagSummary");
 const diagJson = document.getElementById("diagJson");
+const remoteSupportEnabled = document.getElementById("remoteSupportEnabled");
+const remoteSupportDefaultTtlMinutes = document.getElementById("remoteSupportDefaultTtlMinutes");
+const remoteSupportRefreshBtn = document.getElementById("remoteSupportRefreshBtn");
+const remoteSupportTokenLabel = document.getElementById("remoteSupportTokenLabel");
+const remoteSupportTokenTtlMinutes = document.getElementById("remoteSupportTokenTtlMinutes");
+const remoteSupportTokenSelect = document.getElementById("remoteSupportTokenSelect");
+const remoteSupportRevokeBtn = document.getElementById("remoteSupportRevokeBtn");
+const remoteSupportStatusMessage = document.getElementById("remoteSupportStatusMessage");
+const remoteSupportOutput = document.getElementById("remoteSupportOutput");
 const blastDoorsToggle = document.getElementById("blastDoorsToggle");
 const blastDoorsState = document.getElementById("blastDoorsState");
 const blastDoorsClosedField = document.getElementById("blastDoorsClosedField");
@@ -212,6 +221,8 @@ const hasLegacyAppearancePicker = Boolean(
 );
 
 let latestDiagnostics = null;
+let latestRemoteSupportConfig = null;
+let latestRemoteSupportOutputText = "";
 let latestTroubleshootReport = null;
 let latestThemes = [];
 let latestActiveThemeId = "";
@@ -368,6 +379,14 @@ function setMessage(text, isError = false) {
 function setDiagMessage(text, isError = false) {
   diagStatusMessage.textContent = text;
   diagStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
+}
+
+function setRemoteSupportMessage(text, isError = false) {
+  if (!remoteSupportStatusMessage) {
+    return;
+  }
+  remoteSupportStatusMessage.textContent = text;
+  remoteSupportStatusMessage.style.color = isError ? "#ff8a8a" : "#9be0ff";
 }
 
 function setTsMessage(text, isError = false) {
@@ -1323,7 +1342,7 @@ async function api(method, routePath, body) {
 
 async function copyToClipboard(text) {
   if (!text) {
-    throw new Error("No diagnostics generated yet.");
+    throw new Error("Nothing available to copy.");
   }
 
   if (navigator.clipboard?.writeText) {
@@ -1346,6 +1365,64 @@ function renderDiagnostics(payload) {
   latestDiagnostics = payload;
   diagSummary.textContent = payload.summary || "";
   diagJson.textContent = JSON.stringify(payload.report || {}, null, 2);
+}
+
+function formatRemoteSupportTokenOption(entry) {
+  const label = String(entry?.label || "Token").trim() || "Token";
+  const tokenId = String(entry?.tokenId || "").trim();
+  const expiresAt = String(entry?.expiresAt || "").trim();
+  const active = entry?.active === true;
+  const status = active ? "active" : "inactive";
+  const expiresText = expiresAt ? ` expires ${expiresAt}` : "";
+  return `${label} (${tokenId || "unknown"}) [${status}]${expiresText}`;
+}
+
+function renderRemoteSupportConfig(payload) {
+  latestRemoteSupportConfig = payload?.config || null;
+  const config = latestRemoteSupportConfig || {};
+  if (remoteSupportEnabled) {
+    remoteSupportEnabled.value = config.enabled ? "true" : "false";
+  }
+  if (remoteSupportDefaultTtlMinutes) {
+    remoteSupportDefaultTtlMinutes.value = String(config.defaultTokenTtlMinutes || 30);
+  }
+  if (remoteSupportTokenTtlMinutes) {
+    remoteSupportTokenTtlMinutes.value = String(config.defaultTokenTtlMinutes || 30);
+  }
+
+  if (remoteSupportTokenSelect) {
+    remoteSupportTokenSelect.innerHTML = "";
+    const tokens = Array.isArray(config.tokens) ? config.tokens : [];
+    if (tokens.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No tokens issued";
+      remoteSupportTokenSelect.append(option);
+    } else {
+      for (const token of tokens) {
+        const option = document.createElement("option");
+        option.value = String(token?.tokenId || "");
+        option.textContent = formatRemoteSupportTokenOption(token);
+        remoteSupportTokenSelect.append(option);
+      }
+    }
+  }
+
+  if (remoteSupportRevokeBtn) {
+    const selected = String(remoteSupportTokenSelect?.value || "");
+    remoteSupportRevokeBtn.disabled = !selected;
+  }
+}
+
+async function refreshRemoteSupportConfig(showMessage = false) {
+  if (!remoteSupportRefreshBtn) {
+    return;
+  }
+  const payload = await api("GET", "/remote-support/config");
+  renderRemoteSupportConfig(payload);
+  if (showMessage) {
+    setRemoteSupportMessage("Remote support API settings loaded.");
+  }
 }
 
 function formatCheckLine(check) {
@@ -2546,17 +2623,19 @@ async function refreshTlsPanel(showMessage = true) {
 
 async function refreshAll() {
   try {
-    const [configResult, monitorResult, controlPlaneResult, managerSettingsResult] = await Promise.all([
+    const [configResult, monitorResult, controlPlaneResult, managerSettingsResult, remoteSupportConfigResult] = await Promise.all([
       api("GET", "/config"),
       api("GET", "/monitor"),
       api("GET", "/control-plane-status"),
       api("GET", "/manager-settings"),
+      api("GET", "/remote-support/config"),
     ]);
     fillForm(configResult.config);
     updateStatusCards(monitorResult);
     updateControlPlaneCards(controlPlaneResult);
     latestManagerSettings = managerSettingsResult.settings || null;
     fillLayoutSettings(managerSettingsResult.settings || {});
+    renderRemoteSupportConfig(remoteSupportConfigResult);
     await refreshFailures(false);
     await runPluginRefreshHandlers();
     scheduleControlsDockPositionUpdate();
@@ -3120,6 +3199,94 @@ bindClick("diagCopyJsonBtn", async () => {
     setDiagMessage("JSON copied.");
   } catch (error) {
     setDiagMessage(error.message || String(error), true);
+  }
+});
+
+if (remoteSupportTokenSelect) {
+  remoteSupportTokenSelect.addEventListener("change", () => {
+    if (remoteSupportRevokeBtn) {
+      remoteSupportRevokeBtn.disabled = !String(remoteSupportTokenSelect.value || "");
+    }
+  });
+}
+
+bindClick("remoteSupportRefreshBtn", async () => {
+  try {
+    await refreshRemoteSupportConfig(true);
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportSaveConfigBtn", async () => {
+  try {
+    const enabled = String(remoteSupportEnabled?.value || "false") === "true";
+    const defaultTokenTtlMinutes = Number.parseInt(String(remoteSupportDefaultTtlMinutes?.value || "30"), 10);
+    const payload = await api("POST", "/remote-support/config", {
+      enabled,
+      defaultTokenTtlMinutes,
+    });
+    renderRemoteSupportConfig(payload);
+    setRemoteSupportMessage("Remote support API configuration saved.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportGenerateTokenBtn", async () => {
+  try {
+    const label = String(remoteSupportTokenLabel?.value || "").trim();
+    const ttlMinutes = Number.parseInt(String(remoteSupportTokenTtlMinutes?.value || "30"), 10);
+    const payload = await api("POST", "/remote-support/tokens/create", {
+      label,
+      ttlMinutes,
+    });
+    const token = String(payload?.token || "");
+    const tokenMeta = payload?.tokenMeta || {};
+    const examples = Array.isArray(payload?.examples) ? payload.examples : [];
+    const lines = [
+      `Token (displayed once): ${token}`,
+      "",
+      `Token ID: ${tokenMeta.tokenId || ""}`,
+      `Label: ${tokenMeta.label || ""}`,
+      `Expires: ${tokenMeta.expiresAt || ""}`,
+      "",
+      "Example commands:",
+      ...examples,
+    ];
+    latestRemoteSupportOutputText = lines.join("\n");
+    if (remoteSupportOutput) {
+      remoteSupportOutput.textContent = latestRemoteSupportOutputText;
+    }
+    renderRemoteSupportConfig(payload);
+    setRemoteSupportMessage("Remote support token generated.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportCopyOutputBtn", async () => {
+  try {
+    await copyToClipboard(latestRemoteSupportOutputText || remoteSupportOutput?.textContent || "");
+    setRemoteSupportMessage("Token + commands copied.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
+  }
+});
+
+bindClick("remoteSupportRevokeBtn", async () => {
+  try {
+    const tokenId = String(remoteSupportTokenSelect?.value || "");
+    if (!tokenId) {
+      throw new Error("Select a token before revoking.");
+    }
+    const payload = await api("POST", "/remote-support/tokens/revoke", {
+      tokenId,
+    });
+    renderRemoteSupportConfig({ config: { ...(latestRemoteSupportConfig || {}), tokens: payload.tokens || [] } });
+    setRemoteSupportMessage("Token revoked.");
+  } catch (error) {
+    setRemoteSupportMessage(error.message || String(error), true);
   }
 });
 

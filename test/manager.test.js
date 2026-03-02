@@ -3586,6 +3586,194 @@ test("manager assistant threat workflow can auto-lock blast doors", async () => 
   });
 });
 
+test("manager remote support API supports token-gated diagnostics and intelligence commands", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const envPath = path.join(workspaceDir, ".env");
+    await fs.writeFile(
+      envPath,
+      [
+        "HOST=127.0.0.1",
+        "PORT=8080",
+        "FOUNDRY_TARGET=http://127.0.0.1:30000",
+        "PASSWORD_STORE_MODE=env",
+        "AUTH_USERNAME=gm",
+        "AUTH_PASSWORD_HASH=scrypt$a$b",
+        "SESSION_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "REQUIRE_TOTP=false",
+        "ASSISTANT_ENABLED=true",
+        "ASSISTANT_PROVIDER=ollama",
+        "ASSISTANT_URL=",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { app } = createManagerApp({ workspaceDir, envPath });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = server.address().port;
+
+    try {
+      const configSaved = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/config",
+        body: {
+          enabled: true,
+          defaultTokenTtlMinutes: 15,
+        },
+      });
+      assert.equal(configSaved.status, 200);
+      assert.equal(configSaved.body.ok, true);
+      assert.equal(configSaved.body.config.enabled, true);
+      assert.equal(configSaved.body.config.defaultTokenTtlMinutes, 30);
+
+      const tokenCreated = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/tokens/create",
+        body: {
+          label: "CI support token",
+          ttlMinutes: 90,
+        },
+      });
+      assert.equal(tokenCreated.status, 200);
+      assert.equal(tokenCreated.body.ok, true);
+      const supportToken = String(tokenCreated.body.token || "");
+      assert.ok(supportToken.length > 20);
+      const supportTokenId = String(tokenCreated.body.tokenMeta?.tokenId || "");
+      assert.ok(supportTokenId.length > 6);
+      assert.equal(Array.isArray(tokenCreated.body.examples), true);
+      assert.equal(tokenCreated.body.examples.length >= 3, true);
+
+      const diagnostics = await request(port, {
+        pathname: "/api/remote-support/v1/diagnostics",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+      });
+      assert.equal(diagnostics.status, 200);
+      assert.equal(diagnostics.body.ok, true);
+      assert.equal(Boolean(diagnostics.body.report?.environment), true);
+      assert.equal(typeof diagnostics.body.summary, "string");
+
+      const openapi = await request(port, {
+        pathname: "/api/remote-support/v1/openapi.json",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+      });
+      assert.equal(openapi.status, 200);
+      assert.equal(openapi.body.openapi, "3.0.3");
+      assert.equal(Boolean(openapi.body.paths["/diagnostics"]), true);
+
+      const runSnapshot = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/v1/troubleshoot/run",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+        body: {
+          actionId: "snapshot.network",
+        },
+      });
+      assert.equal(runSnapshot.status, 200);
+      assert.equal(runSnapshot.body.ok, true);
+      assert.equal(runSnapshot.body.result.actionId, "snapshot.network");
+
+      const blockedAction = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/v1/troubleshoot/run",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+        body: {
+          actionId: "fix.wsl-foundry-target",
+        },
+      });
+      assert.equal(blockedAction.status, 400);
+
+      const workflowChat = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/v1/intelligence/workflow/chat",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+        body: {
+          workflowId: "troubleshoot-recommendation",
+          input: "Evaluate troubleshooting readiness.",
+        },
+      });
+      assert.equal(workflowChat.status, 200);
+      assert.equal(workflowChat.body.ok, true);
+
+      const agentSaved = await request(port, {
+        method: "POST",
+        pathname: "/api/assistant/agents/save",
+        body: {
+          agent: {
+            id: "remote-diag-agent",
+            name: "Remote Diag Agent",
+            intent: "Assist remote diagnostics.",
+            workflow: {
+              id: "troubleshoot-recommendation",
+              name: "Troubleshoot Recommendation",
+              type: "troubleshoot-recommendation",
+            },
+            approvals: {
+              required: true,
+            },
+          },
+        },
+      });
+      assert.equal(agentSaved.status, 200);
+      assert.equal(agentSaved.body.ok, true);
+
+      const agents = await request(port, {
+        pathname: "/api/remote-support/v1/intelligence/agents",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+      });
+      assert.equal(agents.status, 200);
+      assert.equal(agents.body.ok, true);
+      assert.equal(agents.body.agents.some((entry) => entry.id === "remote-diag-agent"), true);
+
+      const agentCommand = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/v1/intelligence/agents/remote-diag-agent/command",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+        body: {
+          input: "Summarize the first diagnostic steps for TLS issues.",
+        },
+      });
+      assert.equal(agentCommand.status, 200);
+      assert.equal(agentCommand.body.ok, true);
+      assert.equal(agentCommand.body.agent.id, "remote-diag-agent");
+
+      const tokenRevoked = await request(port, {
+        method: "POST",
+        pathname: "/api/remote-support/tokens/revoke",
+        body: {
+          tokenId: supportTokenId,
+        },
+      });
+      assert.equal(tokenRevoked.status, 200);
+      assert.equal(tokenRevoked.body.ok, true);
+
+      const revokedAccess = await request(port, {
+        pathname: "/api/remote-support/v1/diagnostics",
+        headers: {
+          "x-blastdoor-support-token": supportToken,
+        },
+      });
+      assert.equal(revokedAccess.status, 401);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 test("formatManagerListenError explains when manager port is already in use", () => {
   const message = formatManagerListenError({ code: "EADDRINUSE" }, { host: "127.0.0.1", port: 8090 });
   assert.match(message, /already in use/);

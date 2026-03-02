@@ -31,6 +31,24 @@ test("normalizeManagerConsoleSettings applies defaults and clamps values", () =>
       passwordHash: "scrypt$demo$hash",
       sessionTtlHours: 999,
     },
+    remoteSupport: {
+      enabled: "true",
+      defaultTokenTtlMinutes: 99999,
+      tokens: [
+        {
+          tokenId: "tok-1",
+          label: "Token 1",
+          tokenHash: "scrypt$demo$hash",
+          createdAt: "2026-03-02T00:00:00.000Z",
+          expiresAt: "2120-01-01T00:00:00.000Z",
+        },
+        {
+          tokenId: "tok-2",
+          label: "Missing hash",
+          tokenHash: "",
+        },
+      ],
+    },
   });
 
   assert.equal(normalized.layout.darkModePercent, 100);
@@ -38,6 +56,10 @@ test("normalizeManagerConsoleSettings applies defaults and clamps values", () =>
   assert.equal(normalized.access.requirePassword, true);
   assert.equal(normalized.access.passwordHash, "scrypt$demo$hash");
   assert.equal(normalized.access.sessionTtlHours, 168);
+  assert.equal(normalized.remoteSupport.enabled, true);
+  assert.equal(normalized.remoteSupport.defaultTokenTtlMinutes, 1440);
+  assert.equal(normalized.remoteSupport.tokens.length, 1);
+  assert.equal(normalized.remoteSupport.tokens[0].tokenId, "tok-1");
 });
 
 test("sanitizeManagerConsoleSettingsForClient redacts hash while preserving flags", () => {
@@ -53,6 +75,10 @@ test("sanitizeManagerConsoleSettingsForClient redacts hash while preserving flag
   assert.equal(payload.access.requirePassword, true);
   assert.equal(payload.access.passwordConfigured, true);
   assert.equal(Object.prototype.hasOwnProperty.call(payload.access, "passwordHash"), false);
+  assert.equal(payload.remoteSupport.enabled, false);
+  assert.equal(payload.remoteSupport.defaultTokenTtlMinutes, 30);
+  assert.equal(payload.remoteSupport.tokenCount, 0);
+  assert.equal(payload.remoteSupport.activeTokenCount, 0);
 });
 
 test("manager console settings read/write persists normalized data", async () => {
@@ -72,16 +98,24 @@ test("manager console settings read/write persists normalized data", async () =>
         passwordHash: "scrypt$demo$hash",
         sessionTtlHours: 16,
       },
+      remoteSupport: {
+        enabled: true,
+        defaultTokenTtlMinutes: 45,
+      },
     });
     assert.equal(saved.layout.darkModePercent, 64);
     assert.equal(saved.layout.lightModePercent, 24);
     assert.equal(saved.access.requirePassword, true);
     assert.equal(saved.access.sessionTtlHours, 16);
+    assert.equal(saved.remoteSupport.enabled, true);
+    assert.equal(saved.remoteSupport.defaultTokenTtlMinutes, 45);
 
     const loaded = await readManagerConsoleSettings(settingsPath);
     assert.equal(loaded.layout.darkModePercent, 64);
     assert.equal(loaded.layout.lightModePercent, 24);
     assert.equal(loaded.access.requirePassword, true);
     assert.equal(loaded.access.sessionTtlHours, 16);
+    assert.equal(loaded.remoteSupport.enabled, true);
+    assert.equal(loaded.remoteSupport.defaultTokenTtlMinutes, 45);
   });
 });

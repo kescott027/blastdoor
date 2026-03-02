@@ -253,6 +253,48 @@
         <pre id="diagSummary" class="log-box"></pre>
         <h3>JSON</h3>
         <pre id="diagJson" class="log-box"></pre>
+
+        <h3>Remote Support API</h3>
+        <p class="panel-note">
+          Enable token-authenticated external troubleshooting access (read-only diagnostics + non-destructive actions).
+          Token TTL defaults to 30 minutes and can be set up to 24 hours.
+        </p>
+        <div class="grid">
+          <label>Enable Remote Support API
+            <select id="remoteSupportEnabled">
+              <option value="false">Disabled</option>
+              <option value="true">Enabled</option>
+            </select>
+          </label>
+          <label>Default Token TTL (minutes)
+            <input id="remoteSupportDefaultTtlMinutes" type="number" min="30" max="1440" step="1" value="30" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="remoteSupportSaveConfigBtn" type="button">Save Remote API Config</button>
+          <button id="remoteSupportRefreshBtn" type="button">Refresh Tokens</button>
+        </div>
+        <div class="grid">
+          <label>New Token Label
+            <input id="remoteSupportTokenLabel" placeholder="Remote Support Token" />
+          </label>
+          <label>New Token TTL (minutes)
+            <input id="remoteSupportTokenTtlMinutes" type="number" min="30" max="1440" step="1" value="30" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="remoteSupportGenerateTokenBtn" type="button">Generate Token</button>
+          <button id="remoteSupportCopyOutputBtn" type="button">Copy Token + CURL</button>
+        </div>
+        <label>Issued Tokens
+          <select id="remoteSupportTokenSelect"></select>
+        </label>
+        <div class="button-row">
+          <button id="remoteSupportRevokeBtn" type="button">Revoke Selected Token</button>
+        </div>
+        <p class="status-message" id="remoteSupportStatusMessage"></p>
+        <h4>Generated Token + Example Commands</h4>
+        <pre id="remoteSupportOutput" class="log-box"></pre>
       </section>
 
       <section class="panel troubleshooting-panel hidden" id="troubleshootingSection" hidden>

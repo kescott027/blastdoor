@@ -8,7 +8,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createPasswordHash, safeEqual, verifyPassword } from "./security.js";
@@ -38,6 +38,7 @@ import {
   sanitizeManagerConsoleSettingsForClient,
   writeManagerConsoleSettings,
 } from "./manager-console-settings.js";
+import { readIntelligenceAgentStore } from "./intelligence-agent-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -181,6 +182,14 @@ const MANAGER_AUTH_COOKIE_NAME = "blastdoor.manager.sid";
 const CONFIG_BACKUP_NAME_PATTERN = /[^a-zA-Z0-9_-]+/g;
 const CONFIG_BACKUP_ID_PATTERN = /^[a-zA-Z0-9_-]{6,120}$/;
 const CONFIG_BACKUP_VIEW_MAX_BYTES = 512 * 1024;
+const REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES = 30;
+const REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES = 24 * 60;
+const REMOTE_SUPPORT_DEFAULT_TOKEN_LABEL = "Remote Support Token";
+const REMOTE_SUPPORT_SAFE_ACTION_ALLOWLIST = new Set([
+  "snapshot.network",
+  "check.gateway-local",
+  "detect.wsl-portproxy",
+]);
 const RUNTIME_IS_CONTAINER =
   Boolean(process.env.CONTAINER || process.env.DOCKER_CONTAINER || process.env.KUBERNETES_SERVICE_HOST) ||
   existsSync("/.dockerenv");
@@ -199,6 +208,60 @@ function formatEnvValue(value) {
 
 function createSessionSecret() {
   return randomBytes(48).toString("base64url");
+}
+
+function clampRemoteSupportTokenTtlMinutes(value, fallback = 30) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES, Math.min(REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES, parsed));
+}
+
+function normalizeRemoteSupportTokenValue(req) {
+  const headerToken = normalizeString(
+    req.get("x-blastdoor-support-token") || req.get("x-blastdoor-remote-support-token"),
+    "",
+  );
+  if (headerToken) {
+    return headerToken;
+  }
+  const authHeader = normalizeString(req.get("authorization"), "");
+  const bearerPrefix = "bearer ";
+  if (authHeader.toLowerCase().startsWith(bearerPrefix)) {
+    return authHeader.slice(bearerPrefix.length).trim();
+  }
+  return "";
+}
+
+function isRemoteSupportTokenActive(token, nowMs = Date.now()) {
+  if (!token || typeof token !== "object") {
+    return false;
+  }
+  if (normalizeString(token.revokedAt, "")) {
+    return false;
+  }
+  const expiresAt = normalizeString(token.expiresAt, "");
+  if (!expiresAt) {
+    return false;
+  }
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return false;
+  }
+  return nowMs < expiresAtMs;
+}
+
+function summarizeRemoteSupportToken(token) {
+  return {
+    tokenId: normalizeString(token?.tokenId, ""),
+    label: normalizeString(token?.label, ""),
+    createdAt: normalizeString(token?.createdAt, ""),
+    expiresAt: normalizeString(token?.expiresAt, ""),
+    lastUsedAt: normalizeString(token?.lastUsedAt, ""),
+    revokedAt: normalizeString(token?.revokedAt, ""),
+    active: isRemoteSupportTokenActive(token),
+  };
 }
 
 function normalizeString(value, fallback = "") {
@@ -2530,6 +2593,8 @@ export function createManagerApp(options = {}) {
   const graphicsDir = options.graphicsDir || path.join(workspaceDir, "graphics");
   const themeStorePath = options.themeStorePath || path.join(graphicsDir, "themes", "themes.json");
   const userProfileStorePath = options.userProfileStorePath || path.join(workspaceDir, "data", "user-profiles.json");
+  const intelligenceAgentStorePath =
+    options.intelligenceAgentStorePath || path.join(workspaceDir, "data", "intelligence-agents.json");
   const failureStorePath = options.failureStorePath || path.join(workspaceDir, "data", "launch-failures.json");
   const managerConsoleSettingsPath =
     options.managerConsoleSettingsPath || path.join(workspaceDir, "data", "manager-console-settings.json");
@@ -2757,6 +2822,168 @@ export function createManagerApp(options = {}) {
     return saved;
   }
 
+  function buildRemoteSupportApiBasePath(req) {
+    const host = normalizeString(req.get("host"), "");
+    if (!host) {
+      return "/api/remote-support/v1";
+    }
+    const forwardedProto = normalizeString(req.get("x-forwarded-proto"), "");
+    const protocol = forwardedProto || req.protocol || "http";
+    return `${protocol}://${host}/api/remote-support/v1`;
+  }
+
+  function buildRemoteSupportCurlExamples({ req, token }) {
+    const base = buildRemoteSupportApiBasePath(req).replace(/\/+$/, "");
+    const quotedToken = String(token || "").replace(/'/g, "'\\''");
+    return [
+      `curl -sS -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/diagnostics'`,
+      `curl -sS -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/troubleshoot'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/troubleshoot/run' -d '{"actionId":"snapshot.network"}'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${quotedToken}' '${base}/intelligence/workflow/chat' -d '{"workflowId":"troubleshoot-recommendation","input":"Analyze the latest diagnostics report."}'`,
+    ];
+  }
+
+  function buildRemoteSupportCommandHints({ req, config, environment }) {
+    const base = buildRemoteSupportApiBasePath(req).replace(/\/+$/, "");
+    const tokenPlaceholder = "<REMOTE_SUPPORT_TOKEN>";
+    const gatewayPort = Number.parseInt(normalizeString(config?.PORT, CONFIG_DEFAULTS.PORT), 10) || 8080;
+    const gatewayHost = normalizeString(config?.HOST, CONFIG_DEFAULTS.HOST) || "127.0.0.1";
+    const foundryTarget = normalizeString(config?.FOUNDRY_TARGET, CONFIG_DEFAULTS.FOUNDRY_TARGET);
+    const hints = [
+      `curl -sS -H 'x-blastdoor-support-token: ${tokenPlaceholder}' '${base}/diagnostics'`,
+      `curl -sS -H 'x-blastdoor-support-token: ${tokenPlaceholder}' '${base}/troubleshoot'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${tokenPlaceholder}' '${base}/troubleshoot/run' -d '{"actionId":"snapshot.network"}'`,
+      `curl -sS -X POST -H 'content-type: application/json' -H 'x-blastdoor-support-token: ${tokenPlaceholder}' '${base}/intelligence/workflow/chat' -d '{"workflowId":"troubleshoot-recommendation","input":"Analyze diagnostics and suggest next checks."}'`,
+      `curl -i 'http://${gatewayHost}:${gatewayPort}/healthz'`,
+      `curl -i '${foundryTarget.replace(/\/+$/, "")}/api/status'`,
+    ];
+    if (environment?.isWsl) {
+      hints.push("ip route show default");
+      hints.push("hostname -I");
+    }
+    return hints;
+  }
+
+  async function writeRemoteSupportTokenLastUsed({ settings, tokenId }) {
+    const normalizedTokenId = normalizeString(tokenId, "");
+    if (!normalizedTokenId) {
+      return settings;
+    }
+    const current = settings || (await readConsoleSettings());
+    const remoteSupport = current.remoteSupport || {};
+    const tokens = Array.isArray(remoteSupport.tokens) ? remoteSupport.tokens : [];
+    let changed = false;
+    const nextTokens = tokens.map((entry) => {
+      if (normalizeString(entry?.tokenId, "") !== normalizedTokenId) {
+        return entry;
+      }
+      changed = true;
+      return {
+        ...entry,
+        lastUsedAt: new Date().toISOString(),
+      };
+    });
+    if (!changed) {
+      return current;
+    }
+    return await writeConsoleSettings({
+      ...current,
+      remoteSupport: {
+        ...remoteSupport,
+        tokens: nextTokens,
+      },
+    });
+  }
+
+  async function authenticateRemoteSupportToken(req) {
+    const settings = await readConsoleSettings();
+    const remoteSupport = settings.remoteSupport || {};
+    if (!remoteSupport.enabled) {
+      return {
+        ok: false,
+        status: 404,
+        error: "Remote support API is disabled.",
+        settings,
+      };
+    }
+
+    const token = normalizeRemoteSupportTokenValue(req);
+    if (!token) {
+      return {
+        ok: false,
+        status: 401,
+        error: "Missing remote support token.",
+        settings,
+      };
+    }
+
+    const tokens = Array.isArray(remoteSupport.tokens) ? remoteSupport.tokens : [];
+    for (const entry of tokens) {
+      if (!isRemoteSupportTokenActive(entry)) {
+        continue;
+      }
+      if (!verifyPassword(token, normalizeString(entry.tokenHash, ""))) {
+        continue;
+      }
+
+      const updated = await writeRemoteSupportTokenLastUsed({
+        settings,
+        tokenId: normalizeString(entry.tokenId, ""),
+      });
+
+      return {
+        ok: true,
+        settings: updated,
+        token: summarizeRemoteSupportToken(entry),
+      };
+    }
+
+    return {
+      ok: false,
+      status: 401,
+      error: "Unauthorized remote support API request.",
+      settings,
+    };
+  }
+
+  async function buildDiagnosticsPayload() {
+    const config = await readEnvConfig(envPath);
+    const serviceStatus = processState.getStatus();
+    const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
+    const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+    const diagnosticsConfig = sanitizeConfigForDiagnostics(config);
+    const loginAppearance = await resolveLoginAppearanceDetails();
+
+    const report = {
+      generatedAt: new Date().toISOString(),
+      serviceStatus,
+      health,
+      foundryHealth,
+      environment,
+      config: diagnosticsConfig,
+      loginAppearance,
+    };
+
+    return {
+      ok: true,
+      report,
+      summary: createDiagnosticsSummary(report),
+    };
+  }
+
+  async function buildTroubleshootPayload() {
+    const config = await readEnvConfig(envPath);
+    const serviceStatus = processState.getStatus();
+    const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
+    const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+    const loginAppearance = await resolveLoginAppearanceDetails();
+    const report = createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus, loginAppearance });
+    return {
+      ok: true,
+      report,
+    };
+  }
+
   function purgeExpiredManagerAuthSessions(nowMs = Date.now()) {
     for (const [token, session] of managerAuthSessions.entries()) {
       const expiresAtMs = new Date(session?.expiresAt || "").getTime();
@@ -2803,6 +3030,15 @@ export function createManagerApp(options = {}) {
   }
 
   function isManagerAuthBypassPath(pathname = "") {
+    if (
+      pathname.startsWith("/api/remote-support/v1/") ||
+      pathname === "/api/remote-support/v1" ||
+      pathname.startsWith("/manager/api/remote-support/v1/") ||
+      pathname === "/manager/api/remote-support/v1"
+    ) {
+      return true;
+    }
+
     return (
       pathname === "/manager/login" ||
       pathname === "/api/manager-auth/login" ||
@@ -3707,6 +3943,46 @@ export function createManagerApp(options = {}) {
     app.post(`/api${routePath}`, managerWriteLimiter, handler);
     app.post(`/manager/api${routePath}`, managerWriteLimiter, handler);
   };
+
+  const remoteSupportReadLimiter = rateLimit({
+    windowMs: managerWriteRateLimitWindowMs,
+    max: Math.max(30, Math.min(300, managerWriteRateLimitMax * 2)),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many remote support requests. Try again shortly.",
+  });
+
+  const remoteSupportWriteLimiter = rateLimit({
+    windowMs: managerWriteRateLimitWindowMs,
+    max: Math.max(10, Math.min(120, Math.floor(managerWriteRateLimitMax / 2))),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: "Too many remote support write requests. Try again shortly.",
+  });
+
+  function registerRemoteSupportGet(routePath, handler) {
+    app.get(`/api/remote-support/v1${routePath}`, remoteSupportReadLimiter, async (req, res) => {
+      const auth = await authenticateRemoteSupportToken(req);
+      if (!auth.ok) {
+        res.status(auth.status).json({ error: auth.error });
+        return;
+      }
+      req.remoteSupportToken = auth.token;
+      await handler(req, res);
+    });
+  }
+
+  function registerRemoteSupportPost(routePath, handler) {
+    app.post(`/api/remote-support/v1${routePath}`, remoteSupportWriteLimiter, async (req, res) => {
+      const auth = await authenticateRemoteSupportToken(req);
+      if (!auth.ok) {
+        res.status(auth.status).json({ error: auth.error });
+        return;
+      }
+      req.remoteSupportToken = auth.token;
+      await handler(req, res);
+    });
+  }
 
   app.get("/", (_req, res) => {
     res.redirect("/manager/");
@@ -5086,28 +5362,7 @@ export function createManagerApp(options = {}) {
 
   registerApiGet("/diagnostics", async (_req, res) => {
     try {
-      const config = await readEnvConfig(envPath);
-      const serviceStatus = processState.getStatus();
-      const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
-      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
-      const diagnosticsConfig = sanitizeConfigForDiagnostics(config);
-      const loginAppearance = await resolveLoginAppearanceDetails();
-
-      const report = {
-        generatedAt: new Date().toISOString(),
-        serviceStatus,
-        health,
-        foundryHealth,
-        environment,
-        config: diagnosticsConfig,
-        loginAppearance,
-      };
-
-      res.json({
-        ok: true,
-        report,
-        summary: createDiagnosticsSummary(report),
-      });
+      res.json(await buildDiagnosticsPayload());
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : String(error),
@@ -5117,17 +5372,7 @@ export function createManagerApp(options = {}) {
 
   registerApiGet("/troubleshoot", async (_req, res) => {
     try {
-      const config = await readEnvConfig(envPath);
-      const serviceStatus = processState.getStatus();
-      const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
-      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
-      const loginAppearance = await resolveLoginAppearanceDetails();
-      const report = createTroubleshootReport({ config, health, foundryHealth, environment, serviceStatus, loginAppearance });
-
-      res.json({
-        ok: true,
-        report,
-      });
+      res.json(await buildTroubleshootPayload());
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : String(error),
@@ -5166,6 +5411,415 @@ export function createManagerApp(options = {}) {
       res.json({
         ok: true,
         result,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiGet("/remote-support/config", async (_req, res) => {
+    try {
+      const settings = await readConsoleSettings();
+      const remoteSupport = settings.remoteSupport || {};
+      const tokens = Array.isArray(remoteSupport.tokens) ? remoteSupport.tokens : [];
+      res.json({
+        ok: true,
+        config: {
+          enabled: remoteSupport.enabled === true,
+          defaultTokenTtlMinutes: clampRemoteSupportTokenTtlMinutes(
+            remoteSupport.defaultTokenTtlMinutes,
+            REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+          ),
+          minTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+          maxTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
+          tokens: tokens.map(summarizeRemoteSupportToken),
+        },
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/remote-support/config", async (req, res) => {
+    try {
+      const current = await readConsoleSettings();
+      const currentRemoteSupport = current.remoteSupport || {};
+      const enabled = parseBooleanLike(req.body?.enabled, currentRemoteSupport.enabled === true);
+      const defaultTokenTtlMinutes = clampRemoteSupportTokenTtlMinutes(
+        req.body?.defaultTokenTtlMinutes,
+        clampRemoteSupportTokenTtlMinutes(
+          currentRemoteSupport.defaultTokenTtlMinutes,
+          REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+        ),
+      );
+
+      const next = await writeConsoleSettings({
+        ...current,
+        remoteSupport: {
+          ...currentRemoteSupport,
+          enabled,
+          defaultTokenTtlMinutes,
+          tokens: Array.isArray(currentRemoteSupport.tokens) ? currentRemoteSupport.tokens : [],
+        },
+      });
+
+      res.json({
+        ok: true,
+        config: {
+          enabled: next.remoteSupport.enabled === true,
+          defaultTokenTtlMinutes: next.remoteSupport.defaultTokenTtlMinutes,
+          minTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+          maxTokenTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
+          tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
+        },
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/remote-support/tokens/create", async (req, res) => {
+    try {
+      const current = await readConsoleSettings();
+      const currentRemoteSupport = current.remoteSupport || {};
+      const ttlMinutes = clampRemoteSupportTokenTtlMinutes(
+        req.body?.ttlMinutes,
+        clampRemoteSupportTokenTtlMinutes(
+          currentRemoteSupport.defaultTokenTtlMinutes,
+          REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+        ),
+      );
+      const label = normalizeString(req.body?.label, REMOTE_SUPPORT_DEFAULT_TOKEN_LABEL);
+      const rawToken = randomBytes(24).toString("base64url");
+      const createdAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+      const tokenRecord = {
+        tokenId: randomUUID(),
+        label,
+        tokenHash: createPasswordHash(rawToken),
+        createdAt,
+        expiresAt,
+        lastUsedAt: "",
+        revokedAt: "",
+      };
+
+      const next = await writeConsoleSettings({
+        ...current,
+        remoteSupport: {
+          ...currentRemoteSupport,
+          enabled: currentRemoteSupport.enabled === true,
+          defaultTokenTtlMinutes: clampRemoteSupportTokenTtlMinutes(
+            currentRemoteSupport.defaultTokenTtlMinutes,
+            REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+          ),
+          tokens: [...(Array.isArray(currentRemoteSupport.tokens) ? currentRemoteSupport.tokens : []), tokenRecord],
+        },
+      });
+
+      res.json({
+        ok: true,
+        token: rawToken,
+        tokenMeta: summarizeRemoteSupportToken(tokenRecord),
+        config: {
+          enabled: next.remoteSupport.enabled === true,
+          defaultTokenTtlMinutes: next.remoteSupport.defaultTokenTtlMinutes,
+          tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
+        },
+        examples: buildRemoteSupportCurlExamples({ req, token: rawToken }),
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerApiPost("/remote-support/tokens/revoke", async (req, res) => {
+    try {
+      const tokenId = normalizeString(req.body?.tokenId, "");
+      if (!tokenId) {
+        throw new Error("tokenId is required.");
+      }
+
+      const current = await readConsoleSettings();
+      const currentRemoteSupport = current.remoteSupport || {};
+      const currentTokens = Array.isArray(currentRemoteSupport.tokens) ? currentRemoteSupport.tokens : [];
+      let found = false;
+      const nextTokens = currentTokens.map((entry) => {
+        if (normalizeString(entry?.tokenId, "") !== tokenId) {
+          return entry;
+        }
+        found = true;
+        return {
+          ...entry,
+          revokedAt: new Date().toISOString(),
+        };
+      });
+      if (!found) {
+        throw new Error("Token not found.");
+      }
+
+      const next = await writeConsoleSettings({
+        ...current,
+        remoteSupport: {
+          ...currentRemoteSupport,
+          enabled: currentRemoteSupport.enabled === true,
+          defaultTokenTtlMinutes: clampRemoteSupportTokenTtlMinutes(
+            currentRemoteSupport.defaultTokenTtlMinutes,
+            REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
+          ),
+          tokens: nextTokens,
+        },
+      });
+
+      res.json({
+        ok: true,
+        tokenId,
+        tokens: (next.remoteSupport.tokens || []).map(summarizeRemoteSupportToken),
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerRemoteSupportGet("/openapi.json", async (req, res) => {
+    const baseUrl = buildRemoteSupportApiBasePath(req).replace(/\/+$/, "");
+    res.json({
+      openapi: "3.0.3",
+      info: {
+        title: "Blastdoor Remote Support API",
+        version: "1.0.0",
+        description: "Token-authenticated, non-destructive diagnostics and intelligence command API.",
+      },
+      servers: [{ url: baseUrl }],
+      components: {
+        securitySchemes: {
+          SupportTokenHeader: {
+            type: "apiKey",
+            in: "header",
+            name: "x-blastdoor-support-token",
+          },
+          BearerToken: {
+            type: "http",
+            scheme: "bearer",
+          },
+        },
+      },
+      security: [{ SupportTokenHeader: [] }, { BearerToken: [] }],
+      paths: {
+        "/diagnostics": { get: { summary: "Get sanitized diagnostics report." } },
+        "/troubleshoot": { get: { summary: "Get troubleshooting report with safe actions." } },
+        "/troubleshoot/run": { post: { summary: "Run non-destructive troubleshooting action by actionId." } },
+        "/intelligence/status": { get: { summary: "Get intelligence module status." } },
+        "/intelligence/workflow/chat": { post: { summary: "Send a command to an intelligence workflow." } },
+        "/intelligence/agents": { get: { summary: "List configured intelligence agents." } },
+        "/intelligence/agents/{agentName}/command": { post: { summary: "Send a command to an agent workflow." } },
+      },
+    });
+  });
+
+  registerRemoteSupportGet("/healthz", async (_req, res) => {
+    res.json({
+      ok: true,
+      service: "remote-support-api",
+      generatedAt: new Date().toISOString(),
+    });
+  });
+
+  registerRemoteSupportGet("/diagnostics", async (req, res) => {
+    const payload = await buildDiagnosticsPayload();
+    res.json({
+      ...payload,
+      commands: buildRemoteSupportCommandHints({
+        req,
+        config: payload?.report?.config || {},
+        environment: payload?.report?.environment || {},
+      }),
+    });
+  });
+
+  registerRemoteSupportGet("/troubleshoot", async (_req, res) => {
+    const payload = await buildTroubleshootPayload();
+    const report = payload.report || {};
+    report.safeActions = (report.safeActions || []).filter((entry) =>
+      REMOTE_SUPPORT_SAFE_ACTION_ALLOWLIST.has(normalizeString(entry?.id, "")),
+    );
+    report.guidedActions = [];
+    res.json({
+      ...payload,
+      report,
+    });
+  });
+
+  registerRemoteSupportPost("/troubleshoot/run", async (req, res) => {
+    const actionId = normalizeString(req.body?.actionId, "");
+    if (!actionId) {
+      res.status(400).json({ error: "actionId is required." });
+      return;
+    }
+    if (!REMOTE_SUPPORT_SAFE_ACTION_ALLOWLIST.has(actionId)) {
+      res.status(400).json({
+        error: `Action '${actionId}' is not allowed for the remote support API.`,
+        allowedActions: Array.from(REMOTE_SUPPORT_SAFE_ACTION_ALLOWLIST.values()),
+      });
+      return;
+    }
+
+    try {
+      const config = await readEnvConfig(envPath);
+      const environment = detectEnvironmentInfo({ workspaceDir, envPath });
+      const result = await runTroubleshootAction({
+        actionId,
+        config,
+        environment,
+        workspaceDir,
+        commandRunner,
+        envPath,
+      });
+
+      res.json({
+        ok: true,
+        result,
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerRemoteSupportGet("/intelligence/status", async (_req, res) => {
+    try {
+      const status = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        return await blastdoorApi.plugins?.intelligence?.getStatus();
+      });
+      res.json({
+        ok: true,
+        status: status || {},
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerRemoteSupportPost("/intelligence/workflow/chat", async (req, res) => {
+    try {
+      const workflowId = normalizeString(req.body?.workflowId, "troubleshoot-recommendation");
+      const input = normalizeString(req.body?.input || req.body?.message, "");
+      if (!input) {
+        res.status(400).json({
+          error: "input is required.",
+        });
+        return;
+      }
+      const context = req.body?.context && typeof req.body.context === "object" ? req.body.context : {};
+      const result = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        return await blastdoorApi.plugins?.intelligence?.runWorkflowChat({
+          workflowId,
+          input,
+          context,
+        });
+      });
+      res.json({
+        ok: true,
+        result: result || {},
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerRemoteSupportGet("/intelligence/agents", async (_req, res) => {
+    try {
+      const store = await readIntelligenceAgentStore(intelligenceAgentStorePath);
+      const agents = (store.agents || []).map((agent) => ({
+        id: normalizeString(agent?.id, ""),
+        name: normalizeString(agent?.name, ""),
+        intent: normalizeString(agent?.intent, ""),
+        workflowId: normalizeString(agent?.workflow?.id, ""),
+      }));
+      res.json({
+        ok: true,
+        agents,
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  registerRemoteSupportPost("/intelligence/agents/:agentName/command", async (req, res) => {
+    try {
+      const lookup = normalizeString(req.params?.agentName, "").toLowerCase();
+      if (!lookup) {
+        res.status(400).json({
+          error: "agentName is required.",
+        });
+        return;
+      }
+
+      const store = await readIntelligenceAgentStore(intelligenceAgentStorePath);
+      const agent = (store.agents || []).find((entry) => {
+        return (
+          normalizeString(entry?.id, "").toLowerCase() === lookup ||
+          normalizeString(entry?.name, "").toLowerCase() === lookup
+        );
+      });
+
+      if (!agent) {
+        res.status(404).json({
+          error: "Agent not found.",
+        });
+        return;
+      }
+
+      const workflowId = normalizeString(req.body?.workflowId, normalizeString(agent?.workflow?.id, ""));
+      if (!workflowId) {
+        res.status(400).json({
+          error: "Agent does not have a workflowId configured.",
+        });
+        return;
+      }
+      const input = normalizeString(req.body?.input || req.body?.message, "");
+      if (!input) {
+        res.status(400).json({
+          error: "input is required.",
+        });
+        return;
+      }
+      const result = await withBlastdoorApi(async ({ blastdoorApi }) => {
+        return await blastdoorApi.plugins?.intelligence?.runWorkflowChat({
+          workflowId,
+          input,
+          context: {
+            remoteSupport: true,
+            agentId: normalizeString(agent?.id, ""),
+            agentName: normalizeString(agent?.name, ""),
+            agentIntent: normalizeString(agent?.intent, ""),
+          },
+        });
+      });
+      res.json({
+        ok: true,
+        agent: {
+          id: normalizeString(agent?.id, ""),
+          name: normalizeString(agent?.name, ""),
+          workflowId,
+        },
+        result: result || {},
       });
     } catch (error) {
       res.status(400).json({

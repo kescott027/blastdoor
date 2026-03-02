@@ -14,6 +14,11 @@ export const DEFAULT_MANAGER_CONSOLE_SETTINGS = {
     passwordHash: "",
     sessionTtlHours: 12,
   },
+  remoteSupport: {
+    enabled: false,
+    defaultTokenTtlMinutes: 30,
+    tokens: [],
+  },
 };
 
 function clampPercent(value, fallback) {
@@ -42,10 +47,58 @@ function normalizeSessionTtlHours(value, fallback = 12) {
   return Math.max(1, Math.min(168, parsed));
 }
 
+function normalizeRemoteSupportTokenTtlMinutes(value, fallback = 30) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(30, Math.min(1440, parsed));
+}
+
+function normalizeRemoteSupportTokens(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => {
+      const token = entry && typeof entry === "object" ? entry : {};
+      return {
+        tokenId: typeof token.tokenId === "string" ? token.tokenId : "",
+        label: typeof token.label === "string" ? token.label : "",
+        tokenHash: typeof token.tokenHash === "string" ? token.tokenHash : "",
+        createdAt: typeof token.createdAt === "string" ? token.createdAt : "",
+        expiresAt: typeof token.expiresAt === "string" ? token.expiresAt : "",
+        lastUsedAt: typeof token.lastUsedAt === "string" ? token.lastUsedAt : "",
+        revokedAt: typeof token.revokedAt === "string" ? token.revokedAt : "",
+      };
+    })
+    .filter((entry) => entry.tokenId && entry.tokenHash);
+}
+
+function isRemoteSupportTokenActive(token, nowMs = Date.now()) {
+  if (!token || typeof token !== "object") {
+    return false;
+  }
+  if (token.revokedAt) {
+    return false;
+  }
+  if (!token.expiresAt) {
+    return true;
+  }
+  const expiresAtMs = Date.parse(token.expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return false;
+  }
+  return expiresAtMs > nowMs;
+}
+
 export function normalizeManagerConsoleSettings(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const sourceLayout = source.layout && typeof source.layout === "object" ? source.layout : {};
   const sourceAccess = source.access && typeof source.access === "object" ? source.access : {};
+  const sourceRemoteSupport =
+    source.remoteSupport && typeof source.remoteSupport === "object" ? source.remoteSupport : {};
 
   const settings = {
     version: SETTINGS_SCHEMA_VERSION,
@@ -73,6 +126,17 @@ export function normalizeManagerConsoleSettings(input = {}) {
         DEFAULT_MANAGER_CONSOLE_SETTINGS.access.sessionTtlHours,
       ),
     },
+    remoteSupport: {
+      enabled: normalizeBoolean(
+        sourceRemoteSupport.enabled,
+        DEFAULT_MANAGER_CONSOLE_SETTINGS.remoteSupport.enabled,
+      ),
+      defaultTokenTtlMinutes: normalizeRemoteSupportTokenTtlMinutes(
+        sourceRemoteSupport.defaultTokenTtlMinutes,
+        DEFAULT_MANAGER_CONSOLE_SETTINGS.remoteSupport.defaultTokenTtlMinutes,
+      ),
+      tokens: normalizeRemoteSupportTokens(sourceRemoteSupport.tokens),
+    },
   };
 
   return settings;
@@ -87,6 +151,12 @@ export function sanitizeManagerConsoleSettingsForClient(settings) {
       requirePassword: normalized.access.requirePassword,
       sessionTtlHours: normalized.access.sessionTtlHours,
       passwordConfigured: Boolean(normalized.access.passwordHash),
+    },
+    remoteSupport: {
+      enabled: normalized.remoteSupport.enabled,
+      defaultTokenTtlMinutes: normalized.remoteSupport.defaultTokenTtlMinutes,
+      tokenCount: normalized.remoteSupport.tokens.length,
+      activeTokenCount: normalized.remoteSupport.tokens.filter((entry) => isRemoteSupportTokenActive(entry)).length,
     },
   };
 }
