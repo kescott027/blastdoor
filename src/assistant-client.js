@@ -12,6 +12,14 @@ function normalizeString(value, fallback = "") {
   return String(value).trim();
 }
 
+function normalizeAssistantProvider(value) {
+  const normalized = normalizeString(value, "ollama").toLowerCase();
+  if (normalized === "heuristic") {
+    return "ollama";
+  }
+  return normalized || "ollama";
+}
+
 function parseBoolean(value, fallback = false) {
   if (value === undefined || value === null || value === "") {
     return fallback;
@@ -131,7 +139,7 @@ async function parseJsonBody(response) {
 }
 
 async function maybeGenerateOllamaNarrative(config, prompt) {
-  if (normalizeString(config.assistantProvider, "heuristic").toLowerCase() !== "ollama") {
+  if (normalizeAssistantProvider(config.assistantProvider) !== "ollama") {
     return "";
   }
 
@@ -174,7 +182,7 @@ export function loadAssistantRuntimeConfig(env = process.env) {
     assistantEnabled: parseBoolean(env.ASSISTANT_ENABLED, true),
     assistantUrl: normalizeString(env.ASSISTANT_URL, ""),
     assistantToken: normalizeString(env.ASSISTANT_TOKEN, ""),
-    assistantProvider: normalizeString(env.ASSISTANT_PROVIDER, "heuristic").toLowerCase(),
+    assistantProvider: normalizeAssistantProvider(env.ASSISTANT_PROVIDER),
     assistantOllamaUrl: normalizeString(env.ASSISTANT_OLLAMA_URL, "http://127.0.0.1:11434"),
     assistantOllamaModel: normalizeString(env.ASSISTANT_OLLAMA_MODEL, "llama3.1:8b"),
     assistantTimeoutMs: toPositiveInteger(env.ASSISTANT_TIMEOUT_MS, 6000),
@@ -361,7 +369,7 @@ function createLocalAssistantClient(config) {
       generatedAt: new Date().toISOString(),
       reply:
         narrative ||
-        "Custom workflow received your request. For richer responses, configure provider=ollama and tune prompts.",
+        "Custom workflow received your request. Ensure Ollama is reachable and tune system/seed prompts for richer responses.",
       result: {
         workflowId,
         workflowType,
@@ -375,7 +383,7 @@ function createLocalAssistantClient(config) {
       return {
         enabled: true,
         mode: "local",
-        provider: normalizeString(config.assistantProvider, "heuristic"),
+        provider: normalizeAssistantProvider(config.assistantProvider),
         ragEnabled: Boolean(config.assistantRagEnabled),
         allowWebSearch: Boolean(config.assistantAllowWebSearch),
       };
@@ -532,9 +540,13 @@ function createRemoteAssistantClient(config) {
 }
 
 export function createAssistantClient(options = {}) {
-  const config = {
+  const rawConfig = {
     ...loadAssistantRuntimeConfig(options.env || process.env),
     ...(options.config && typeof options.config === "object" ? options.config : {}),
+  };
+  const config = {
+    ...rawConfig,
+    assistantProvider: normalizeAssistantProvider(rawConfig.assistantProvider),
   };
 
   if (!config.assistantEnabled) {

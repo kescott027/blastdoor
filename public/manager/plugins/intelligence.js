@@ -1,6 +1,6 @@
 const DEFAULTS = {
   ASSISTANT_ENABLED: "true",
-  ASSISTANT_PROVIDER: "heuristic",
+  ASSISTANT_PROVIDER: "ollama",
   ASSISTANT_URL: "",
   ASSISTANT_TOKEN: "",
   ASSISTANT_OLLAMA_URL: "http://127.0.0.1:11434",
@@ -12,6 +12,11 @@ const DEFAULTS = {
   ASSISTANT_AUTO_LOCK_ON_THREAT: "false",
   ASSISTANT_THREAT_SCORE_THRESHOLD: "80",
 };
+
+function normalizeAssistantProvider(value) {
+  const normalized = asString(value, DEFAULTS.ASSISTANT_PROVIDER).trim().toLowerCase();
+  return normalized === "ollama" ? "ollama" : "ollama";
+}
 
 function asString(value, fallback = "") {
   if (value === undefined || value === null) {
@@ -46,7 +51,7 @@ function slugifyName(name) {
 function toConfigPatch(state) {
   return {
     ASSISTANT_ENABLED: state.assistantEnabled.checked ? "true" : "false",
-    ASSISTANT_PROVIDER: asString(state.assistantProvider.value, DEFAULTS.ASSISTANT_PROVIDER).trim() || "heuristic",
+    ASSISTANT_PROVIDER: normalizeAssistantProvider(state.assistantProvider.value),
     ASSISTANT_URL: asString(state.assistantUrl.value, "").trim(),
     ASSISTANT_TOKEN: asString(state.assistantToken.value, ""),
     ASSISTANT_OLLAMA_URL: asString(state.assistantOllamaUrl.value, DEFAULTS.ASSISTANT_OLLAMA_URL).trim(),
@@ -62,7 +67,7 @@ function toConfigPatch(state) {
 
 function applyConfigValues(state, config = {}) {
   state.assistantEnabled.checked = asBooleanString(config.ASSISTANT_ENABLED, DEFAULTS.ASSISTANT_ENABLED) === "true";
-  state.assistantProvider.value = asString(config.ASSISTANT_PROVIDER, DEFAULTS.ASSISTANT_PROVIDER);
+  state.assistantProvider.value = normalizeAssistantProvider(config.ASSISTANT_PROVIDER);
   state.assistantUrl.value = asString(config.ASSISTANT_URL, DEFAULTS.ASSISTANT_URL);
   state.assistantToken.value = "";
   state.assistantOllamaUrl.value = asString(config.ASSISTANT_OLLAMA_URL, DEFAULTS.ASSISTANT_OLLAMA_URL);
@@ -288,14 +293,14 @@ function validateState(state) {
 function createPanelMarkup() {
   return `
     <section class="intel-menu">
+      <div class="button-row">
+        <button type="button" data-intel-open-config>Configure Intelligence Module</button>
+        <button type="button" data-intel-open-workflows>Create Workflow</button>
+      </div>
       <div class="grid">
         <label>Workflow to Launch
           <select data-intel-menu-workflow-select></select>
         </label>
-      </div>
-      <div class="button-row">
-        <button type="button" data-intel-open-config>Configure Intelligence Module</button>
-        <button type="button" data-intel-open-workflows>Create Workflow</button>
       </div>
       <div class="button-row">
         <button type="button" data-intel-open-chat-popout>Launch Workflow</button>
@@ -313,8 +318,10 @@ function createPanelMarkup() {
             <input type="checkbox" data-intel-assistant-enabled />
             Enable Intelligence Module
           </label>
-          <label>Provider (heuristic|ollama)
-            <input type="text" data-intel-assistant-provider />
+          <label>Provider
+            <select data-intel-assistant-provider>
+              <option value="ollama">ollama</option>
+            </select>
           </label>
           <label>Assistant URL (empty = local workflow engine)
             <input type="text" data-intel-assistant-url />

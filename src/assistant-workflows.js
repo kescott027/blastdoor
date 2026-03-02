@@ -110,7 +110,7 @@ export function inferEnvironmentConfigurationRecommendations(input = {}) {
     COOKIE_SECURE: normalizeString(currentConfig.COOKIE_SECURE, "false"),
     TRUST_PROXY: normalizeString(currentConfig.TRUST_PROXY, "false"),
     ASSISTANT_ENABLED: "true",
-    ASSISTANT_PROVIDER: normalizeString(currentConfig.ASSISTANT_PROVIDER, "heuristic"),
+    ASSISTANT_PROVIDER: normalizeString(currentConfig.ASSISTANT_PROVIDER, "ollama"),
     ASSISTANT_RAG_ENABLED: normalizeString(currentConfig.ASSISTANT_RAG_ENABLED, "false"),
     ASSISTANT_ALLOW_WEB_SEARCH: normalizeString(currentConfig.ASSISTANT_ALLOW_WEB_SEARCH, "false"),
     ASSISTANT_AUTO_LOCK_ON_THREAT: normalizeString(currentConfig.ASSISTANT_AUTO_LOCK_ON_THREAT, "false"),

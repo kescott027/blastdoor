@@ -257,7 +257,7 @@ Optional tuning values:
 - `ASSISTANT_ENABLED` (`true`/`false`)
 - `ASSISTANT_URL` (optional; if empty, embedded workflows are used)
 - `ASSISTANT_TOKEN` (optional shared token when using standalone assistant service)
-- `ASSISTANT_PROVIDER` (`heuristic` or `ollama`)
+- `ASSISTANT_PROVIDER` (`ollama`)
 - `ASSISTANT_OLLAMA_URL`, `ASSISTANT_OLLAMA_MODEL`
 - `ASSISTANT_TIMEOUT_MS`, `ASSISTANT_RETRY_MAX_ATTEMPTS`
 - `ASSISTANT_RAG_ENABLED`, `ASSISTANT_ALLOW_WEB_SEARCH`

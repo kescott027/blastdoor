@@ -6,7 +6,6 @@ import {
 } from "./client-utils.js";
 
 const workflowSelect = document.getElementById("workflowSelect");
-const launchWorkflowBtn = document.getElementById("launchWorkflowBtn");
 const statusMessage = document.getElementById("statusMessage");
 const chatLog = document.getElementById("chatLog");
 const chatInput = document.getElementById("chatInput");
@@ -159,19 +158,18 @@ async function sendMessage() {
     return;
   }
 
-  const activeWorkflowId = runtime.launchedWorkflowId || String(workflowSelect.value || "");
-  const workflow = getWorkflowById(activeWorkflowId);
+  const selectedWorkflowId = String(workflowSelect.value || "");
+  const workflow = getWorkflowById(selectedWorkflowId);
   if (!workflow) {
-    throw new Error("Launch a workflow first.");
+    throw new Error("Select a workflow first.");
   }
-  if (!runtime.launchedWorkflowId) {
+  if (runtime.launchedWorkflowId !== selectedWorkflowId) {
     launchSelectedWorkflow();
   }
 
   pushChatMessage("user", message);
   chatInput.value = "";
   chatSendBtn.disabled = true;
-  launchWorkflowBtn.disabled = true;
   try {
     const payload = await api("POST", "/assistant/workflows/chat", {
       workflowId: workflow.id,
@@ -188,25 +186,14 @@ async function sendMessage() {
     setStatus(`Workflow '${workflow.name}' responded.`);
   } finally {
     chatSendBtn.disabled = false;
-    launchWorkflowBtn.disabled = false;
   }
 }
 
 workflowSelect.addEventListener("change", () => {
   runtime.selectedWorkflowId = String(workflowSelect.value || "");
-  runtime.launchedWorkflowId = "";
-  clearChat();
   const workflow = getWorkflowById(runtime.selectedWorkflowId);
   if (workflow) {
-    setStatus(`Selected '${workflow.name}'. Click Launch Workflow to start chat.`);
-  }
-});
-
-launchWorkflowBtn.addEventListener("click", () => {
-  try {
     launchSelectedWorkflow();
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
   }
 });
 

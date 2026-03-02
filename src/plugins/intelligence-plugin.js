@@ -8,10 +8,18 @@ import {
   upsertIntelligenceWorkflow,
 } from "../intelligence-workflow-store.js";
 
+function normalizeAssistantProvider(value) {
+  const normalized = String(value || "ollama").trim().toLowerCase();
+  if (normalized === "heuristic") {
+    return "ollama";
+  }
+  return normalized || "ollama";
+}
+
 function validateAssistantConfig(config) {
-  const assistantProvider = String(config.assistantProvider || "heuristic").toLowerCase();
-  if (!["heuristic", "ollama"].includes(assistantProvider)) {
-    throw new Error("ASSISTANT_PROVIDER must be one of: heuristic, ollama.");
+  const assistantProvider = normalizeAssistantProvider(config.assistantProvider);
+  if (assistantProvider !== "ollama") {
+    throw new Error("ASSISTANT_PROVIDER must be: ollama.");
   }
 
   const assistantTimeoutMs = Number.parseInt(String(config.assistantTimeoutMs ?? "6000"), 10);
@@ -49,7 +57,7 @@ function getIntelligenceEnvFieldDefaults({ forDocker = false, existing = {} } = 
     ASSISTANT_ENABLED: String(existing.ASSISTANT_ENABLED || "true"),
     ASSISTANT_URL: String(existing.ASSISTANT_URL || (forDocker ? "http://blastdoor-assistant:8060" : "")),
     ASSISTANT_TOKEN: String(existing.ASSISTANT_TOKEN || ""),
-    ASSISTANT_PROVIDER: String(existing.ASSISTANT_PROVIDER || "heuristic"),
+    ASSISTANT_PROVIDER: normalizeAssistantProvider(existing.ASSISTANT_PROVIDER),
     ASSISTANT_OLLAMA_URL: String(existing.ASSISTANT_OLLAMA_URL || "http://127.0.0.1:11434"),
     ASSISTANT_OLLAMA_MODEL: String(existing.ASSISTANT_OLLAMA_MODEL || "llama3.1:8b"),
     ASSISTANT_TIMEOUT_MS: String(existing.ASSISTANT_TIMEOUT_MS || "6000"),
@@ -112,7 +120,7 @@ export function createIntelligencePlugin() {
         ASSISTANT_ENABLED: "true",
         ASSISTANT_URL: "",
         ASSISTANT_TOKEN: "",
-        ASSISTANT_PROVIDER: "heuristic",
+        ASSISTANT_PROVIDER: "ollama",
         ASSISTANT_OLLAMA_URL: "http://127.0.0.1:11434",
         ASSISTANT_OLLAMA_MODEL: "llama3.1:8b",
         ASSISTANT_TIMEOUT_MS: "6000",
@@ -125,7 +133,7 @@ export function createIntelligencePlugin() {
       sensitiveKeys: ["ASSISTANT_TOKEN"],
       diagnosticsSummaryLines(config) {
         return [
-          `Assistant: ${config.ASSISTANT_ENABLED === "true" ? "enabled" : "disabled"} (${config.ASSISTANT_PROVIDER || "heuristic"})`,
+          `Assistant: ${config.ASSISTANT_ENABLED === "true" ? "enabled" : "disabled"} (${normalizeAssistantProvider(config.ASSISTANT_PROVIDER)})`,
           `Assistant RAG/Web: ${config.ASSISTANT_RAG_ENABLED || "false"} / ${config.ASSISTANT_ALLOW_WEB_SEARCH || "false"}`,
           `Assistant Auto-Lock: ${config.ASSISTANT_AUTO_LOCK_ON_THREAT || "false"} (threshold: ${config.ASSISTANT_THREAT_SCORE_THRESHOLD || "80"})`,
         ];
@@ -175,7 +183,7 @@ export function createIntelligencePlugin() {
           ASSISTANT_ENABLED: String(Boolean(config.assistantEnabled)),
           ASSISTANT_URL: String(config.assistantUrl || ""),
           ASSISTANT_TOKEN: String(config.assistantToken || ""),
-          ASSISTANT_PROVIDER: String(config.assistantProvider || "heuristic"),
+          ASSISTANT_PROVIDER: normalizeAssistantProvider(config.assistantProvider),
           ASSISTANT_OLLAMA_URL: String(config.assistantOllamaUrl || ""),
           ASSISTANT_OLLAMA_MODEL: String(config.assistantOllamaModel || ""),
           ASSISTANT_TIMEOUT_MS: String(config.assistantTimeoutMs || 6000),
@@ -358,8 +366,8 @@ export function createIntelligencePlugin() {
                   CONFIG_DEFAULTS.ASSISTANT_ENABLED,
                 ),
                 ASSISTANT_PROVIDER: normalizeManagerString(
-                  config.ASSISTANT_PROVIDER,
-                  CONFIG_DEFAULTS.ASSISTANT_PROVIDER,
+                  normalizeAssistantProvider(config.ASSISTANT_PROVIDER),
+                  normalizeAssistantProvider(CONFIG_DEFAULTS.ASSISTANT_PROVIDER),
                 ),
                 ASSISTANT_URL: normalizeManagerString(config.ASSISTANT_URL, CONFIG_DEFAULTS.ASSISTANT_URL),
                 ASSISTANT_RAG_ENABLED: normalizeManagerString(

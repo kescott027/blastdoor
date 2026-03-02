@@ -60,10 +60,6 @@ body {
   align-items: end;
 }
 
-.controls-actions {
-  margin-top: 0.55rem;
-}
-
 label {
   display: grid;
   gap: 0.25rem;
