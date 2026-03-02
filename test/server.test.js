@@ -1342,6 +1342,7 @@ test("user profile store supports temp code login and per-user token invalidatio
 
     const accountPage = await request(gateway.port, { path: "/account?next=%2F", headers: { accept: "text/html" } }, jar);
     assert.equal(accountPage.status, 200);
+    assert.match(accountPage.body, /<body class="account-page"/);
     const accountCsrf = parseCsrf(accountPage.body);
 
     const newPassword = "Temp Flow Replacement Password 123!";
@@ -1526,6 +1527,7 @@ test("account self-service updates profile and supports message-admin action", a
 
     const accountPage = await request(gateway.port, { path: "/account?next=%2F", headers: { accept: "text/html" } }, jar);
     assert.equal(accountPage.status, 200);
+    assert.match(accountPage.body, /<body class="account-page"/);
     const accountCsrf = parseCsrf(accountPage.body);
 
     const profileUpdate = await postForm(gateway.port, jar, "/account/profile", {

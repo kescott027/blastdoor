@@ -1471,6 +1471,7 @@ test("manager diagnostics endpoint returns sanitized report", async () => {
       assert.equal(config.SESSION_SECRET, "[REDACTED]");
       assert.equal(config.TOTP_SECRET, "[REDACTED]");
       assert.match(config.POSTGRES_URL, /postgres:\/\/REDACTED:REDACTED@127\.0\.0\.1:5432\/blastdoor/);
+      assert.equal(typeof response.body.report.foundryHealth, "object");
       assert.equal(typeof response.body.report.loginAppearance, "object");
       assert.equal(typeof response.body.report.loginAppearance.copyPasteText, "string");
       assert.equal(response.body.report.loginAppearance.activeThemeId, "blastdoor-default");
@@ -1636,6 +1637,9 @@ test("manager troubleshooting report includes WSL guidance when running in WSL",
       assert.equal(report.environment.isWsl, true);
       assert.equal(Array.isArray(report.checks), true);
       assert.ok(report.checks.find((check) => check.id === "network.wsl2-portproxy"));
+      assert.ok(report.checks.find((check) => check.id === "proxy.foundry-dns"));
+      assert.ok(report.checks.find((check) => check.id === "proxy.foundry-tcp"));
+      assert.ok(report.checks.find((check) => check.id === "proxy.foundry-loopback-runtime"));
       assert.ok(report.checks.find((check) => String(check.id || "").startsWith("login-theme.")));
       assert.ok(report.safeActions.find((action) => action.id === "detect.wsl-portproxy"));
       assert.equal(typeof report.loginAppearance, "object");

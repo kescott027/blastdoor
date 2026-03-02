@@ -1,8 +1,9 @@
 import "dotenv/config";
 import express from "express";
 import rateLimit from "express-rate-limit";
+import dns from "node:dns/promises";
 import fs from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -180,6 +181,9 @@ const MANAGER_AUTH_COOKIE_NAME = "blastdoor.manager.sid";
 const CONFIG_BACKUP_NAME_PATTERN = /[^a-zA-Z0-9_-]+/g;
 const CONFIG_BACKUP_ID_PATTERN = /^[a-zA-Z0-9_-]{6,120}$/;
 const CONFIG_BACKUP_VIEW_MAX_BYTES = 512 * 1024;
+const RUNTIME_IS_CONTAINER =
+  Boolean(process.env.CONTAINER || process.env.DOCKER_CONTAINER || process.env.KUBERNETES_SERVICE_HOST) ||
+  existsSync("/.dockerenv");
 
 function formatEnvValue(value) {
   if (value === "") {
@@ -682,6 +686,7 @@ function detectEnvironmentInfo({ workspaceDir, envPath }) {
     envPath,
     isWsl: Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP),
     wslDistro: normalizeString(process.env.WSL_DISTRO_NAME, ""),
+    isContainer: RUNTIME_IS_CONTAINER,
   };
 }
 
@@ -689,6 +694,7 @@ function createDiagnosticsSummary(report) {
   const config = report.config;
   const status = report.serviceStatus || {};
   const health = report.health || {};
+  const foundryHealth = report.foundryHealth || {};
   const env = report.environment || {};
   const loginAppearance = report.loginAppearance || {};
   const usesPostgres = config.PASSWORD_STORE_MODE === "postgres" || config.CONFIG_STORE_MODE === "postgres";
@@ -704,6 +710,11 @@ function createDiagnosticsSummary(report) {
     `Foundry Target: ${config.FOUNDRY_TARGET || "unset"}`,
     `Service Running: ${status.running ? "yes" : "no"} (pid: ${status.pid || "n/a"})`,
     `Health Check: ${health.ok ? "healthy" : "unhealthy"}${health.statusCode ? ` (${health.statusCode})` : ""}`,
+    `Foundry Reachability: ${
+      foundryHealth.ok
+        ? `reachable (${foundryHealth.statusCode || "n/a"})`
+        : `unreachable${foundryHealth.error ? ` (${foundryHealth.error})` : ""}`
+    }`,
     `Auth Username: ${config.AUTH_USERNAME || "unset"}`,
     `Require TOTP: ${config.REQUIRE_TOTP || "false"}`,
     `Password Store Mode: ${config.PASSWORD_STORE_MODE || "unset"}`,
@@ -1172,6 +1183,96 @@ async function checkBlastdoorHealth(config) {
   }
 }
 
+function defaultPortForProtocol(protocol) {
+  if (protocol === "https:") {
+    return 443;
+  }
+  if (protocol === "http:") {
+    return 80;
+  }
+  return null;
+}
+
+function isLoopbackHost(hostname) {
+  const normalized = normalizeString(hostname, "").toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+async function probeTcpConnectivity(host, port, timeoutMs = 1500) {
+  return await new Promise((resolve) => {
+    const startedAt = Date.now();
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve({
+        ...result,
+        durationMs: Date.now() - startedAt,
+      });
+    };
+
+    const socket = net.createConnection({ host, port });
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => {
+      socket.destroy();
+      finish({ ok: true, error: null });
+    });
+    socket.on("timeout", () => {
+      socket.destroy();
+      finish({ ok: false, error: `timeout after ${timeoutMs}ms` });
+    });
+    socket.on("error", (error) => {
+      finish({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    });
+  });
+}
+
+async function resolveDnsAddresses(hostname) {
+  const host = normalizeString(hostname, "");
+  if (!host) {
+    return {
+      ok: false,
+      addresses: [],
+      error: "missing host",
+    };
+  }
+
+  if (net.isIP(host)) {
+    return {
+      ok: true,
+      addresses: [host],
+      error: null,
+    };
+  }
+
+  if (host === "localhost") {
+    return {
+      ok: true,
+      addresses: ["127.0.0.1", "::1"],
+      error: null,
+    };
+  }
+
+  try {
+    const results = await dns.lookup(host, { all: true });
+    const addresses = results.map((entry) => normalizeString(entry?.address, "")).filter(Boolean);
+    return {
+      ok: addresses.length > 0,
+      addresses,
+      error: addresses.length > 0 ? null : "No DNS addresses returned.",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      addresses: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function checkFoundryTargetHealth(config) {
   const rawTarget = normalizeString(config.FOUNDRY_TARGET, "");
   if (!rawTarget) {
@@ -1180,6 +1281,13 @@ async function checkFoundryTargetHealth(config) {
       statusCode: null,
       url: "",
       error: "FOUNDRY_TARGET is not configured.",
+      targetHost: "",
+      targetPort: null,
+      targetProtocol: "",
+      targetIsLoopback: false,
+      dns: { ok: false, addresses: [], error: "FOUNDRY_TARGET is not configured." },
+      tcp: { ok: false, error: "FOUNDRY_TARGET is not configured.", durationMs: 0 },
+      runtimeHint: "",
     };
   }
 
@@ -1192,8 +1300,30 @@ async function checkFoundryTargetHealth(config) {
       statusCode: null,
       url: rawTarget,
       error: `Invalid FOUNDRY_TARGET URL: ${error instanceof Error ? error.message : String(error)}`,
+      targetHost: "",
+      targetPort: null,
+      targetProtocol: "",
+      targetIsLoopback: false,
+      dns: { ok: false, addresses: [], error: "Invalid target URL." },
+      tcp: { ok: false, error: "Invalid target URL.", durationMs: 0 },
+      runtimeHint: "",
     };
   }
+
+  const targetHost = normalizeString(targetUrl.hostname, "");
+  const targetPort = Number.parseInt(targetUrl.port || String(defaultPortForProtocol(targetUrl.protocol) || ""), 10);
+  const targetProtocol = normalizeString(targetUrl.protocol, "");
+  const targetIsLoopback = isLoopbackHost(targetHost);
+  const dnsDetails = await resolveDnsAddresses(targetHost);
+  const tcpDetails =
+    Number.isInteger(targetPort) && targetPort > 0
+      ? await probeTcpConnectivity(targetHost, targetPort, 1500)
+      : { ok: false, error: "Unable to determine target port.", durationMs: 0 };
+
+  const runtimeHint =
+    targetIsLoopback && (Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) || RUNTIME_IS_CONTAINER)
+      ? "FOUNDRY_TARGET is loopback/localhost while Blastdoor runs in WSL or container. localhost resolves inside that runtime, not the host OS."
+      : "";
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2000);
@@ -1207,6 +1337,13 @@ async function checkFoundryTargetHealth(config) {
       ok: true,
       statusCode: response.status,
       url: targetUrl.toString(),
+      targetHost,
+      targetPort: Number.isInteger(targetPort) ? targetPort : null,
+      targetProtocol,
+      targetIsLoopback,
+      dns: dnsDetails,
+      tcp: tcpDetails,
+      runtimeHint,
     };
   } catch (error) {
     return {
@@ -1214,6 +1351,13 @@ async function checkFoundryTargetHealth(config) {
       statusCode: null,
       url: targetUrl.toString(),
       error: error instanceof Error ? error.message : String(error),
+      targetHost,
+      targetPort: Number.isInteger(targetPort) ? targetPort : null,
+      targetProtocol,
+      targetIsLoopback,
+      dns: dnsDetails,
+      tcp: tcpDetails,
+      runtimeHint,
     };
   } finally {
     clearTimeout(timeout);
@@ -1649,6 +1793,45 @@ function createTroubleshootChecks({ config, health, foundryHealth, environment }
         : environment.isWsl
           ? "When running in WSL, ensure FOUNDRY_TARGET points to an address reachable from Linux and that Foundry is running."
           : "Verify Foundry is running and FOUNDRY_TARGET points to the correct service address and port.",
+    });
+  }
+
+  if (foundryHealth.targetHost) {
+    checks.push({
+      id: "proxy.foundry-dns",
+      title: "Foundry target DNS resolution",
+      status: foundryHealth.dns?.ok ? "ok" : "error",
+      detail: foundryHealth.dns?.ok
+        ? `Resolved ${foundryHealth.targetHost} to: ${(foundryHealth.dns?.addresses || []).join(", ")}.`
+        : `DNS resolution failed for ${foundryHealth.targetHost}${foundryHealth.dns?.error ? ` (${foundryHealth.dns.error})` : ""}.`,
+      recommendation: foundryHealth.dns?.ok
+        ? null
+        : "Verify FOUNDRY_TARGET hostname spelling and DNS availability from this runtime.",
+    });
+  }
+
+  if (foundryHealth.targetHost && foundryHealth.targetPort) {
+    checks.push({
+      id: "proxy.foundry-tcp",
+      title: "Foundry target TCP connect",
+      status: foundryHealth.tcp?.ok ? "ok" : "error",
+      detail: foundryHealth.tcp?.ok
+        ? `TCP connect to ${foundryHealth.targetHost}:${foundryHealth.targetPort} succeeded in ${foundryHealth.tcp.durationMs}ms.`
+        : `TCP connect to ${foundryHealth.targetHost}:${foundryHealth.targetPort} failed${foundryHealth.tcp?.error ? ` (${foundryHealth.tcp.error})` : ""}.`,
+      recommendation: foundryHealth.tcp?.ok
+        ? null
+        : "Check Foundry listener bind address, firewall rules, and whether the target host:port is reachable from Blastdoor runtime.",
+    });
+  }
+
+  if (foundryHealth.targetIsLoopback && (environment.isWsl || environment.isContainer)) {
+    checks.push({
+      id: "proxy.foundry-loopback-runtime",
+      title: "Foundry loopback target in isolated runtime",
+      status: "warn",
+      detail: foundryHealth.runtimeHint || "Foundry target uses localhost/loopback from an isolated runtime.",
+      recommendation:
+        "Set FOUNDRY_TARGET to a host-reachable address (for Docker often host.docker.internal, otherwise host/LAN IP) and restart Blastdoor.",
     });
   }
 
@@ -4538,7 +4721,7 @@ export function createManagerApp(options = {}) {
     try {
       const config = await readEnvConfig(envPath);
       const serviceStatus = processState.getStatus();
-      const health = await checkBlastdoorHealth(config);
+      const [health, foundryHealth] = await Promise.all([checkBlastdoorHealth(config), checkFoundryTargetHealth(config)]);
       const environment = detectEnvironmentInfo({ workspaceDir, envPath });
       const diagnosticsConfig = sanitizeConfigForDiagnostics(config);
       const loginAppearance = await resolveLoginAppearanceDetails();
@@ -4547,6 +4730,7 @@ export function createManagerApp(options = {}) {
         generatedAt: new Date().toISOString(),
         serviceStatus,
         health,
+        foundryHealth,
         environment,
         config: diagnosticsConfig,
         loginAppearance,

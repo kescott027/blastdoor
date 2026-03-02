@@ -3024,6 +3024,36 @@ bindClick("tsAnalyzeBtn", async () => {
   }
 });
 
+bindClick("tsAiBtn", async () => {
+  try {
+    const errorContext = [tsStatusMessage?.textContent || "", tsHints?.textContent || "", tsOutput?.textContent || ""]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 12_000);
+
+    const payload = await api("POST", "/assistant/workflow/troubleshoot-recommendation", {
+      errorText: errorContext,
+    });
+    const result = payload?.result || payload || {};
+    tsOutput.textContent = JSON.stringify(result, null, 2);
+    if (result.assistantNarrative) {
+      tsHints.textContent = String(result.assistantNarrative);
+    }
+    setTsMessage("AI troubleshooting recommendation generated.");
+  } catch (error) {
+    const message = String(error?.message || error || "");
+    if (message.includes("/assistant/workflow/troubleshoot-recommendation")) {
+      setTsMessage(
+        "AI troubleshooting endpoint is unavailable. Enable the Intelligence Module in Modules and retry.",
+        true,
+      );
+      return;
+    }
+    setTsMessage(message, true);
+  }
+});
+
 async function runTroubleshootAction(actionId, successMessage) {
   try {
     const payload = await api("POST", "/troubleshoot/run", { actionId });

@@ -639,7 +639,7 @@ function renderBlastDoorsClosedPage() {
       }
     </style>
   </head>
-  <body class="account-page">
+  <body class="account-page" style="overflow-x:hidden;overflow-y:auto;">
     <main>
       <h1>Blast Doors Are Locked</h1>
       <p class="alert">Gateway lockout is active. External routing is disabled.</p>
@@ -826,9 +826,9 @@ function renderAccountPage({
     <title>Blastdoor My Account</title>
     <link rel="stylesheet" href="${escapeHtml(styleHref)}" />
   </head>
-  <body>
+  <body class="account-page" style="overflow-x:hidden;overflow-y:auto;">
     <div class="sky"></div>
-    <main class="shell account-shell">
+    <main class="shell account-shell" style="display:block;min-height:auto;">
       <section class="panel account-panel">
         <p class="eyebrow">My Account</p>
         <h1>Welcome ${escapeHtml(username)}</h1>
