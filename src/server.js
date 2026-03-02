@@ -1149,6 +1149,8 @@ export function createApp(config, options = {}) {
         imgSrc: ["'self'", "data:", "blob:"],
         fontSrc: ["'self'", "data:"],
         connectSrc: ["'self'"],
+        // Keep static assets on HTTP deployments from being auto-upgraded to HTTPS.
+        "upgrade-insecure-requests": null,
       },
     },
     crossOriginEmbedderPolicy: false,

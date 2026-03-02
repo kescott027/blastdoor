@@ -433,6 +433,9 @@ test("gateway behavior without TOTP", async (t) => {
     assert.match(response.body, /Blastdoor/);
     assert.doesNotMatch(response.body, /Authenticator Code/);
     assert.ok(parseCsrf(response.body));
+    const csp = String(response.headers["content-security-policy"] || "");
+    assert.ok(csp.length > 0);
+    assert.equal(csp.includes("upgrade-insecure-requests"), false);
   });
 
   await t.test("login rejects wrong origin and bad csrf", async () => {
