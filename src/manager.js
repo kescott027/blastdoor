@@ -1,6 +1,4 @@
 import "dotenv/config";
-import express from "express";
-import rateLimit from "express-rate-limit";
 import dns from "node:dns/promises";
 import fs from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
@@ -13,7 +11,6 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createPasswordHash, safeEqual, verifyPassword } from "./security.js";
 import { validateConfig, loadConfigFromEnv, detectSelfProxyTarget } from "./server.js";
-import { createBlastdoorApi } from "./blastdoor-api.js";
 import { writeBlastDoorsState } from "./blastdoors-state.js";
 import { appendFailureRecord, clearFailureStore, readFailureStore, summarizeFailureStore } from "./failure-store.js";
 import { createEmailService, loadEmailConfigFromEnv } from "./email-service.js";
@@ -39,19 +36,10 @@ import {
   writeManagerConsoleSettings,
 } from "./manager-console-settings.js";
 import { readIntelligenceAgentStore } from "./intelligence-agent-store.js";
-import { registerRemoteSupportRoutes } from "./manager/remote-support-routes.js";
-import { registerDiagnosticsRoutes } from "./manager/diagnostics-routes.js";
-import { registerManagerAuthRoutes } from "./manager/auth-routes.js";
-import { registerManagerServiceRoutes } from "./manager/service-routes.js";
-import { registerManagerOperationsRoutes } from "./manager/operations-routes.js";
-import { registerManagerUserRoutes } from "./manager/users-routes.js";
-import { registerManagerThemeRoutes } from "./manager/themes-routes.js";
-import { registerManagerConfigRoutes } from "./manager/config-routes.js";
 import { createConfigBackupService } from "./manager/config-backup-service.js";
-import { createRemoteSupportService } from "./manager/remote-support-service.js";
-import { createManagerAuthService } from "./manager/auth-session-service.js";
-import { createControlPlaneStatusService } from "./manager/control-plane-service.js";
-import { createManagerDiagnosticsService } from "./manager/diagnostics-service.js";
+import { createManagerServiceComposition } from "./manager/app-service-composition.js";
+import { createManagerHttpApp } from "./manager/http-app-composition.js";
+import { registerManagerFeatureRoutes } from "./manager/feature-routes-composition.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2064,7 +2052,6 @@ export function createManagerApp(options = {}) {
   const postgresPoolFactory = options.postgresPoolFactory;
   const processState = createProcessState({ workspaceDir, processFactory });
   const managerStartedAtMs = Date.now();
-  let managerConsoleSettingsCache = null;
   const managerWriteRateLimitWindowMs = Number.isInteger(options.managerWriteRateLimitWindowMs)
     ? options.managerWriteRateLimitWindowMs
     : 15 * 60 * 1000;
@@ -2084,81 +2071,25 @@ export function createManagerApp(options = {}) {
     },
   ];
 
-  async function withBlastdoorApi(handler) {
-    const configFromEnv = await readEnvConfig(envPath);
-    const runtimeConfig = loadConfigFromEnv(configFromEnv);
-    const blastdoorApi = createBlastdoorApi({
-      config: runtimeConfig,
-      graphicsDir,
-      themeStorePath,
-      userProfileStorePath,
-      postgresPoolFactory,
-    });
-
-    try {
-      return await handler({
-        configFromEnv,
-        runtimeConfig,
-        config: runtimeConfig,
-        blastdoorApi,
-      });
-    } finally {
-      if (typeof blastdoorApi?.close === "function") {
-        await blastdoorApi.close();
-      }
-    }
-  }
-
-  async function recordFailureEntry(entry = {}) {
-    try {
-      await appendFailureRecord(failureStorePath, {
-        source: "manager",
-        ...entry,
-      });
-    } catch {
-      // Failure recording should never crash manager operations.
-    }
-  }
-
-  async function readConsoleSettings() {
-    if (managerConsoleSettingsCache) {
-      return managerConsoleSettingsCache;
-    }
-    managerConsoleSettingsCache = await readManagerConsoleSettings(managerConsoleSettingsPath);
-    return managerConsoleSettingsCache;
-  }
-
-  async function writeConsoleSettings(nextSettings) {
-    const normalized = normalizeManagerConsoleSettings(nextSettings);
-    const saved = await writeManagerConsoleSettings(managerConsoleSettingsPath, normalized);
-    managerConsoleSettingsCache = saved;
-    return saved;
-  }
-
-  const managerAuthService = createManagerAuthService({
-    readConsoleSettings,
+  const serviceComposition = createManagerServiceComposition({
+    readEnvConfig,
+    loadConfigFromEnv,
+    envPath,
+    graphicsDir,
+    themeStorePath,
+    userProfileStorePath,
+    postgresPoolFactory,
+    managerConsoleSettingsPath,
+    normalizeManagerConsoleSettings,
+    readManagerConsoleSettings,
+    writeManagerConsoleSettings,
     normalizeString,
     randomBytes,
     managerAuthCookieName: MANAGER_AUTH_COOKIE_NAME,
-  });
-  const {
-    getManagerAuthSession,
-    normalizeManagerNextPath,
-    createManagerAuthSession,
-    createCookieHeader,
-    clearManagerAuthSession,
-    enforceManagerAccess,
-    renderManagerLoginPage,
-  } = managerAuthService;
-
-  const controlPlaneStatusService = createControlPlaneStatusService({
-    readEnvConfig,
-    envPath,
     readInstallationConfig,
     installationConfigPath,
     detectEnvironmentInfo,
     workspaceDir,
-    normalizeString,
     parseBooleanLike,
     processState,
     checkBlastdoorHealth,
@@ -2177,21 +2108,42 @@ export function createManagerApp(options = {}) {
     probeTcpPort,
     formatPluginName,
     managerStartedAtMs,
-  });
-  const { getControlPlaneStatusCached } = controlPlaneStatusService;
-
-  const remoteSupportService = createRemoteSupportService({
-    normalizeString,
     verifyPassword,
-    readConsoleSettings,
-    writeConsoleSettings,
     randomUUID,
     configDefaults: CONFIG_DEFAULTS,
     remoteSupportTokenMinTtlMinutes: REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
     remoteSupportTokenMaxTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
     callHomeEventsMax: CALL_HOME_EVENTS_MAX,
     callHomeReportPayloadMaxChars: CALL_HOME_REPORT_PAYLOAD_MAX_CHARS,
+    sanitizeConfigForDiagnostics,
+    mapThemeForClient,
+    defaultThemeId: DEFAULT_THEME_ID,
+    accessFile: fs.access,
+    detectSelfProxyTarget,
+    evaluateGatewayBindHost,
+    isLoopbackHost,
+    buildWslPortproxyScript,
+    runCommandBatch,
+    runGatewayLocalChecks,
+    detectWslDefaultGatewayIp,
+    buildWslFoundryTarget,
+    validateConfig,
+    writeEnvConfig,
+    sensitiveConfigKeys: SENSITIVE_CONFIG_KEYS,
+    managerHost: DEFAULT_MANAGER_HOST,
+    managerPort: DEFAULT_MANAGER_PORT,
   });
+  const { withBlastdoorApi, readConsoleSettings, writeConsoleSettings } = serviceComposition;
+  const {
+    getManagerAuthSession,
+    normalizeManagerNextPath,
+    createManagerAuthSession,
+    createCookieHeader,
+    clearManagerAuthSession,
+    enforceManagerAccess,
+    renderManagerLoginPage,
+  } = serviceComposition.managerAuthService;
+  const { getControlPlaneStatusCached } = serviceComposition.controlPlaneStatusService;
   const {
     clampRemoteSupportTokenTtlMinutes,
     summarizeRemoteSupportToken,
@@ -2202,42 +2154,20 @@ export function createManagerApp(options = {}) {
     buildCallHomePodBundle,
     appendCallHomeEvent,
     authenticateRemoteSupportToken,
-  } = remoteSupportService;
-  const diagnosticsService = createManagerDiagnosticsService({
-    readEnvConfig,
-    envPath,
-    processState,
-    checkBlastdoorHealth,
-    checkFoundryTargetHealth,
-    detectEnvironmentInfo,
-    workspaceDir,
-    sanitizeConfigForDiagnostics,
-    withBlastdoorApi,
-    mapThemeForClient,
-    normalizeString,
-    defaultThemeId: DEFAULT_THEME_ID,
-    accessFile: fs.access,
-    parseBooleanLike,
-    detectSelfProxyTarget,
-    configDefaults: CONFIG_DEFAULTS,
-    evaluateGatewayBindHost,
-    isLoopbackHost,
-    buildWslPortproxyScript,
-    runCommandBatch,
-    runGatewayLocalChecks,
-    commandRunner,
-    detectWslDefaultGatewayIp,
-    buildWslFoundryTarget,
-    validateConfig,
-    loadConfigFromEnv,
-    writeEnvConfig,
-    pluginManager,
-    sensitiveConfigKeys: SENSITIVE_CONFIG_KEYS,
-    managerHost: DEFAULT_MANAGER_HOST,
-    managerPort: DEFAULT_MANAGER_PORT,
-  });
+  } = serviceComposition.remoteSupportService;
   const { createTroubleshootReport, buildDiagnosticsPayload, buildTroubleshootPayload, runTroubleshootAction } =
-    diagnosticsService;
+    serviceComposition.diagnosticsService;
+
+  async function recordFailureEntry(entry = {}) {
+    try {
+      await appendFailureRecord(failureStorePath, {
+        source: "manager",
+        ...entry,
+      });
+    } catch {
+      // Failure recording should never crash manager operations.
+    }
+  }
 
   async function applyThreatLockdown(existingConfig) {
     const mergedConfig = {
@@ -2462,128 +2392,28 @@ export function createManagerApp(options = {}) {
     };
   }
 
-  const app = express();
-  app.disable("x-powered-by");
-  app.use(express.json({ limit: "64kb" }));
-  app.use(express.urlencoded({ extended: false, limit: "16kb" }));
-  app.use(
-    "/graphics",
-    express.static(graphicsDir, {
-      etag: true,
-      maxAge: "1h",
-    }),
-  );
-  const managerAccessReadLimiter = rateLimit({
-    windowMs: managerWriteRateLimitWindowMs,
-    max: Math.max(120, Math.min(1200, managerWriteRateLimitMax * 4)),
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: "Too many manager requests. Try again shortly.",
-  });
-  app.use(managerAccessReadLimiter);
-  app.use((req, res, next) => {
-    void enforceManagerAccess(req, res, next);
-  });
-  app.get("/manager/login", async (req, res, next) => {
-    try {
-      const settings = await readConsoleSettings();
-      if (!settings.access.requirePassword) {
-        res.redirect("/manager/");
-        return;
-      }
-      if (getManagerAuthSession(req)) {
-        const nextPath = normalizeManagerNextPath(req.query?.next, "/manager/");
-        res.redirect(nextPath);
-        return;
-      }
-      const nextPath = normalizeManagerNextPath(req.query?.next, "/manager/");
-      res
-        .status(200)
-        .set("cache-control", "no-store")
-        .send(renderManagerLoginPage({ nextPath }));
-    } catch (error) {
-      next(error);
-    }
-  });
-  app.use(
-    "/manager",
-    express.static(managerDir, {
-      etag: true,
-      maxAge: 0,
-      setHeaders(res) {
-        res.setHeader("Cache-Control", "no-store");
-      },
-    }),
-  );
-
-  const managerWriteLimiter = rateLimit({
-    windowMs: managerWriteRateLimitWindowMs,
-    max: managerWriteRateLimitMax,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: "Too many manager write requests. Try again shortly.",
-  });
-
-  const registerApiGet = (routePath, handler) => {
-    app.get(`/api${routePath}`, handler);
-    app.get(`/manager/api${routePath}`, handler);
-  };
-
-  const registerApiPost = (routePath, handler) => {
-    app.post(`/api${routePath}`, managerWriteLimiter, handler);
-    app.post(`/manager/api${routePath}`, managerWriteLimiter, handler);
-  };
-
-  const remoteSupportReadLimiter = rateLimit({
-    windowMs: managerWriteRateLimitWindowMs,
-    max: Math.max(30, Math.min(300, managerWriteRateLimitMax * 2)),
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: "Too many remote support requests. Try again shortly.",
-  });
-
-  const remoteSupportWriteLimiter = rateLimit({
-    windowMs: managerWriteRateLimitWindowMs,
-    max: Math.max(10, Math.min(120, Math.floor(managerWriteRateLimitMax / 2))),
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: "Too many remote support write requests. Try again shortly.",
-  });
-
-  function registerRemoteSupportGet(routePath, handler) {
-    app.get(`/api/remote-support/v1${routePath}`, remoteSupportReadLimiter, async (req, res) => {
-      const auth = await authenticateRemoteSupportToken(req);
-      if (!auth.ok) {
-        res.status(auth.status).json({ error: auth.error });
-        return;
-      }
-      req.remoteSupportToken = auth.token;
-      req.remoteSupportSettings = auth.settings;
-      await handler(req, res);
+  const { app, registerApiGet, registerApiPost, registerRemoteSupportGet, registerRemoteSupportPost } =
+    createManagerHttpApp({
+      graphicsDir,
+      managerDir,
+      managerWriteRateLimitWindowMs,
+      managerWriteRateLimitMax,
+      enforceManagerAccess,
+      readConsoleSettings,
+      getManagerAuthSession,
+      normalizeManagerNextPath,
+      renderManagerLoginPage,
+      authenticateRemoteSupportToken,
     });
-  }
 
-  function registerRemoteSupportPost(routePath, handler) {
-    app.post(`/api/remote-support/v1${routePath}`, remoteSupportWriteLimiter, async (req, res) => {
-      const auth = await authenticateRemoteSupportToken(req);
-      if (!auth.ok) {
-        res.status(auth.status).json({ error: auth.error });
-        return;
-      }
-      req.remoteSupportToken = auth.token;
-      req.remoteSupportSettings = auth.settings;
-      await handler(req, res);
-    });
-  }
-
-  app.get("/", (_req, res) => {
-    res.redirect("/manager/");
-  });
-
-  registerManagerAuthRoutes({
+  registerManagerFeatureRoutes({
+    app,
     registerApiGet,
     registerApiPost,
+    registerRemoteSupportGet,
+    registerRemoteSupportPost,
     readConsoleSettings,
+    writeConsoleSettings,
     getManagerAuthSession,
     normalizeManagerNextPath,
     normalizeString,
@@ -2593,17 +2423,9 @@ export function createManagerApp(options = {}) {
     managerAuthCookieName: MANAGER_AUTH_COOKIE_NAME,
     clearManagerAuthSession,
     renderManagerLoginPage,
-  });
-
-  registerManagerConfigRoutes({
-    registerApiGet,
-    registerApiPost,
-    readConsoleSettings,
-    writeConsoleSettings,
     sanitizeManagerConsoleSettingsForClient,
     normalizeManagerConsoleSettings,
     parseBooleanLikeBody,
-    normalizeString,
     createPasswordHash,
     readEnvConfig,
     envPath,
@@ -2628,111 +2450,47 @@ export function createManagerApp(options = {}) {
     runtimeStatePath,
     configDefaults: CONFIG_DEFAULTS,
     processState,
-    listConfigBackups: configBackupService.listBackups,
+    configBackupService,
     configBackupDir,
     validateConfigBackupId,
-    viewConfigBackup: configBackupService.viewBackup,
-    createConfigBackup: configBackupService.createBackup,
-    restoreConfigBackup: configBackupService.restoreBackup,
-    deleteConfigBackup: configBackupService.deleteBackup,
-    cleanInstallConfiguration: configBackupService.cleanInstall,
     detectTlsEnvironment,
     normalizeTlsChallengeMethod,
     normalizeTlsConfigBody,
     buildLetsEncryptPlan,
     accessFile: fs.access,
     resolvePath: path.resolve,
-  });
-
-  registerManagerServiceRoutes({
-    registerApiGet,
-    registerApiPost,
     validateGatewayStartConfiguration,
-    processState,
     recordFailureEntry,
-    readEnvConfig,
-    envPath,
-    createSessionSecret,
-    writeEnvConfig,
     withBlastdoorApi,
     createSessionKey,
     validateManagedUsernameForActions,
     safeEqual,
-  });
-
-  registerManagerUserRoutes({
-    registerApiGet,
-    registerApiPost,
     normalizeUserFilter,
     buildManagedUserList,
     validateManagedUsername,
-    validateManagedUsernameForActions,
-    normalizeString,
     normalizeUserStatus,
     sanitizeLongText,
     sanitizeEmail,
-    withBlastdoorApi,
-    createPasswordHash,
     createEmailService,
     loadEmailConfigFromEnv,
     resolveGatewayBaseUrl,
-  });
-
-  registerManagerOperationsRoutes({
-    registerApiGet,
-    registerApiPost,
     getControlPlaneStatusCached,
     readFailureStore,
     summarizeFailureStore,
     clearFailureStore,
     failureStorePath,
-    processState,
-    readEnvConfig,
-    envPath,
     checkBlastdoorHealth,
-    workspaceDir,
-    configDefaults: CONFIG_DEFAULTS,
     tailFile,
-  });
-
-  registerManagerThemeRoutes({
-    registerApiGet,
-    registerApiPost,
-    withBlastdoorApi,
     mapThemeForClient,
     validateThemeAssetSelection,
-    parseBooleanLikeBody,
     createThemeId,
-    normalizeString,
     normalizeThemeName,
     defaultThemeId: DEFAULT_THEME_ID,
-  });
-
-  registerDiagnosticsRoutes({
-    registerApiGet,
-    registerApiPost,
     buildDiagnosticsPayload,
     buildTroubleshootPayload,
-    normalizeString,
-    readEnvConfig,
-    detectEnvironmentInfo,
-    envPath,
-    workspaceDir,
     runTroubleshootAction,
-    commandRunner,
-    controlPlaneCache: controlPlaneStatusService.cache,
-    operationTimeoutMs: managerOperationTimeoutMs,
-  });
-
-  registerRemoteSupportRoutes({
-    registerApiGet,
-    registerApiPost,
-    registerRemoteSupportGet,
-    registerRemoteSupportPost,
-    normalizeString,
-    parseBooleanLike,
-    readConsoleSettings,
-    writeConsoleSettings,
+    controlPlaneCache: serviceComposition.controlPlaneStatusService.cache,
+    managerOperationTimeoutMs,
     clampRemoteSupportTokenTtlMinutes,
     remoteSupportTokenMinTtlMinutes: REMOTE_SUPPORT_TOKEN_MIN_TTL_MINUTES,
     remoteSupportTokenMaxTtlMinutes: REMOTE_SUPPORT_TOKEN_MAX_TTL_MINUTES,
@@ -2741,57 +2499,20 @@ export function createManagerApp(options = {}) {
     summarizeRemoteSupportToken,
     callHomeEventsMax: CALL_HOME_EVENTS_MAX,
     syncRemoteSupportWslExposure,
-    detectEnvironmentInfo,
-    workspaceDir,
-    envPath,
-    commandRunner,
     randomBytes,
     randomUUID,
-    createPasswordHash,
     buildRemoteSupportCurlExamples,
     buildCallHomePodBundle,
     buildRemoteSupportApiBasePath,
     appendCallHomeEvent,
-    buildDiagnosticsPayload,
     buildRemoteSupportCommandHints,
-    buildTroubleshootPayload,
     remoteSupportSafeActionAllowlist: REMOTE_SUPPORT_SAFE_ACTION_ALLOWLIST,
-    readEnvConfig,
-    runTroubleshootAction,
-    withBlastdoorApi,
     readIntelligenceAgentStore,
     intelligenceAgentStorePath,
-    operationTimeoutMs: managerOperationTimeoutMs,
-  });
-
-  registerApiGet("/plugins/ui", async (_req, res) => {
-    res.json({
-      ok: true,
-      plugins: pluginManager.getManagerUiAssets(),
-    });
-  });
-
-  pluginManager.registerManagerRoutes({
-    registerApiGet,
-    registerApiPost,
-    readEnvConfig,
-    withBlastdoorApi,
-    processState,
-    workspaceDir,
-    envPath,
-    checkBlastdoorHealth,
-    checkFoundryTargetHealth,
-    detectEnvironmentInfo,
+    pluginManager,
     sanitizeConfigForDiagnostics,
     createTroubleshootReport,
-    tailFile,
-    parseBooleanLike,
-    parseBooleanLikeBody,
-    normalizeString,
     applyThreatLockdown,
-    runTroubleshootAction,
-    commandRunner,
-    CONFIG_DEFAULTS,
     installationConfigPath,
   });
 
