@@ -32,7 +32,7 @@
     "helmet": "^8.0.0",
     "http-proxy-middleware": "^3.0.3",
     "nodemailer": "^7.0.5",
-    "otplib": "^13.3.0",
+    "otplib": "^13.4.0",
     "pg": "^8.19.0"
   },
   "devDependencies": {
